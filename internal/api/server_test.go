@@ -78,13 +78,17 @@ func TestUnknownAPIPathReturns404(t *testing.T) {
 	}
 }
 
-// 非 GET 方法返回 405。
+// 非 GET 方法返回 405，并按 RFC 7231 携带 Allow 头（Gin
+// HandleMethodNotAllowed 行为）。
 func TestMethodNotAllowed(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/api/v1/health", nil)
 	NewRouter(testWebFS()).ServeHTTP(rec, req)
 	if rec.Code != 405 {
 		t.Fatalf("POST /api/v1/health status = %d, want 405", rec.Code)
+	}
+	if allow := rec.Header().Get("Allow"); allow != "GET" {
+		t.Fatalf("allow header = %q, want GET", allow)
 	}
 }
 
