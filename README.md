@@ -1,5 +1,7 @@
 # TinySync
 
+[![codecov](https://codecov.io/gh/lz-wang/tinysync/graph/badge.svg?token=2dXeeuTCQq)](https://codecov.io/gh/lz-wang/tinysync)
+
 TinySync 是一个面向 HomeLab 的文件同步服务：单一 Go 二进制，内嵌 React Web UI，
 通过 REST API 管理同步源（Sources）与同步任务（Jobs）。
 
