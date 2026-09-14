@@ -1,0 +1,33 @@
+{
+    "name": "tinysync-web",
+    "version": "0.1.0",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "dev": "vite --host 0.0.0.0",
+        "build": "npm run type-check && vite build",
+        "preview": "vite preview --port 4173",
+        "type-check": "tsc -b",
+        "format": "biome format --write .",
+        "format:check": "biome format --check .",
+        "lint": "biome check .",
+        "lint:fix": "biome check --write .",
+        "clean": "rm -rf dist node_modules/.vite"
+    },
+    "dependencies": {
+        "@emotion/react": "^11.14.0",
+        "@emotion/styled": "^11.14.1",
+        "@mui/material": "^9.2.0",
+        "react": "^19.2.8",
+        "react-dom": "^19.2.8"
+    },
+    "devDependencies": {
+        "@biomejs/biome": "2.5.5",
+        "@types/node": "^26.1.1",
+        "@types/react": "^19.2.17",
+        "@types/react-dom": "^19.2.3",
+        "@vitejs/plugin-react": "^6.0.4",
+        "typescript": "^7.0.2",
+        "vite": "^8.1.5"
+    }
+}
