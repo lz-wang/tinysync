@@ -5,6 +5,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io/fs"
 
 	"github.com/urfave/cli/v3"
 
@@ -14,14 +15,15 @@ import (
 	"tinysync/internal/logging"
 )
 
-// NewCommand 构建 CLI 根命令（urfave/cli/v3）。
+// NewCommand 构建 CLI 根命令（urfave/cli/v3）。webFS 为嵌入的前端静态资源，
+// 由 serve 子命令透传给应用。
 //
 // 最终只保留：
 //
 //	./tinysync serve --port 9466    # 启动服务
 //	./tinysync --version            # 打印版本
 //	./tinysync version              # 同 --version
-func NewCommand() *cli.Command {
+func NewCommand(webFS fs.FS) *cli.Command {
 	// 让 --version 输出纯版本号（默认带 "app version" 前缀）。
 	cli.VersionPrinter = func(c *cli.Command) {
 		fmt.Println(c.Root().Version)
@@ -37,7 +39,7 @@ func NewCommand() *cli.Command {
 				Usage: "启动 TinySync 服务（Web UI + REST API）",
 				Flags: serveFlags(),
 				Action: func(ctx context.Context, c *cli.Command) error {
-					return runServer(ctx, c.String("datadir"), c.Int("port"))
+					return runServer(ctx, c.String("datadir"), c.Int("port"), webFS)
 				},
 			},
 			{
@@ -73,7 +75,7 @@ func serveFlags() []cli.Flag {
 
 // runServer 用 CLI/env 传入的 datadir/port 加载配置、初始化日志，
 // 交给 app.Run 启动服务并阻塞至 ctx 取消。
-func runServer(ctx context.Context, dataDir string, port int) error {
+func runServer(ctx context.Context, dataDir string, port int, webFS fs.FS) error {
 	cfg, err := config.Load(config.Options{DataDir: dataDir, Port: port})
 	if err != nil {
 		return err
@@ -84,5 +86,5 @@ func runServer(ctx context.Context, dataDir string, port int) error {
 	logging.Init(cfg.DataDir)
 	defer func() { _ = logging.Sync() }()
 	logging.Infof("starting tinysync %s (datadir=%s, addr=%s)", buildinfo.Version, cfg.DataDir, cfg.ListenAddr())
-	return app.Run(ctx, cfg)
+	return app.Run(ctx, cfg, webFS)
 }

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"tinysync/internal/config"
@@ -15,7 +16,7 @@ func TestRunReturnsOnCanceledContext(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- Run(ctx, config.Default())
+		done <- Run(ctx, config.Default(), fstest.MapFS{})
 	}()
 
 	select {

@@ -4,13 +4,14 @@ import (
 	"reflect"
 	"slices"
 	"testing"
+	"testing/fstest"
 
 	"tinysync/internal/buildinfo"
 )
 
 // TestNewCommand 验证 CLI 收敛：serve（主）与 version 子命令（同 --version）。
 func TestNewCommand(t *testing.T) {
-	root := NewCommand()
+	root := NewCommand(fstest.MapFS{})
 
 	if root.Name != "tinysync" {
 		t.Errorf("Name = %q, want tinysync", root.Name)

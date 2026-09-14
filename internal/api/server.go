@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"time"
 
@@ -22,11 +23,12 @@ type Server struct {
 }
 
 // NewServer 用给定配置构造 HTTP 服务（不监听，调用 Start 开始服务）。
-func NewServer(cfg *config.Config) *Server {
+// webFS 为嵌入的前端静态资源（web/dist 或 fallback），由 SPA 路由服务。
+func NewServer(cfg *config.Config, webFS fs.FS) *Server {
 	return &Server{
 		httpServer: &http.Server{
 			Addr: cfg.ListenAddr(),
-			Handler: NewRouter(),
+			Handler: NewRouter(webFS),
 			// 硬化常驻服务：防止慢速头部与闲置连接无限占用。
 			ReadHeaderTimeout: 5 * time.Second,
 			IdleTimeout:       60 * time.Second,
