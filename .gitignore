@@ -1,0 +1,41 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+.claude/settings.local.json
+*.swp
+*.swo
+*~
+
+# Go outputs
+/tinysync
+/tinysync.exe
+*.test
+*.prof
+__debug_bin
+
+# Web outputs
+node_modules/
+web/dist/
+*.tsbuildinfo
+
+# Build and distribution outputs
+build/
+dist/
+
+# Test and coverage
+coverage/
+
+# Runtime data
+data/
+logs/
+*.log
+
+# Local agent state
+.codegraph/
+.playwright-cli/
+.superpowers/
+agents/
