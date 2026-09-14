@@ -1,9 +1,11 @@
 import {
+    Alert,
+    Box,
+    Button,
     Card,
     CardContent,
     Chip,
     CircularProgress,
-    Paper,
     Stack,
     Table,
     TableBody,
@@ -13,13 +15,29 @@ import {
     TableRow,
     Typography,
 } from '@mui/material'
-import { useEffect, useState } from 'react'
-import { listSources, type SourceResponse } from '../api'
+import { useCallback, useEffect, useState } from 'react'
+import { listSources, type SourceResponse, testSource } from '../api'
+import DeleteSourceDialog from '../features/sources/DeleteSourceDialog'
+import SourceDialog from '../features/sources/SourceDialog'
 
-// SourcesPage 展示远端 Source 列表：名称、类型、端点与凭据状态。
+// TestState 是单个 Source 的连接测试状态。
+type TestState =
+    | { status: 'testing' }
+    | { status: 'done'; ok: boolean; latency: number; error?: string }
+
+// SourcesPage 提供 Source 管理界面：创建、编辑、连接测试与删除。
 export default function SourcesPage() {
     const [sources, setSources] = useState<SourceResponse[] | null>(null)
-    const [error, setError] = useState<string | null>(null)
+    const [loadError, setLoadError] = useState<string | null>(null)
+    const [testStates, setTestStates] = useState<Record<string, TestState>>({})
+    const [dialogOpen, setDialogOpen] = useState(false)
+    const [editing, setEditing] = useState<SourceResponse | null>(null)
+    const [deleting, setDeleting] = useState<SourceResponse | null>(null)
+
+    const reload = useCallback(async () => {
+        const list = await listSources()
+        setSources(list)
+    }, [])
 
     useEffect(() => {
         let cancelled = false
@@ -31,7 +49,7 @@ export default function SourcesPage() {
                 }
             } catch (e) {
                 if (!cancelled) {
-                    setError(e instanceof Error ? e.message : String(e))
+                    setLoadError(e instanceof Error ? e.message : String(e))
                 }
             }
         }
@@ -41,39 +59,128 @@ export default function SourcesPage() {
         }
     }, [])
 
+    async function handleTest(id: string) {
+        setTestStates(prev => ({ ...prev, [id]: { status: 'testing' } }))
+        try {
+            const result = await testSource(id)
+            setTestStates(prev => ({
+                ...prev,
+                [id]: {
+                    status: 'done',
+                    ok: result.ok,
+                    latency: result.latency_ms,
+                    error: result.error,
+                },
+            }))
+        } catch (e) {
+            setTestStates(prev => ({
+                ...prev,
+                [id]: {
+                    status: 'done',
+                    ok: false,
+                    latency: 0,
+                    error: e instanceof Error ? e.message : String(e),
+                },
+            }))
+        }
+    }
+
+    function handleSaved() {
+        setDialogOpen(false)
+        setEditing(null)
+        reload()
+            .then(() => setLoadError(null))
+            .catch((e: unknown) => setLoadError(e instanceof Error ? e.message : String(e)))
+    }
+
+    function handleDeleted(id: string) {
+        setDeleting(null)
+        setSources(prev => (prev === null ? prev : prev.filter(s => s.id !== id)))
+    }
+
     return (
-        <Card variant="outlined">
-            <CardContent>
-                <Stack spacing={2}>
-                    <Typography variant="h5" component="h1">
-                        Sources
-                    </Typography>
-                    {error !== null && (
-                        <Typography variant="body2" color="error">
-                            {error}
-                        </Typography>
-                    )}
-                    {sources === null ? (
-                        <CircularProgress size={24} aria-label="加载中" />
-                    ) : (
-                        <SourceTable sources={sources} />
-                    )}
-                </Stack>
-            </CardContent>
-        </Card>
+        <Stack spacing={2}>
+            <Card variant="outlined">
+                <CardContent>
+                    <Stack spacing={2}>
+                        <Box
+                            sx={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                            }}
+                        >
+                            <Typography variant="h5" component="h1">
+                                Sources
+                            </Typography>
+                            <Button
+                                variant="contained"
+                                onClick={() => {
+                                    setEditing(null)
+                                    setDialogOpen(true)
+                                }}
+                            >
+                                Add Source
+                            </Button>
+                        </Box>
+                        {loadError !== null && <Alert severity="error">{loadError}</Alert>}
+                        {sources === null ? (
+                            <CircularProgress size={24} aria-label="加载中" />
+                        ) : (
+                            <SourceTable
+                                sources={sources}
+                                testStates={testStates}
+                                onTest={id => void handleTest(id)}
+                                onEdit={source => {
+                                    setEditing(source)
+                                    setDialogOpen(true)
+                                }}
+                                onDelete={source => setDeleting(source)}
+                            />
+                        )}
+                    </Stack>
+                </CardContent>
+            </Card>
+            <SourceDialog
+                open={dialogOpen}
+                source={editing}
+                onClose={() => {
+                    setDialogOpen(false)
+                    setEditing(null)
+                }}
+                onSaved={handleSaved}
+            />
+            <DeleteSourceDialog
+                source={deleting}
+                onClose={() => setDeleting(null)}
+                onDeleted={handleDeleted}
+            />
+        </Stack>
     )
 }
 
-function SourceTable({ sources }: { sources: SourceResponse[] }) {
+function SourceTable({
+    sources,
+    testStates,
+    onTest,
+    onEdit,
+    onDelete,
+}: {
+    sources: SourceResponse[]
+    testStates: Record<string, TestState>
+    onTest: (id: string) => void
+    onEdit: (source: SourceResponse) => void
+    onDelete: (source: SourceResponse) => void
+}) {
     if (sources.length === 0) {
         return (
             <Typography variant="body2" color="text.secondary">
-                No sources configured yet.
+                No sources configured yet. Click “Add Source” to connect a WebDAV server.
             </Typography>
         )
     }
     return (
-        <TableContainer component={Paper} variant="outlined">
+        <TableContainer>
             <Table size="small">
                 <TableHead>
                     <TableRow>
@@ -82,6 +189,8 @@ function SourceTable({ sources }: { sources: SourceResponse[] }) {
                         <TableCell>Endpoint</TableCell>
                         <TableCell align="right">Password</TableCell>
                         <TableCell align="right">Enabled</TableCell>
+                        <TableCell>Connection</TableCell>
+                        <TableCell align="right">Actions</TableCell>
                     </TableRow>
                 </TableHead>
                 <TableBody>
@@ -102,10 +211,64 @@ function SourceTable({ sources }: { sources: SourceResponse[] }) {
                                     size="small"
                                 />
                             </TableCell>
+                            <TableCell>
+                                <TestCell state={testStates[source.id]} />
+                            </TableCell>
+                            <TableCell align="right">
+                                <Stack
+                                    direction="row"
+                                    spacing={0.5}
+                                    sx={{ justifyContent: 'flex-end' }}
+                                >
+                                    <Button
+                                        size="small"
+                                        disabled={testStates[source.id]?.status === 'testing'}
+                                        onClick={() => onTest(source.id)}
+                                    >
+                                        Test
+                                    </Button>
+                                    <Button size="small" onClick={() => onEdit(source)}>
+                                        Edit
+                                    </Button>
+                                    <Button
+                                        size="small"
+                                        color="error"
+                                        onClick={() => onDelete(source)}
+                                    >
+                                        Delete
+                                    </Button>
+                                </Stack>
+                            </TableCell>
                         </TableRow>
                     ))}
                 </TableBody>
             </Table>
         </TableContainer>
+    )
+}
+
+function TestCell({ state }: { state: TestState | undefined }) {
+    if (state === undefined) {
+        return (
+            <Typography variant="caption" color="text.secondary">
+                Not tested
+            </Typography>
+        )
+    }
+    if (state.status === 'testing') {
+        return <CircularProgress size={16} aria-label="Testing connection" />
+    }
+    if (state.ok) {
+        return <Chip label={`Success: ${state.latency} ms`} color="success" size="small" />
+    }
+    return (
+        <Box sx={{ maxWidth: 260 }}>
+            <Chip label="Failed" color="error" size="small" />
+            {state.error !== undefined && (
+                <Typography variant="caption" color="error" sx={{ display: 'block', mt: 0.5 }}>
+                    {state.error}
+                </Typography>
+            )}
+        </Box>
     )
 }
