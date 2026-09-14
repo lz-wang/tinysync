@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path"
 	"strings"
 	"time"
 
@@ -79,9 +80,19 @@ type remote struct {
 	client *webdav.Client
 }
 
+// resolveRelative 把 Source-relative logical path（统一以 / 开头）转换为
+// endpoint-relative path（"/" → ""、"/foo" → "foo"）。go-webdav 只对相对
+// 路径执行 path.Join(endpoint.Path, rel)，因此以 / 开头的路径会丢失
+// endpoint 的路径前缀、直接变成服务器绝对路径（详见其 ResolveHref）。
+// 归一化同时消除 .. 序列，保证请求不逃逸 Source root。
+func resolveRelative(logicalPath string) string {
+	cleaned := path.Clean("/" + logicalPath)
+	return strings.TrimPrefix(cleaned, "/")
+}
+
 // Stat 实现 source.Remote。
 func (r *remote) Stat(ctx context.Context, path string) (source.FileInfo, error) {
-	info, err := r.client.Stat(ctx, normalizePath(path))
+	info, err := r.client.Stat(ctx, resolveRelative(path))
 	if err != nil {
 		return source.FileInfo{}, wrapOp("stat", path, err)
 	}
@@ -90,7 +101,7 @@ func (r *remote) Stat(ctx context.Context, path string) (source.FileInfo, error)
 
 // List 实现 source.Remote（非递归列目录）。
 func (r *remote) List(ctx context.Context, path string) ([]source.FileInfo, error) {
-	entries, err := r.client.ReadDir(ctx, normalizePath(path), false)
+	entries, err := r.client.ReadDir(ctx, resolveRelative(path), false)
 	if err != nil {
 		return nil, wrapOp("list", path, err)
 	}
@@ -103,22 +114,11 @@ func (r *remote) List(ctx context.Context, path string) ([]source.FileInfo, erro
 
 // Open 实现 source.Remote。
 func (r *remote) Open(ctx context.Context, path string) (io.ReadCloser, error) {
-	rc, err := r.client.Open(ctx, normalizePath(path))
+	rc, err := r.client.Open(ctx, resolveRelative(path))
 	if err != nil {
 		return nil, wrapOp("open", path, err)
 	}
 	return rc, nil
-}
-
-// normalizePath 统一远端逻辑路径为以 / 开头的形式。
-func normalizePath(path string) string {
-	if path == "" {
-		return "/"
-	}
-	if !strings.HasPrefix(path, "/") {
-		return "/" + path
-	}
-	return path
 }
 
 // toFileInfo 转换为协议无关的 FileInfo。

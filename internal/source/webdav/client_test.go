@@ -19,8 +19,8 @@ import (
 	"tinysync/internal/source"
 )
 
-// davHandler 构造含 /docs/report.txt 的真实 WebDAV 服务端处理器。
-func davHandler(t *testing.T) http.Handler {
+// testFS 构造含 /docs/report.txt 的内存文件系统。
+func testFS(t *testing.T) xnetdav.FileSystem {
 	t.Helper()
 	fs := xnetdav.NewMemFS()
 	ctx := context.Background()
@@ -37,7 +37,13 @@ func davHandler(t *testing.T) http.Handler {
 	if err := f.Close(); err != nil {
 		t.Fatalf("close test file: %v", err)
 	}
-	return &xnetdav.Handler{FileSystem: fs, LockSystem: xnetdav.NewMemLS()}
+	return fs
+}
+
+// davHandler 构造含 /docs/report.txt 的真实 WebDAV 服务端处理器。
+func davHandler(t *testing.T) http.Handler {
+	t.Helper()
+	return &xnetdav.Handler{FileSystem: testFS(t), LockSystem: xnetdav.NewMemLS()}
 }
 
 // requireBasicAuth 给 handler 加 Basic Auth 校验。
