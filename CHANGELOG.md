@@ -23,10 +23,15 @@ GitHub Release 摘要一致。
 
 ### 新增
 
-- 建立 TinySync 初始工程骨架：Git 驱动版本机制、`serve` 服务（REST API
-  `/api/v1/health`、`/api/v1/version`）、内嵌 React Web UI、六平台构建、
-  三平台原生 Smoke、Build/Release 双 workflow 与 Codecov 覆盖率。
-
 ### 修复
 
 ### 移除
+
+## [0.1.0] - 2026-09-14
+
+### 新增
+
+- 提供 TinySync 初始可运行服务骨架。
+- 提供内嵌 Web UI。
+- 提供服务健康状态与版本查询 API。
+- 支持 Linux、macOS、Windows 的 amd64/arm64 构建。
