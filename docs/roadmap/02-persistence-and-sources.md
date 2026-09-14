@@ -4,7 +4,20 @@
 
 目标：建立稳定的数据持久化层和协议无关的 Source 模型。
 
+范围边界：v0.2.0 只做 Source 管理链路（SQLite → Repository → 应用服务 →
+WebDAV 连接测试 → REST API → Web UI），不进入同步执行；Sync Job、Selector、
+Copy / Mirror、下载、调度、S3 / SFTP、文件浏览、API Token 与 MCP 留给后续阶段。
+
 ## SQLite
+
+技术选型（已确定）：
+
+- driver：`modernc.org/sqlite`，标准 `database/sql` + 手写 SQL，不引入 ORM；
+- DSN 级 PRAGMA 基线：`foreign_keys=ON`、`journal_mode=WAL`、
+  `busy_timeout=5000`、`synchronous=NORMAL`、`defensive=ON`、`dqs=OFF`；
+- 暂以单连接池运行（`SetMaxOpenConns(1)`），出现写密集场景再重新评估；
+- WebDAV adapter 选型：`github.com/emersion/go-webdav`（原生 context-aware
+  `Stat` / `ReadDir` / `Open`）。
 
 - [ ] 选择 pure-Go SQLite driver。
 - [ ] 建立 `internal/storage`。
@@ -14,10 +27,14 @@
 - [ ] SQLite pragma 基线。
 - [ ] Repository transaction helper。
 
-建议初始表：
+Schema migration 采用内嵌 SQL + `PRAGMA user_version` 顺序执行，不引入
+Goose / Atlas / migrate：新库自动初始化；旧库向前迁移，迁移前用
+`VACUUM INTO` 备份；更高版本数据库拒绝启动；迁移失败回滚。
+
+只创建 v0.2.0 所需的 `sources` 表；其余表随对应领域阶段由 migration 补充，
+避免预先设计过多 schema：
 
 ```text
-sources
 sync_jobs
 managed_files
 sync_runs
@@ -25,8 +42,6 @@ sync_run_items
 api_tokens
 published_files
 ```
-
-本阶段只实际启用 Source 所需表，其余表可随对应领域阶段创建，避免预先设计过多 schema。
 
 ## Source Domain
 
@@ -65,9 +80,11 @@ sftp
 type Source interface {
     Stat(ctx context.Context, path string) (FileInfo, error)
     List(ctx context.Context, path string) ([]FileInfo, error)
-    Open(ctx context.Context, path string, offset int64) (io.ReadCloser, error)
+    Open(ctx context.Context, path string) (io.ReadCloser, error)
 }
 ```
+
+`Open` 暂不引入 `offset` 参数；range / resume 属于后续同步阶段，出现实际调用者再扩展接口。
 
 约束：
 
@@ -98,6 +115,11 @@ PATCH  /api/v1/sources/:id
 DELETE /api/v1/sources/:id
 POST   /api/v1/sources/:id/test
 ```
+
+Connection Test 真正执行 WebDAV `PROPFIND`（`Stat("/")`），超时 10s；
+测试完成（含连接失败）返回 200 与 `ok` / `latency_ms`（失败附 `error`）；
+仅 Source 不存在（404）、请求非法（400）、存储层故障（500）走 REST 错误。
+PATCH 的 `password` 语义固定为：字段缺省保留现有密码，空串清除，非空替换。
 
 ## Web UI
 

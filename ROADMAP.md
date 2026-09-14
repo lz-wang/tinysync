@@ -17,14 +17,14 @@ Web UI、REST API、MCP 复用应用服务层；Source、Job 与 Publish Policy 
 
 ## 当前状态与优先级
 
-本地核对日期：2026-09-15。当前实现、测试和 workflow 支持以下判断；本次未核验远端发布结果。
+本地核对日期：2026-09-15。当前实现、测试和 workflow 支持以下判断。
 
 - **已实现**：`serve`、`version` / `--version`、数据目录与端口配置、日志、HTTP 生命周期、health/version API、内嵌状态页及 fallback 构建。
 - **已有工程配置**：Git 版本注入、Go 测试、前端静态检查、Codecov、六平台构建、三平台原生 Smoke、Build/Release 分离及 WebDAV 镜像。
-- **发布待核验**：本地存在 `v0.1.0` tag，CHANGELOG 已有对应版本段；尚无本路线图记录的远端 workflow、发行资产及校验和验收结果，不能仅凭 tag 宣称发布验证完成。
+- **v0.1.0 已发布**：远端 `v0.1.0` Release workflow 成功（2026-09-14），六平台发行档案与 `checksums.txt` 已核对到位；WebDAV 镜像按发布规范需独立验收，不能由 GitHub Release 成功推导。
 - **尚未实现**：SQLite、Source、Sync Job、同步引擎、调度与历史、文件浏览/发布、认证与 Token、MCP。
 
-当前先补齐 v0.1.0 的发布验收记录，随后主线进入 v0.2.0：pure-Go SQLite → Source 模型与只读接口 → WebDAV 连接测试 → Repository / REST API / Web UI。
+v0.1.0 发布验收记录已完成，主线进入 v0.2.0：pure-Go SQLite → Source 模型与只读接口 → WebDAV 连接测试 → Repository / REST API / Web UI。
 只创建 Source 所需的表，不预建全部领域；v0.3.0 再交付第一个手动同步 Job。
 工程基线已有实现，下一阶段重心转向领域能力。
 
@@ -48,8 +48,8 @@ v0.2.0 起均为规划，示例 API 与 schema 不属于当前命令契约。
 
 | 版本 | 阶段方案 | 当前状态 | 完成标准摘要 |
 | --- | --- | --- | --- |
-| v0.1.0 | [工程与发布基线](docs/roadmap/01-engineering-baseline.md) | 实现已有，发布待核验 | 验证 tag、检查、三平台 Smoke、六平台发行档及 GitHub Release；记录镜像结果 |
-| v0.2.0 | [持久化与 Source](docs/roadmap/02-persistence-and-sources.md) | 规划，下一开发阶段 | Web UI / REST 创建 WebDAV Source，持久化并验证连接，尚不执行同步 |
+| v0.1.0 | [工程与发布基线](docs/roadmap/01-engineering-baseline.md) | 已发布，镜像待独立验收 | 验证 tag、检查、三平台 Smoke、六平台发行档及 GitHub Release；记录镜像结果 |
+| v0.2.0 | [持久化与 Source](docs/roadmap/02-persistence-and-sources.md) | 进行中 | Web UI / REST 创建 WebDAV Source，持久化并验证连接，尚不执行同步 |
 | v0.3.0 | [WebDAV Pull Sync](docs/roadmap/03-webdav-pull-sync.md) | 规划 | 手动执行 Copy / Mirror，支持选择器、原子下载与本地文件归属保护 |
 | v0.4.0 | [调度与同步历史](docs/roadmap/04-scheduler-and-history.md) | 规划 | 自动调度、重叠跳过、并发控制及运行/文件明细可追踪 |
 | v0.5.0 | [S3 与 SFTP](docs/roadmap/05-s3-and-sftp.md) | 规划 | 同一同步引擎支持三种协议，上层不依赖协议分支 |
