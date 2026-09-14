@@ -12,6 +12,9 @@ import (
 	"tinysync/internal/api"
 	"tinysync/internal/config"
 	"tinysync/internal/logging"
+	"tinysync/internal/source"
+	"tinysync/internal/source/sqlite"
+	"tinysync/internal/source/webdav"
 	"tinysync/internal/storage"
 )
 
@@ -35,7 +38,10 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 		return fmt.Errorf("migrate database: %w", err)
 	}
 
-	server := api.NewServer(cfg, webFS)
+	// 装配 Source 领域：SQLite 仓库 + WebDAV factory + 应用服务。
+	// REST / Web UI / MCP 共用该服务层。
+	sources := source.NewService(sqlite.New(db), webdav.NewFactory())
+	server := api.NewServer(cfg, webFS, api.Dependencies{Sources: sources})
 
 	serveErr := make(chan error, 1)
 	go func() {

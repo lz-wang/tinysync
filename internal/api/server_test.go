@@ -24,7 +24,7 @@ func testWebFS() fs.FS {
 func TestHealthEndpoint(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/api/v1/health", nil)
-	NewRouter(testWebFS()).ServeHTTP(rec, req)
+	NewRouter(testWebFS(), Dependencies{}).ServeHTTP(rec, req)
 
 	if rec.Code != 200 {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -46,7 +46,7 @@ func TestHealthEndpoint(t *testing.T) {
 func TestVersionEndpoint(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/api/v1/version", nil)
-	NewRouter(testWebFS()).ServeHTTP(rec, req)
+	NewRouter(testWebFS(), Dependencies{}).ServeHTTP(rec, req)
 
 	if rec.Code != 200 {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -71,7 +71,7 @@ func TestUnknownAPIPathReturns404(t *testing.T) {
 	} {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("GET", path, nil)
-		NewRouter(testWebFS()).ServeHTTP(rec, req)
+		NewRouter(testWebFS(), Dependencies{}).ServeHTTP(rec, req)
 		if rec.Code != 404 {
 			t.Errorf("GET %s status = %d, want 404", path, rec.Code)
 		}
@@ -83,7 +83,7 @@ func TestUnknownAPIPathReturns404(t *testing.T) {
 func TestMethodNotAllowed(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/api/v1/health", nil)
-	NewRouter(testWebFS()).ServeHTTP(rec, req)
+	NewRouter(testWebFS(), Dependencies{}).ServeHTTP(rec, req)
 	if rec.Code != 405 {
 		t.Fatalf("POST /api/v1/health status = %d, want 405", rec.Code)
 	}
@@ -97,7 +97,7 @@ func TestSPAFallbackServesIndex(t *testing.T) {
 	for _, path := range []string{"/", "/sources", "/jobs/42/edit"} {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("GET", path, nil)
-		NewRouter(testWebFS()).ServeHTTP(rec, req)
+		NewRouter(testWebFS(), Dependencies{}).ServeHTTP(rec, req)
 		if rec.Code != 200 {
 			t.Errorf("GET %s status = %d, want 200", path, rec.Code)
 			continue
@@ -116,7 +116,7 @@ func TestSPAFallbackServesIndex(t *testing.T) {
 func TestStaticAssetServed(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/assets/app-abc123.js", nil)
-	NewRouter(testWebFS()).ServeHTTP(rec, req)
+	NewRouter(testWebFS(), Dependencies{}).ServeHTTP(rec, req)
 
 	if rec.Code != 200 {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -134,7 +134,7 @@ func TestMissingAssetReturns404(t *testing.T) {
 	for _, path := range []string{"/assets/missing.js", "/missing.txt"} {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("GET", path, nil)
-		NewRouter(testWebFS()).ServeHTTP(rec, req)
+		NewRouter(testWebFS(), Dependencies{}).ServeHTTP(rec, req)
 		if rec.Code != 404 {
 			t.Errorf("GET %s status = %d, want 404", path, rec.Code)
 		}

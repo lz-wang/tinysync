@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"tinysync/internal/buildinfo"
+	"tinysync/internal/source"
 )
 
 // NewRouter 构建全部路由：
@@ -21,7 +22,7 @@ import (
 //
 // 引擎用 gin.New() 而非 gin.Default()：项目已有 zap 日志，不再安装 Gin Logger
 // 造成第二份 access log 事实来源；只保留 Recovery 兜底 panic。
-func NewRouter(webFS fs.FS) *gin.Engine {
+func NewRouter(webFS fs.FS, deps Dependencies) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.Use(gin.Recovery())
@@ -34,6 +35,12 @@ func NewRouter(webFS fs.FS) *gin.Engine {
 	}
 	router.NoRoute(handleWeb(webFS))
 	return router
+}
+
+// Dependencies 是 API 层依赖的应用服务集合。
+type Dependencies struct {
+	// Sources 是 Source 应用服务（REST / Web UI / MCP 共用）。
+	Sources *source.Service
 }
 
 // handleHealth 报告服务健康状态。
