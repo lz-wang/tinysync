@@ -29,6 +29,11 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 			logging.Errorf("close database: %v", cerr)
 		}
 	}()
+	// migration 是启动关键路径：使用独立 context，不因启动即收到的
+	// 取消信号中断，保证退出行为与数据库状态确定。
+	if err := storage.Migrate(context.Background(), db, cfg.DataDir); err != nil {
+		return fmt.Errorf("migrate database: %w", err)
+	}
 
 	server := api.NewServer(cfg, webFS)
 
