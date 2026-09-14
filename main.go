@@ -1,17 +1,25 @@
 // TinySync 是一个 HomeLab 文件同步服务。
 //
-// 当前处于工程骨架阶段：main 只打印版本号，应用运行时
-// （cmd → app → config/logging → api）在后续提交中逐步建立。
+// main 只负责 signal context 与命令分发：CLI 解析在 internal/cmd，
+// 应用生命周期在 internal/app（composition root）。
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
-	"tinysync/internal/buildinfo"
+	"tinysync/internal/cmd"
 )
 
 func main() {
-	fmt.Println(buildinfo.Version)
-	os.Exit(0)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	if err := cmd.NewCommand().Run(ctx, os.Args); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
 }
