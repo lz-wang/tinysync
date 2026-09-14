@@ -13,7 +13,8 @@ Pull 表示同步方向；Copy / Mirror 表示远端删除后的本地保留策�
 **Remote Source → Sync Job → Selector → Sync Engine → Local Files → Publish Policy / HTTP**。
 
 Web UI、REST API、MCP 复用应用服务层；Source、Job 与 Publish Policy 分别建模。
-这条领域链路尚未实现，当前仅有工程基线。
+其中 Remote Source 管理链路（持久化、WebDAV 只读访问与连接测试）已实现；
+Sync Job → Selector → Sync Engine → Local Files 尚未实现。
 
 ## 当前状态与优先级
 
@@ -46,7 +47,7 @@ WebDAV Pull Sync。
 ## 主线 10 个阶段
 
 版本表示目标里程碑，不承诺发布日期。阶段细项、模型草案和完成标准见对应链接；
-v0.2.0 起均为规划，示例 API 与 schema 不属于当前命令契约。
+未标记为完成的后续版本均为规划，示例 API 与 schema 不属于当前命令契约。
 
 | 版本 | 阶段方案 | 当前状态 | 完成标准摘要 |
 | --- | --- | --- | --- |
