@@ -5,12 +5,16 @@
 TinySync 是一个面向 HomeLab 的文件同步服务：单一 Go 二进制，内嵌 React Web UI，
 通过 REST API 管理同步源（Sources）与同步任务（Jobs）。
 
-> v0.1.0 为工程基线版本：版本机制、HTTP 服务、Web UI 骨架与 CI/CD
-> 已建立；Source / Sync Job 等同步领域能力尚未实现。
+> v0.2.0 提供持久化的 WebDAV Source 管理：创建、编辑、删除与连接测试，
+> 数据保存于 SQLite 并跨重启保留；同步执行（Sync Job / Copy / Mirror）
+> 计划于 v0.3.0 及之后交付。
+>
+> **安全提示**：v0.2.0 尚未实现 TinySync 自身的认证与鉴权，Source 管理
+> 与 Connection Test API 无任何访问控制，请仅部署在可信的 HomeLab 网络中。
 
 ## 技术栈
 
-- 后端：Go + Gin，单二进制，无 CGO
+- 后端：Go + Gin，单二进制，无 CGO；SQLite（pure-Go driver）
 - 前端：React + MUI，构建产物嵌入二进制
 - 平台：Linux / macOS / Windows × amd64 / arm64
 
