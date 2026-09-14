@@ -1,7 +1,8 @@
 name: Build and Notify
 
 # Build = 验证"当前代码是否健康"。tag 属于 release.yml，这里没有 tag trigger，
-# 也不生成 GitHub Release；构建产物上传 Actions artifact 并镜像到 WebDAV
+# 也不生成 GitHub Release。不使用 Actions Artifact：PR 只验证六平台可构建，
+# main/manual 额外经 Makefile 打包开发快照并镜像到 WebDAV
 # （HomeLab 内网获取开发版）。
 on:
   push:
@@ -81,27 +82,21 @@ jobs:
         include:
           - goos: linux
             goarch: amd64
-            suffix: ""
             archive: tar.gz
           - goos: linux
             goarch: arm64
-            suffix: ""
             archive: tar.gz
           - goos: darwin
             goarch: amd64
-            suffix: ""
             archive: tar.gz
           - goos: darwin
             goarch: arm64
-            suffix: ""
             archive: tar.gz
           - goos: windows
             goarch: amd64
-            suffix: ".exe"
             archive: zip
           - goos: windows
             goarch: arm64
-            suffix: ".exe"
             archive: zip
     steps:
       - uses: actions/checkout@v6
@@ -122,49 +117,33 @@ jobs:
       - name: Install and build WebUI
         run: make web-ci-install web-build
 
+      # PR 的职责只是验证"能不能构建"：不打包、不上传。
       - name: Build binary
+        if: github.event_name == 'pull_request'
         run: make build-os OS=${{ matrix.goos }} ARCH=${{ matrix.goarch }} VERSION=${{ needs.prepare.outputs.version }}
 
-      # 参考 m2h：构建产物同时打包发行档镜像到 WebDAV（HomeLab 内网获取
-      # 开发版），按版本目录归档；镜像失败不阻断 CI。
-      - name: Package WebDAV archive
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="${{ needs.prepare.outputs.version }}"
-          name="tinysync_${version}_${{ matrix.goos }}_${{ matrix.goarch }}"
-          package_dir="release/${name}"
-          mkdir -p "${package_dir}"
-          cp "dist/tinysync_${{ matrix.goos }}_${{ matrix.goarch }}${{ matrix.suffix }}" "${package_dir}/tinysync${{ matrix.suffix }}"
-          cp README.md LICENSE "${package_dir}/"
-          if [[ "${{ matrix.archive }}" == "zip" ]]; then
-            archive="${GITHUB_WORKSPACE}/release/${name}.zip"
-            (cd "${package_dir}" && zip -qr "${archive}" .)
-          else
-            archive="${GITHUB_WORKSPACE}/release/${name}.tar.gz"
-            tar -C "${package_dir}" -czf "${archive}" .
-          fi
-          sha256sum "${archive}" > "${archive}.sha256"
+      # main/manual 打包开发快照：统一走 Makefile package-os，
+      # workflow 内不再维护 mkdir/cp/tar/zip/sha256 一套打包实现。
+      - name: Package development archive
+        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        run: make package-os OS=${{ matrix.goos }} ARCH=${{ matrix.goarch }} VERSION=${{ needs.prepare.outputs.version }}
 
+      # 参考 m2h：构建产物按版本目录镜像到 WebDAV（HomeLab 内网获取开发版），
+      # 附内容仅含文件名的 .sha256；镜像失败不阻断 CI。不使用 Actions
+      # Artifact，消除 storage quota 对 Build CI 的影响。
       - name: Upload archive and checksum to WebDAV
+        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         continue-on-error: true
-        uses: bxb100/action-upload-webdav@v1
+        # pin 到 v1 分支当前 commit，避免 floating tag 行为漂移。
+        uses: bxb100/action-upload-webdav@d19f1edf785abf4b0b7f818ba46b6dba9b0334c6 # v1
         with:
           webdav_address: ${{ secrets.WEBDAV_SERVER }}
           webdav_username: ${{ secrets.WEBDAV_USERNAME }}
           webdav_password: ${{ secrets.WEBDAV_PASSWORD }}
           webdav_upload_path: "/Shares/github/${{ github.repository }}/${{ needs.prepare.outputs.version }}"
           files: |
-            release/tinysync_${{ needs.prepare.outputs.version }}_${{ matrix.goos }}_${{ matrix.goarch }}.${{ matrix.archive }}
-            release/tinysync_${{ needs.prepare.outputs.version }}_${{ matrix.goos }}_${{ matrix.goarch }}.${{ matrix.archive }}.sha256
-
-      # Build 同时上传裸 binary artifact，供 Actions 页面直接取用。
-      - name: Upload binary artifact
-        uses: actions/upload-artifact@v6
-        with:
-          name: tinysync_${{ needs.prepare.outputs.version }}_${{ matrix.goos }}_${{ matrix.goarch }}
-          path: dist/tinysync_${{ matrix.goos }}_${{ matrix.goarch }}${{ matrix.suffix }}
-          if-no-files-found: error
+            dist/tinysync_${{ needs.prepare.outputs.version }}_${{ matrix.goos }}_${{ matrix.goarch }}.${{ matrix.archive }}
+            dist/tinysync_${{ needs.prepare.outputs.version }}_${{ matrix.goos }}_${{ matrix.goarch }}.${{ matrix.archive }}.sha256
 
   smoke:
     name: Smoke ${{ matrix.os }}
