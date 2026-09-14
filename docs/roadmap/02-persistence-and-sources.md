@@ -14,7 +14,8 @@ Copy / Mirror、下载、调度、S3 / SFTP、文件浏览、API Token 与 MCP �
 
 - driver：`modernc.org/sqlite`，标准 `database/sql` + 手写 SQL，不引入 ORM；
 - DSN 级 PRAGMA 基线：`foreign_keys=ON`、`journal_mode=WAL`、
-  `busy_timeout=5000`、`synchronous=NORMAL`、`defensive=ON`、`dqs=OFF`；
+  `busy_timeout=5000`、`synchronous=NORMAL`
+  （`defensive` / `dqs` 在该 driver 当前构建中未注册，待支持后补入）；
 - 暂以单连接池运行（`SetMaxOpenConns(1)`），出现写密集场景再重新评估；
 - WebDAV adapter 选型：`github.com/emersion/go-webdav`（原生 context-aware
   `Stat` / `ReadDir` / `Open`）。
