@@ -50,8 +50,14 @@
   Codecov 覆盖率、六平台构建、三平台原生 Smoke。不生成 GitHub Release。
 - `release.yml`（tag push / 手动指定 tag）发布"已明确版本号的不可变
   Git tag"：校验 tag 与 `make version` 一致、CHANGELOG 存在对应段落、
-  六平台制品 + `checksums.txt`、三平台 Smoke、GitHub Release。
-- 两个 workflow 的构建产物都会镜像到 WebDAV（按版本目录，附逐文件
-  `.sha256`）；镜像失败不阻断 CI，GitHub Release 始终是权威分发渠道。
+  三平台 Smoke，publish 在单一 runner 一次性 cross-build 六平台并生成
+  发行档 + `checksums.txt`，然后发布 GitHub Release。
+- 不使用 Actions Artifact 在 job 间传输或分发构建产物。构建产物按版本
+  目录镜像到 WebDAV：开发快照（main push / 手动触发）附逐文件
+  `.sha256`，正式版本在 GitHub Release 成功后镜像 archives +
+  `checksums.txt`；镜像失败不阻断 CI，GitHub Release 始终是权威分发
+  渠道。
+- 全工程禁止 CGO：Makefile `GOENV` 约束所有 Go 编译/分析命令，workflow
+  顶层 `CGO_ENABLED: "0"` 双保险。
 - GitHub Release Notes 唯一来源是 `CHANGELOG.md` 对应版本段
   （经 `scripts/release-notes.sh` 提取）。

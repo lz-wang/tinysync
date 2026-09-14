@@ -2,6 +2,9 @@ name: Release and Notify
 
 # Release = 发布"一个已经明确版本号的不可变 Git tag"。
 # 只由 tag push 或手动指定已有 tag 触发；普通 main push 永远不会走到这里。
+# 不使用 Actions Artifact：publish 在单一 Ubuntu runner 上一次性
+# cross-build 六平台（CGO_ENABLED=0），生成发行档后直接发布，
+# 既不跨 job 传输文件，也不把 WebDAV 当 job 间中转站。
 on:
   push:
     tags: ["v*"]
@@ -76,7 +79,8 @@ jobs:
           fi
 
       # 验证 2：CHANGELOG 必须存在对应版本段，失败立即阻断，
-      # 而不是进入 publish 后才发现。
+      # 而不是进入 publish 后才发现。release notes 由 publish 在
+      # tag checkout 上直接提取，不经 Artifact 传递。
       - name: Validate CHANGELOG section
         shell: bash
         env:
@@ -87,14 +91,6 @@ jobs:
             echo "Error: CHANGELOG.md section [${VERSION}] is empty"
             exit 2
           fi
-          echo "${notes}" > release-notes.md
-
-      - name: Upload release notes
-        uses: actions/upload-artifact@v6
-        with:
-          name: release-notes
-          path: release-notes.md
-          if-no-files-found: error
 
   test:
     name: Release checks
@@ -118,125 +114,14 @@ jobs:
           go-version: "1.26.x"
           check-latest: true
 
-      # Release 只做发布验证，不再上传 Codecov：覆盖率属于持续集成
+      # Release 只做发布验证，不上传 Codecov：覆盖率属于持续集成
       # 状态（build.yml），同一 commit 不因 tag 重复生成覆盖率报告。
       - name: Run release checks
         run: make ci
 
-  build:
-    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
-    needs: [prepare, test]
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - goos: linux
-            goarch: amd64
-            suffix: ""
-            archive: tar.gz
-          - goos: linux
-            goarch: arm64
-            suffix: ""
-            archive: tar.gz
-          - goos: darwin
-            goarch: amd64
-            suffix: ""
-            archive: tar.gz
-          - goos: darwin
-            goarch: arm64
-            suffix: ""
-            archive: tar.gz
-          - goos: windows
-            goarch: amd64
-            suffix: ".exe"
-            archive: zip
-          - goos: windows
-            goarch: arm64
-            suffix: ".exe"
-            archive: zip
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ needs.prepare.outputs.tag }}
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version: "1.26.x"
-          check-latest: true
-
-      - name: Install and build WebUI
-        run: make web-ci-install web-build
-
-      - name: Build binary
-        run: make build-os OS=${{ matrix.goos }} ARCH=${{ matrix.goarch }} VERSION=${{ needs.prepare.outputs.version }}
-
-      - name: Package release archive
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="${{ needs.prepare.outputs.version }}"
-          name="tinysync_${version}_${{ matrix.goos }}_${{ matrix.goarch }}"
-          source="dist/tinysync_${{ matrix.goos }}_${{ matrix.goarch }}${{ matrix.suffix }}"
-          package_dir="release/${name}"
-
-          mkdir -p "${package_dir}"
-          cp "${source}" "${package_dir}/tinysync${{ matrix.suffix }}"
-          cp README.md LICENSE "${package_dir}/"
-
-          if [[ "${{ matrix.archive }}" == "zip" ]]; then
-            archive="${GITHUB_WORKSPACE}/release/${name}.zip"
-            (cd "${package_dir}" && zip -qr "${archive}" .)
-          else
-            archive="${GITHUB_WORKSPACE}/release/${name}.tar.gz"
-            tar -C "${package_dir}" -czf "${archive}" .
-          fi
-
-          rm -rf "${package_dir}"
-
-      # 参考 m2h：发行档镜像到 WebDAV（按版本目录），附带逐文件 .sha256；
-      # 镜像失败不阻断发布（GitHub Release 仍是权威分发渠道）。
-      - name: Generate archive checksum
-        shell: bash
-        run: |
-          set -euo pipefail
-          archive="${GITHUB_WORKSPACE}/release/tinysync_${{ needs.prepare.outputs.version }}_${{ matrix.goos }}_${{ matrix.goarch }}.${{ matrix.archive }}"
-          sha256sum "${archive}" > "${archive}.sha256"
-
-      - name: Upload archive and checksum to WebDAV
-        continue-on-error: true
-        uses: bxb100/action-upload-webdav@v1
-        with:
-          webdav_address: ${{ secrets.WEBDAV_SERVER }}
-          webdav_username: ${{ secrets.WEBDAV_USERNAME }}
-          webdav_password: ${{ secrets.WEBDAV_PASSWORD }}
-          webdav_upload_path: "/Shares/github/${{ github.repository }}/${{ needs.prepare.outputs.version }}"
-          files: |
-            release/tinysync_${{ needs.prepare.outputs.version }}_${{ matrix.goos }}_${{ matrix.goarch }}.${{ matrix.archive }}
-            release/tinysync_${{ needs.prepare.outputs.version }}_${{ matrix.goos }}_${{ matrix.goarch }}.${{ matrix.archive }}.sha256
-
-      # GitHub Release artifact 只含发行档本体（.sha256 仅供 WebDAV）；
-      # Release 侧统一使用 publish 生成的 checksums.txt。
-      - name: Upload release artifact
-        uses: actions/upload-artifact@v6
-        with:
-          name: tinysync-release-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: |
-            release/*.tar.gz
-            release/*.zip
-          if-no-files-found: error
-
   smoke:
     name: Smoke ${{ matrix.os }}
-    needs: [prepare, test]
+    needs: prepare
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -260,9 +145,10 @@ jobs:
           go-version: "1.26.x"
           check-latest: true
 
-      # Build 验证 commit，Release 验证 tag + 发布版本注入：两者测试对象
-      # 不完全一样（例如 release ldflags 路径错误普通构建发现不了），
-      # 因此发布阶段重新执行三平台原生 Smoke。
+      # 六平台 cross-build 验证"能编译"，三平台原生 Smoke 验证
+      # "三类 OS 上真实可执行"：两个不同验证维度。Release 阶段重新
+      # 执行，覆盖发布版本注入（例如 release ldflags 路径错误普通
+      # 构建发现不了）。
       - name: Build native binary
         shell: bash
         run: |
@@ -283,66 +169,87 @@ jobs:
           bash scripts/smoke.sh "${binary}" '${{ needs.prepare.outputs.version }}'
 
   publish:
-    name: Publish GitHub Release
-    needs: [prepare, test, build, smoke]
+    name: Publish GitHub Release and WebDAV mirror
+    needs: [prepare, test, smoke]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
           ref: ${{ needs.prepare.outputs.tag }}
 
-      - name: Download release artifacts
-        uses: actions/download-artifact@v6
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
         with:
-          pattern: tinysync-release-*
-          path: release-assets
-          merge-multiple: true
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
 
-      - name: Download release notes
-        uses: actions/download-artifact@v6
+      - name: Set up Go
+        uses: actions/setup-go@v6
         with:
-          name: release-notes
-          path: release-notes
+          go-version: "1.26.x"
+          check-latest: true
 
-      # 统一 checksums.txt（6 archives + checksums.txt），而不是每个
-      # 文件一个 .sha256。
-      - name: Generate checksums
+      # CGO_ENABLED=0 允许在单一 Ubuntu runner 一次性 cross-build
+      # 六平台并生成发行档 + checksums.txt（Makefile 是打包唯一实现）。
+      - name: Install WebUI dependencies
+        run: make web-ci-install
+
+      - name: Build and package six platforms
+        run: make dist VERSION=${{ needs.prepare.outputs.version }}
+
+      # publish 已 checkout 当前 tag，直接从 CHANGELOG 提取发布说明。
+      - name: Extract release notes
         shell: bash
-        run: |
-          set -euo pipefail
-          cd release-assets
-          : > "${GITHUB_WORKSPACE}/release-assets/checksums.txt"
-          for file in *.tar.gz *.zip; do
-            [ -f "${file}" ] || continue
-            if command -v sha256sum >/dev/null 2>&1; then
-              sha256sum "${file}" >> "${GITHUB_WORKSPACE}/release-assets/checksums.txt"
-            else
-              shasum -a 256 "${file}" >> "${GITHUB_WORKSPACE}/release-assets/checksums.txt"
-            fi
-          done
-          cat "${GITHUB_WORKSPACE}/release-assets/checksums.txt"
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: bash scripts/release-notes.sh "${VERSION}" > release-notes.md
 
       # 幂等发布：Release 已存在时 upload --clobber + 覆盖 notes，
       # 否则创建；支持 workflow_dispatch 重跑补救失败的发布。
+      # GitHub Release 只含 6 archives + checksums.txt（逐文件
+      # .sha256 仅供 WebDAV / 本地 dist）。
       - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.prepare.outputs.tag }}
         shell: bash
         run: |
+          assets=(dist/*.tar.gz dist/*.zip dist/checksums.txt)
           if gh release view "${TAG}" >/dev/null 2>&1; then
-            gh release upload "${TAG}" release-assets/* --clobber
-            gh release edit "${TAG}" --title "${TAG}" --notes-file release-notes/release-notes.md
+            gh release upload "${TAG}" "${assets[@]}" --clobber
+            gh release edit "${TAG}" --title "${TAG}" --notes-file release-notes.md
           else
-            gh release create "${TAG}" release-assets/* \
+            gh release create "${TAG}" "${assets[@]}" \
               --verify-tag \
               --title "${TAG}" \
-              --notes-file release-notes/release-notes.md
+              --notes-file release-notes.md
           fi
+
+      # WebDAV 只在 GitHub Release 成功后镜像完整正式版本，避免
+      # build 中途失败留下"半发行版本"目录；镜像失败不阻断发布
+      # （GitHub Release 始终是权威分发渠道）。
+      - name: Mirror release to WebDAV
+        continue-on-error: true
+        # pin 到 v1 分支当前 commit，避免 floating tag 行为漂移。
+        uses: bxb100/action-upload-webdav@d19f1edf785abf4b0b7f818ba46b6dba9b0334c6 # v1
+        with:
+          webdav_address: ${{ secrets.WEBDAV_SERVER }}
+          webdav_username: ${{ secrets.WEBDAV_USERNAME }}
+          webdav_password: ${{ secrets.WEBDAV_PASSWORD }}
+          webdav_upload_path: "/Shares/github/${{ github.repository }}/${{ needs.prepare.outputs.version }}"
+          files: |
+            dist/tinysync_${{ needs.prepare.outputs.version }}_linux_amd64.tar.gz
+            dist/tinysync_${{ needs.prepare.outputs.version }}_linux_arm64.tar.gz
+            dist/tinysync_${{ needs.prepare.outputs.version }}_darwin_amd64.tar.gz
+            dist/tinysync_${{ needs.prepare.outputs.version }}_darwin_arm64.tar.gz
+            dist/tinysync_${{ needs.prepare.outputs.version }}_windows_amd64.zip
+            dist/tinysync_${{ needs.prepare.outputs.version }}_windows_arm64.zip
+            dist/checksums.txt
 
   notify:
     name: Pushover notification
-    needs: [prepare, test, build, smoke, publish]
+    needs: [prepare, test, smoke, publish]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -358,10 +265,9 @@ jobs:
           fi
 
           TEST_RESULT="${{ needs.test.result }}"
-          BUILD_RESULT="${{ needs.build.result }}"
           SMOKE_RESULT="${{ needs.smoke.result }}"
           PUBLISH_RESULT="${{ needs.publish.result }}"
-          if [[ "${TEST_RESULT}" == "success" && "${BUILD_RESULT}" == "success" && "${SMOKE_RESULT}" == "success" && "${PUBLISH_RESULT}" == "success" ]]; then
+          if [[ "${TEST_RESULT}" == "success" && "${SMOKE_RESULT}" == "success" && "${PUBLISH_RESULT}" == "success" ]]; then
             PRIORITY="0"
             TITLE="TinySync 发布成功"
           else
@@ -372,7 +278,6 @@ jobs:
           MESSAGE=$(cat <<EOF
           <b>TinySync 发布通知</b>
           <u>测试结果</u>: ${TEST_RESULT}
-          <u>构建结果</u>: ${BUILD_RESULT}
           <u>三平台 Smoke</u>: ${SMOKE_RESULT}
           <u>GitHub Release</u>: ${PUBLISH_RESULT}
           <u>版本</u>: <font color="#0000ff">${RELEASE_TAG}</font>
