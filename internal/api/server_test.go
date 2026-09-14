@@ -66,7 +66,7 @@ func TestVersionEndpoint(t *testing.T) {
 func TestUnknownAPIPathReturns404(t *testing.T) {
 	for _, path := range []string{
 		"/api/v1/not-found",
-		"/api/v1/sources",
+		"/api/v1/jobs",
 		"/api/v1/health/extra",
 	} {
 		rec := httptest.NewRecorder()

@@ -32,6 +32,7 @@ func NewRouter(webFS fs.FS, deps Dependencies) *gin.Engine {
 	{
 		api.GET("/health", handleHealth)
 		api.GET("/version", handleVersion)
+		registerSourceRoutes(api, deps.Sources)
 	}
 	router.NoRoute(handleWeb(webFS))
 	return router
