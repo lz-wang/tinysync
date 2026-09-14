@@ -5,10 +5,11 @@
 .DEFAULT_GOAL := help
 
 .PHONY: \
-	build build-all build-os dist \
+	build build-all build-os package-os dist \
 	test coverage check format setup clean version help ci \
 	web-install web-ci-install web-lint web-typecheck web-build web-format \
-	_build-platform _install-go-tools _check-go-format _check-go-mod
+	_build-platform _package-platform _check-platform \
+	_install-go-tools _check-go-format _check-go-mod
 
 BINARY_NAME := tinysync
 MAIN_PATH := .
@@ -92,9 +93,17 @@ build-all: web-build
 build-os: web-build
 	@$(MAKE) --no-print-directory _build-platform OS="$(OS)" ARCH="$(ARCH)"
 
-_build-platform:
+## Package one platform: web build -> cross build -> archive -> sha256.
+## Usage: make package-os OS=linux ARCH=amd64 [VERSION=x.y.z]
+## 输出 dist/tinysync_$(VERSION)_$(OS)_$(ARCH).tar.gz|.zip 及同名 .sha256
+## （checksum 文件内容只含文件名，可直接 sha256sum -c 校验）。
+package-os: web-build
+	@$(MAKE) --no-print-directory _build-platform OS="$(OS)" ARCH="$(ARCH)"
+	@$(MAKE) --no-print-directory _package-platform OS="$(OS)" ARCH="$(ARCH)"
+
+_check-platform:
 	@if [ -z "$(OS)" ] || [ -z "$(ARCH)" ]; then \
-		echo "Usage: make build-os OS=linux ARCH=amd64"; \
+		echo "Usage: make build-os|package-os OS=linux ARCH=amd64"; \
 		exit 2; \
 	fi
 	@target="$(OS)/$(ARCH)"; \
@@ -105,6 +114,8 @@ _build-platform:
 			exit 2; \
 			;; \
 	esac
+
+_build-platform: _check-platform
 	@mkdir -p "$(DIST_DIR)"
 	@ext=""; \
 	if [ "$(OS)" = "windows" ]; then ext=".exe"; fi; \
@@ -118,44 +129,60 @@ _build-platform:
 			-o "$$output" \
 			$(MAIN_PATH)
 
-## Create six distribution archives and checksums.txt in dist/.
-dist: clean build-all
+# _package-platform 把 _build-platform 产出的裸二进制打包为发行档
+# （内含 tinysync + README + LICENSE），并生成内容只有文件名的 .sha256，
+# 供用户在下载目录直接 sha256sum -c 校验。仅供 package-os / dist 内部
+# 复用，依赖它们先完成 web build 与跨平台编译。
+_package-platform: _check-platform
+	@set -eu; \
+	os="$(OS)"; arch="$(ARCH)"; \
+	ext=""; \
+	if [ "$$os" = "windows" ]; then ext=".exe"; fi; \
+	binary="$(DIST_DIR)/$(BINARY_NAME)_$${os}_$${arch}$$ext"; \
+	[ -f "$$binary" ] || { echo "Error: $$binary not found; run build-os/package-os first"; exit 2; }; \
+	name="$(BINARY_NAME)_$(TINYSYNC_VERSION)_$${os}_$${arch}"; \
+	stage="$(DIST_DIR)/.stage/$$name"; \
+	mkdir -p "$$stage"; \
+	cp "$$binary" "$$stage/$(BINARY_NAME)$$ext"; \
+	cp README.md LICENSE "$$stage/"; \
+	if [ "$$os" = "windows" ]; then \
+		archive="$$name.zip"; \
+		(cd "$$stage" && $(ZIP) -qr "$(CURDIR)/$(DIST_DIR)/$$archive" .); \
+	else \
+		archive="$$name.tar.gz"; \
+		$(TAR) -C "$$stage" -czf "$(DIST_DIR)/$$archive" .; \
+	fi; \
+	rm -rf "$$stage"; \
+	sha_tool=""; \
+	if command -v sha256sum >/dev/null 2>&1; then sha_tool="sha256sum"; \
+	elif command -v shasum >/dev/null 2>&1; then sha_tool="shasum -a 256"; fi; \
+	[ -n "$$sha_tool" ] || { echo "Error: sha256sum or shasum is required"; exit 2; }; \
+	cd "$(DIST_DIR)" && $$sha_tool "$$archive" > "$$archive.sha256"; \
+	echo "[tinysync] package $${os}/$${arch} -> $(DIST_DIR)/$$archive"
+
+## Create six distribution archives, per-file .sha256 and checksums.txt in dist/.
+dist: clean web-build
 	@command -v "$(TAR)" >/dev/null 2>&1 || { echo "Error: tar is required"; exit 2; }
 	@command -v "$(ZIP)" >/dev/null 2>&1 || { echo "Error: zip is required"; exit 2; }
-	@if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then \
-		echo "Error: sha256sum or shasum is required"; \
-		exit 2; \
-	fi
 	@set -eu; \
-	stage="$(DIST_DIR)/.stage"; \
-	mkdir -p "$$stage"; \
 	for platform in $(PLATFORMS); do \
 		os=$${platform%/*}; \
 		arch=$${platform#*/}; \
+		$(MAKE) --no-print-directory _build-platform OS="$$os" ARCH="$$arch"; \
+		$(MAKE) --no-print-directory _package-platform OS="$$os" ARCH="$$arch"; \
 		ext=""; \
 		if [ "$$os" = "windows" ]; then ext=".exe"; fi; \
-		binary="$(DIST_DIR)/$(BINARY_NAME)_$${os}_$${arch}$$ext"; \
-		name="$(BINARY_NAME)_$(TINYSYNC_VERSION)_$${os}_$${arch}"; \
-		package_dir="$$stage/$$name"; \
-		mkdir -p "$$package_dir"; \
-		cp "$$binary" "$$package_dir/$(BINARY_NAME)$$ext"; \
-		cp README.md LICENSE "$$package_dir/"; \
-		if [ "$$os" = "windows" ]; then \
-			(cd "$$package_dir" && $(ZIP) -qr "$(CURDIR)/$(DIST_DIR)/$$name.zip" .); \
-		else \
-			$(TAR) -C "$$package_dir" -czf "$(DIST_DIR)/$$name.tar.gz" .; \
-		fi; \
-		rm -f "$$binary"; \
+		rm -f "$(DIST_DIR)/$(BINARY_NAME)_$${os}_$${arch}$$ext"; \
 	done; \
-	rm -rf "$$stage"
+	rm -rf "$(DIST_DIR)/.stage"
 	@cd "$(DIST_DIR)" && { \
+		sha_tool=""; \
+		if command -v sha256sum >/dev/null 2>&1; then sha_tool="sha256sum"; \
+		elif command -v shasum >/dev/null 2>&1; then sha_tool="shasum -a 256"; fi; \
+		[ -n "$$sha_tool" ] || { echo "Error: sha256sum or shasum is required"; exit 2; }; \
 		for file in *.tar.gz *.zip; do \
 			[ -f "$$file" ] || continue; \
-			if command -v sha256sum >/dev/null 2>&1; then \
-				sha256sum "$$file"; \
-			else \
-				shasum -a 256 "$$file"; \
-			fi; \
+			$$sha_tool "$$file"; \
 		done; \
 	} > "checksums.txt"
 	@echo "[tinysync] distributions -> $(DIST_DIR)/"
@@ -286,7 +313,8 @@ help:
 	@echo "Distribution:"
 	@echo "  make build-all      Cross-compile six platform binaries to dist/"
 	@echo "  make build-os       Build one platform with OS= and ARCH="
-	@echo "  make dist           Create six archives and checksums.txt"
+	@echo "  make package-os     Package one platform archive with OS= and ARCH="
+	@echo "  make dist           Create six archives, .sha256 and checksums.txt"
 	@echo ""
 	@echo "Maintenance:"
 	@echo "  make clean          Remove generated files"
