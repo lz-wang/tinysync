@@ -23,13 +23,17 @@ GitHub Release 摘要一致。
 
 ### 新增
 
-- 支持持久化管理 WebDAV Source。
-- 提供 WebDAV Source 的 REST API 与 Web 管理界面。
-- 支持验证 WebDAV Source 连接状态。
-
 ### 修复
 
 ### 移除
+
+## [0.2.0] - 2026-09-15
+
+### 新增
+
+- 支持持久化管理 WebDAV Source。
+- 提供 WebDAV Source 的 REST API 与 Web 管理界面。
+- 支持验证 WebDAV Source 连接状态。
 
 ## [0.1.0] - 2026-09-14
 
