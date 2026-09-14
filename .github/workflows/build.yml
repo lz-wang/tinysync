@@ -17,6 +17,10 @@ concurrency:
 permissions:
   contents: read
 
+# 双保险：顶层禁用 CGO，与 Makefile $(GOENV) 的全工程约束一致。
+env:
+  CGO_ENABLED: "0"
+
 jobs:
   prepare:
     name: Resolve version
@@ -195,7 +199,7 @@ jobs:
           npm run build --prefix web
           binary="tinysync"
           if [[ "${RUNNER_OS}" == "Windows" ]]; then binary="tinysync.exe"; fi
-          go build -tags webui -trimpath -buildvcs=false \
+          CGO_ENABLED=0 go build -tags webui -trimpath -buildvcs=false \
             -ldflags "-X tinysync/internal/buildinfo.Version=${{ needs.prepare.outputs.version }}" \
             -o "${binary}" .
 

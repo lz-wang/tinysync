@@ -19,6 +19,10 @@ BACKEND_COVERAGE := $(COVERAGE_DIR)/backend.out
 BACKEND_COVERAGE_HTML := $(COVERAGE_DIR)/backend.html
 
 GO := go
+# 全工程硬约束：禁止 CGO。所有 Go 编译/分析命令必须经过 $(GOENV)，
+# 保证误引入 cgo 依赖（如 mattn/go-sqlite3）在 make test 阶段即暴露，
+# 而不是等 cross-build 才发现。
+GOENV ?= CGO_ENABLED=0
 NPM := npm
 TAR := tar
 ZIP := zip
@@ -68,7 +72,7 @@ HOST_BINARY := $(BINARY_NAME)$(HOST_GOEXE)
 ## Build tinysync for the current platform; depends on web-build.
 build: web-build
 	@echo "[tinysync] build $(TINYSYNC_VERSION) -> ./$(HOST_BINARY)"
-	@CGO_ENABLED=0 $(GO) build \
+	@$(GOENV) $(GO) build \
 		-tags webui \
 		$(GO_BUILD_FLAGS) \
 		-ldflags "$(GO_LDFLAGS)" \
@@ -106,7 +110,7 @@ _build-platform:
 	if [ "$(OS)" = "windows" ]; then ext=".exe"; fi; \
 	output="$(DIST_DIR)/$(BINARY_NAME)_$(OS)_$(ARCH)$$ext"; \
 	echo "[tinysync] build $(OS)/$(ARCH) -> $$output"; \
-	CGO_ENABLED=0 GOOS="$(OS)" GOARCH="$(ARCH)" \
+	$(GOENV) GOOS="$(OS)" GOARCH="$(ARCH)" \
 		$(GO) build \
 			-tags webui \
 			$(GO_BUILD_FLAGS) \
@@ -159,12 +163,12 @@ dist: clean build-all
 ## Run Go tests.
 test:
 	@echo "[tinysync] test Go"
-	@$(GO) test -timeout 30s ./...
+	@$(GOENV) $(GO) test -timeout 30s ./...
 
 ## Generate backend coverage files for Codecov and local inspection.
 coverage:
 	@mkdir -p "$(COVERAGE_DIR)"
-	@CGO_ENABLED=0 $(GO) test \
+	@$(GOENV) $(GO) test \
 		-timeout 30s \
 		-covermode=atomic \
 		-coverprofile="$(BACKEND_COVERAGE)" \
@@ -176,7 +180,7 @@ coverage:
 
 ## Run read-only static checks and tests.
 check: _check-go-format _check-go-mod
-	@$(GO) vet ./...
+	@$(GOENV) $(GO) vet ./...
 	@$(MAKE) --no-print-directory web-lint
 	@$(MAKE) --no-print-directory web-typecheck
 	@$(MAKE) --no-print-directory test
