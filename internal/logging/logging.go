@@ -7,13 +7,13 @@
 //
 // 输出为易读的单行纯文本（非 JSON），格式：
 //
-//	2026-09-14 21:24:26 INFO   tinysync ready, listening on :9466
+//		2026-09-14 21:24:26 INFO   tinysync ready, listening on :9466
 //
-//   - 时间：2006-01-02 15:04:05；级别大写、固定 6 字符宽左对齐，消息列对齐
-//   - 双 sink 不同级别阈值：stderr 仅写 INFO 及以上（debug 不进控制台），
-//     日志文件写 DEBUG 及以上（debug 只落盘）；dataDir 为空或目录不可写时
-//     降级为仅 stderr，保证日志不丢
-//   - 禁用 caller/stacktrace，确保始终单行
+//	  - 时间：2006-01-02 15:04:05；级别大写、固定 6 字符宽左对齐，消息列对齐
+//	  - 双 sink 不同级别阈值：stderr 仅写 INFO 及以上（debug 不进控制台），
+//	    日志文件写 DEBUG 及以上（debug 只落盘）；dataDir 为空或目录不可写时
+//	    降级为仅 stderr，保证日志不丢
+//	  - 禁用 caller/stacktrace，确保始终单行
 //
 // 包级初始化为写向 stderr 的默认实例，未调用 Init（如测试）也始终可用。
 package logging
@@ -74,8 +74,11 @@ func Init(dataDir string) {
 // ---- 包级日志函数：各处直接调用即可 ----
 
 func Debugf(format string, args ...any) { sugar.Debugf(format, args...) }
-func Infof(format string, args ...any)  { sugar.Infof(format, args...) }
-func Warnf(format string, args ...any)  { sugar.Warnf(format, args...) }
+
+func Infof(format string, args ...any) { sugar.Infof(format, args...) }
+
+func Warnf(format string, args ...any) { sugar.Warnf(format, args...) }
+
 func Errorf(format string, args ...any) { sugar.Errorf(format, args...) }
 
 // Sync 刷新底层缓冲；程序退出前调用。

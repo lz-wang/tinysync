@@ -27,7 +27,7 @@ type Server struct {
 func NewServer(cfg *config.Config, webFS fs.FS) *Server {
 	return &Server{
 		httpServer: &http.Server{
-			Addr: cfg.ListenAddr(),
+			Addr:    cfg.ListenAddr(),
 			Handler: NewRouter(webFS),
 			// 硬化常驻服务：防止慢速头部与闲置连接无限占用。
 			ReadHeaderTimeout: 5 * time.Second,
