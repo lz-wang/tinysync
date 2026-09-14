@@ -85,9 +85,19 @@ export default function SourcesPage() {
         }
     }
 
-    function handleSaved() {
+    function handleSaved(saved: SourceResponse) {
         setDialogOpen(false)
         setEditing(null)
+        // Source 配置已变化（endpoint / username / password），旧的连接
+        // 测试结果不再有效，恢复为 Not tested。
+        setTestStates(prev => {
+            if (!(saved.id in prev)) {
+                return prev
+            }
+            const next = { ...prev }
+            delete next[saved.id]
+            return next
+        })
         reload()
             .then(() => setLoadError(null))
             .catch((e: unknown) => setLoadError(e instanceof Error ? e.message : String(e)))
@@ -96,6 +106,14 @@ export default function SourcesPage() {
     function handleDeleted(id: string) {
         setDeleting(null)
         setSources(prev => (prev === null ? prev : prev.filter(s => s.id !== id)))
+        setTestStates(prev => {
+            if (!(id in prev)) {
+                return prev
+            }
+            const next = { ...prev }
+            delete next[id]
+            return next
+        })
     }
 
     return (
@@ -124,9 +142,9 @@ export default function SourcesPage() {
                             </Button>
                         </Box>
                         {loadError !== null && <Alert severity="error">{loadError}</Alert>}
-                        {sources === null ? (
+                        {sources === null && loadError === null ? (
                             <CircularProgress size={24} aria-label="加载中" />
-                        ) : (
+                        ) : sources !== null ? (
                             <SourceTable
                                 sources={sources}
                                 testStates={testStates}
@@ -137,7 +155,7 @@ export default function SourcesPage() {
                                 }}
                                 onDelete={source => setDeleting(source)}
                             />
-                        )}
+                        ) : null}
                     </Stack>
                 </CardContent>
             </Card>
