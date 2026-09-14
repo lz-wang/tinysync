@@ -8,7 +8,11 @@
 #	3. 启动 tinysync serve（临时 datadir、独立端口）
 #	4. GET /api/v1/health 轮询至就绪且 "status":"ok"
 #	5. GET / 返回 WebUI（<title>TinySync</title>）
-#	6. SIGTERM 优雅退出（Windows 为强制清理）
+#	6. POST /api/v1/sources 创建 WebDAV Source，响应不含密码明文
+#	7. GET /api/v1/sources 列表可见且同样不含密码，tinysync.db 已创建
+#	8. 关闭进程并以同一 datadir 重启
+#	9. GET /api/v1/sources/:id 确认 Source（含密码标志）跨重启持久化
+#	10. SIGTERM 优雅退出（Windows 为强制清理）
 #
 # 接口：scripts/smoke.sh <binary> <expected-version>
 
@@ -29,7 +33,10 @@ fi
 binary_dir=$(cd "$(dirname "${binary_input}")" && pwd -P)
 binary="${binary_dir}/$(basename "${binary_input}")"
 smoke_root=$(mktemp -d)
+datadir="${smoke_root}/data"
 server_pid=""
+port=${TINYSYNC_SMOKE_PORT:-19466}
+base_url="http://127.0.0.1:${port}"
 
 cleanup() {
 	if [[ -n "${server_pid}" ]]; then
@@ -50,8 +57,44 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# 临时产物（serve.log / health.json / index.html）统一落在 smoke_root，
-# 不污染调用方目录；binary 已解析为绝对路径，cd 安全。
+# stop_server 关闭当前 serve 进程：POSIX 平台发 SIGTERM 并 wait 校验退出码；
+# Windows 的 Git Bash kill 对原生进程不可靠，交给 taskkill 强制清理
+# （WAL 模式下强杀不破坏已提交事务，重启校验可覆盖该场景）。
+stop_server() {
+	if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
+		taskkill.exe //IM "$(basename "${binary}")" //T //F >/dev/null 2>&1 || true
+		sleep 2
+	else
+		kill -TERM "${server_pid}" >/dev/null 2>&1
+		wait "${server_pid}" >/dev/null 2>&1
+		server_pid=""
+	fi
+}
+
+# start_server 以指定日志文件后台启动 serve。
+start_server() {
+	local log_file=$1
+	"${binary}" serve --datadir "${datadir}" --port "${port}" >"${log_file}" 2>&1 &
+	server_pid=$!
+}
+
+# wait_ready 轮询 /api/v1/health 直至就绪；失败时输出 serve 日志。
+wait_ready() {
+	local log_file=$1
+	for _ in {1..30}; do
+		if curl --fail --silent "${base_url}/api/v1/health" >health.json; then
+			grep -F '"status":"ok"' health.json >/dev/null
+			return 0
+		fi
+		sleep 1
+	done
+	echo "Error: server did not become ready" >&2
+	cat "${log_file}" >&2
+	exit 1
+}
+
+# 临时产物统一落在 smoke_root，不污染调用方目录；
+# binary 已解析为绝对路径，cd 安全。
 cd "${smoke_root}"
 
 # 1. --version 与预期一致（验证 ldflags 注入链路）。
@@ -70,34 +113,72 @@ if [[ "${sub_version}" != "${expected_version}" ]]; then
 fi
 echo "[smoke] version subcommand"
 
-# 3. 启动 serve：临时 datadir，避免污染工作目录。
-port=${TINYSYNC_SMOKE_PORT:-19466}
-"${binary}" serve --datadir "${smoke_root}/data" --port "${port}" >serve.log 2>&1 &
-server_pid=$!
-
-# 4. 轮询 /api/v1/health 直至就绪。
-ready=false
-for _ in {1..30}; do
-	if curl --fail --silent "http://127.0.0.1:${port}/api/v1/health" >health.json; then
-		ready=true
-		break
-	fi
-	sleep 1
-done
-if [[ "${ready}" != "true" ]]; then
-	echo "Error: server did not become ready" >&2
-	cat serve.log >&2
-	exit 1
-fi
-grep -F '"status":"ok"' health.json >/dev/null
+# 3-4. 启动 serve 并等待就绪（临时 datadir，避免污染工作目录）。
+start_server serve.log
+wait_ready serve.log
 echo "[smoke] health ok"
 
 # 5. WebUI 首页可访问且标题正确。
-curl --fail --silent "http://127.0.0.1:${port}/" >index.html
+curl --fail --silent "${base_url}/" >index.html
 grep -F '<title>TinySync</title>' index.html >/dev/null
 echo "[smoke] web"
 
-# 6. SIGTERM 优雅退出：POSIX 平台发 SIGTERM 并 wait 校验退出码（非 0 即失败）；
+# 6. POST /api/v1/sources：创建带密码的 WebDAV Source。
+#    不做真实连接测试（协议行为由 Go httptest 覆盖）；endpoint 仅需合法。
+curl --fail --silent \
+	-H 'Content-Type: application/json' \
+	--data '{"name":"Smoke Source","type":"webdav","endpoint":"http://127.0.0.1:1/dav","username":"smoke","password":"S3cret-Smoke"}' \
+	"${base_url}/api/v1/sources" >source.json
+grep -F '"password_set":true' source.json >/dev/null || {
+	echo "Error: source creation failed" >&2
+	cat source.json >&2
+	exit 1
+}
+if grep -F 'S3cret-Smoke' source.json >/dev/null; then
+	echo "Error: create response leaks password" >&2
+	exit 1
+fi
+if grep -F '"password"' source.json >/dev/null; then
+	echo "Error: create response contains password field" >&2
+	exit 1
+fi
+source_id=$(grep -o '"id":"src_[a-f0-9]*"' source.json | head -1 | cut -d '"' -f4)
+if [[ -z "${source_id}" ]]; then
+	echo "Error: no source id in response: $(cat source.json)" >&2
+	exit 1
+fi
+echo "[smoke] source created: ${source_id}"
+
+# 7. GET 列表可见该 Source 且不含密码；数据库文件已创建。
+curl --fail --silent "${base_url}/api/v1/sources" >sources.json
+grep -F "${source_id}" sources.json >/dev/null
+if grep -F 'S3cret-Smoke' sources.json >/dev/null; then
+	echo "Error: list response leaks password" >&2
+	exit 1
+fi
+if [[ ! -f "${datadir}/tinysync.db" ]]; then
+	echo "Error: ${datadir}/tinysync.db was not created" >&2
+	exit 1
+fi
+echo "[smoke] sources list ok, database file ok"
+
+# 8. 关闭进程并以同一 datadir 重启。
+stop_server
+start_server serve2.log
+wait_ready serve2.log
+echo "[smoke] server restarted"
+
+# 9. Source 跨重启持久化：字段与密码标志保持。
+curl --fail --silent "${base_url}/api/v1/sources/${source_id}" >source2.json
+grep -F '"name":"Smoke Source"' source2.json >/dev/null
+grep -F '"password_set":true' source2.json >/dev/null
+if grep -F 'S3cret-Smoke' source2.json >/dev/null; then
+	echo "Error: restarted response leaks password" >&2
+	exit 1
+fi
+echo "[smoke] source persisted across restart"
+
+# 10. SIGTERM 优雅退出：POSIX 平台发 SIGTERM 并 wait 校验退出码（非 0 即失败）；
 # Windows 的 Git Bash kill 对原生进程不可靠，保留 server_pid 交给 cleanup
 # 的 taskkill 强制清理。
 if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
