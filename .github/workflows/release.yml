@@ -1,0 +1,364 @@
+name: Release and Notify
+
+# Release = 发布"一个已经明确版本号的不可变 Git tag"。
+# 只由 tag push 或手动指定已有 tag 触发；普通 main push 永远不会走到这里。
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag, for example v0.1.0"
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    name: Validate release
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Validate tag and version
+        id: release
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${{ github.ref_name }}"
+          fi
+
+          # 第一阶段只接受稳定版本 vX.Y.Z；预发布需要时再扩展。
+          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Error: release tag must match vX.Y.Z: ${tag}"
+            exit 2
+          fi
+
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+
+      # 验证 1：Makefile 版本必须与 tag 一致，防止 checkout 的并不是
+      # tag commit 或版本逻辑出错。
+      - name: Validate Makefile version matches tag
+        shell: bash
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          actual="$(make version)"
+          expected="${TAG#v}"
+          if [[ "${actual}" != "${expected}" ]]; then
+            echo "Error: make version = ${actual}, expected ${expected} (tag commit mismatch?)"
+            exit 2
+          fi
+
+      # 验证 2：CHANGELOG 必须存在对应版本段，失败立即阻断，
+      # 而不是进入 publish 后才发现。
+      - name: Validate CHANGELOG section
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          notes="$(bash scripts/release-notes.sh "${VERSION}")"
+          if [[ -z "${notes//[$' \t\r\n']/}" ]]; then
+            echo "Error: CHANGELOG.md section [${VERSION}] is empty"
+            exit 2
+          fi
+          echo "${notes}" > release-notes.md
+
+      - name: Upload release notes
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-notes
+          path: release-notes.md
+          if-no-files-found: error
+
+  test:
+    name: Release checks
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+
+      # Release 只做发布验证，不再上传 Codecov：覆盖率属于持续集成
+      # 状态（build.yml），同一 commit 不因 tag 重复生成覆盖率报告。
+      - name: Run release checks
+        run: make ci
+
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: [prepare, test]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            suffix: ""
+            archive: tar.gz
+          - goos: linux
+            goarch: arm64
+            suffix: ""
+            archive: tar.gz
+          - goos: darwin
+            goarch: amd64
+            suffix: ""
+            archive: tar.gz
+          - goos: darwin
+            goarch: arm64
+            suffix: ""
+            archive: tar.gz
+          - goos: windows
+            goarch: amd64
+            suffix: ".exe"
+            archive: zip
+          - goos: windows
+            goarch: arm64
+            suffix: ".exe"
+            archive: zip
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+
+      - name: Install and build WebUI
+        run: make web-ci-install web-build
+
+      - name: Build binary
+        run: make build-os OS=${{ matrix.goos }} ARCH=${{ matrix.goarch }} VERSION=${{ needs.prepare.outputs.version }}
+
+      - name: Package release archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.prepare.outputs.version }}"
+          name="tinysync_${version}_${{ matrix.goos }}_${{ matrix.goarch }}"
+          source="dist/tinysync_${{ matrix.goos }}_${{ matrix.goarch }}${{ matrix.suffix }}"
+          package_dir="release/${name}"
+
+          mkdir -p "${package_dir}"
+          cp "${source}" "${package_dir}/tinysync${{ matrix.suffix }}"
+          cp README.md LICENSE "${package_dir}/"
+
+          if [[ "${{ matrix.archive }}" == "zip" ]]; then
+            archive="${GITHUB_WORKSPACE}/release/${name}.zip"
+            (cd "${package_dir}" && zip -qr "${archive}" .)
+          else
+            archive="${GITHUB_WORKSPACE}/release/${name}.tar.gz"
+            tar -C "${package_dir}" -czf "${archive}" .
+          fi
+
+          rm -rf "${package_dir}"
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: tinysync-release-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            release/*.tar.gz
+            release/*.zip
+          if-no-files-found: error
+
+  smoke:
+    name: Smoke ${{ matrix.os }}
+    needs: [prepare, test]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+
+      # Build 验证 commit，Release 验证 tag + 发布版本注入：两者测试对象
+      # 不完全一样（例如 release ldflags 路径错误普通构建发现不了），
+      # 因此发布阶段重新执行三平台原生 Smoke。
+      - name: Build native binary
+        shell: bash
+        run: |
+          npm ci --prefix web
+          npm run build --prefix web
+          binary="tinysync"
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then binary="tinysync.exe"; fi
+          go build -tags webui -trimpath -buildvcs=false \
+            -ldflags "-X tinysync/internal/buildinfo.Version=${{ needs.prepare.outputs.version }}" \
+            -o "${binary}" .
+
+      - name: Run native command smoke tests
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          binary="./tinysync"
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then binary="./tinysync.exe"; fi
+          bash scripts/smoke.sh "${binary}" '${{ needs.prepare.outputs.version }}'
+
+  publish:
+    name: Publish GitHub Release
+    needs: [prepare, test, build, smoke]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v6
+        with:
+          pattern: tinysync-release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Download release notes
+        uses: actions/download-artifact@v6
+        with:
+          name: release-notes
+          path: release-notes
+
+      # 统一 checksums.txt（6 archives + checksums.txt），而不是每个
+      # 文件一个 .sha256。
+      - name: Generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-assets
+          : > "${GITHUB_WORKSPACE}/release-assets/checksums.txt"
+          for file in *.tar.gz *.zip; do
+            [ -f "${file}" ] || continue
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "${file}" >> "${GITHUB_WORKSPACE}/release-assets/checksums.txt"
+            else
+              shasum -a 256 "${file}" >> "${GITHUB_WORKSPACE}/release-assets/checksums.txt"
+            fi
+          done
+          cat "${GITHUB_WORKSPACE}/release-assets/checksums.txt"
+
+      # 幂等发布：Release 已存在时 upload --clobber + 覆盖 notes，
+      # 否则创建；支持 workflow_dispatch 重跑补救失败的发布。
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        shell: bash
+        run: |
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" release-assets/* --clobber
+            gh release edit "${TAG}" --title "${TAG}" --notes-file release-notes/release-notes.md
+          else
+            gh release create "${TAG}" release-assets/* \
+              --verify-tag \
+              --title "${TAG}" \
+              --notes-file release-notes/release-notes.md
+          fi
+
+  notify:
+    name: Pushover notification
+    needs: [prepare, test, build, smoke, publish]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify via Pushover
+        env:
+          PUSHOVER_TOKEN: ${{ secrets.PUSHOVER_TOKEN }}
+          PUSHOVER_USER: ${{ secrets.PUSHOVER_USER }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag || github.ref_name }}
+        run: |
+          if [[ -z "${PUSHOVER_TOKEN}" || -z "${PUSHOVER_USER}" ]]; then
+            echo "Pushover secrets are not configured; skipping notification."
+            exit 0
+          fi
+
+          TEST_RESULT="${{ needs.test.result }}"
+          BUILD_RESULT="${{ needs.build.result }}"
+          SMOKE_RESULT="${{ needs.smoke.result }}"
+          PUBLISH_RESULT="${{ needs.publish.result }}"
+          if [[ "${TEST_RESULT}" == "success" && "${BUILD_RESULT}" == "success" && "${SMOKE_RESULT}" == "success" && "${PUBLISH_RESULT}" == "success" ]]; then
+            PRIORITY="0"
+            TITLE="TinySync 发布成功"
+          else
+            PRIORITY="1"
+            TITLE="TinySync 发布失败"
+          fi
+
+          MESSAGE=$(cat <<EOF
+          <b>TinySync 发布通知</b>
+          <u>测试结果</u>: ${TEST_RESULT}
+          <u>构建结果</u>: ${BUILD_RESULT}
+          <u>三平台 Smoke</u>: ${SMOKE_RESULT}
+          <u>GitHub Release</u>: ${PUBLISH_RESULT}
+          <u>版本</u>: <font color="#0000ff">${RELEASE_TAG}</font>
+          <u>触发人</u>: <i>${{ github.actor }}</i>
+          <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">查看运行详情</a>
+          <a href="${{ github.server_url }}/${{ github.repository }}/releases/tag/${RELEASE_TAG}">查看 GitHub Release</a>
+          EOF
+          )
+
+          curl -fsS https://api.pushover.net/1/messages.json \
+            --data-urlencode "token=${PUSHOVER_TOKEN}" \
+            --data-urlencode "user=${PUSHOVER_USER}" \
+            --data-urlencode "title=${TITLE}" \
+            --data-urlencode "priority=${PRIORITY}" \
+            --data-urlencode "html=1" \
+            --data-urlencode "message=${MESSAGE}"
