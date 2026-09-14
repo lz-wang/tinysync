@@ -19,7 +19,8 @@
         "@emotion/styled": "^11.14.1",
         "@mui/material": "^9.2.0",
         "react": "^19.2.8",
-        "react-dom": "^19.2.8"
+        "react-dom": "^19.2.8",
+        "react-router-dom": "^7.18.3"
     },
     "devDependencies": {
         "@biomejs/biome": "2.5.5",
