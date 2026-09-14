@@ -1,0 +1,220 @@
+name: Build and Notify
+
+# Build = 验证"当前代码是否健康"。tag 属于 release.yml，这里没有 tag trigger，
+# 也不生成 GitHub Release 与发行包（只上传裸 binary artifact）。
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+
+      # Makefile 是版本解析唯一实现，不在 workflow 里复制一套算法。
+      - name: Resolve version
+        id: version
+        run: echo "version=$(make version)" >> "$GITHUB_OUTPUT"
+
+  test:
+    name: Test and coverage
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+
+      - name: Run checks and tests
+        run: make ci
+
+      - name: Generate coverage
+        run: make coverage
+
+      # 测试失败应阻断 CI；Codecov SaaS 临时不可用不应阻断构建。
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage/backend.out
+          flags: backend
+          name: backend
+          fail_ci_if_error: false
+
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: [prepare, test]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            suffix: ""
+          - goos: linux
+            goarch: arm64
+            suffix: ""
+          - goos: darwin
+            goarch: amd64
+            suffix: ""
+          - goos: darwin
+            goarch: arm64
+            suffix: ""
+          - goos: windows
+            goarch: amd64
+            suffix: ".exe"
+          - goos: windows
+            goarch: arm64
+            suffix: ".exe"
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+
+      - name: Install and build WebUI
+        run: make web-ci-install web-build
+
+      - name: Build binary
+        run: make build-os OS=${{ matrix.goos }} ARCH=${{ matrix.goarch }} VERSION=${{ needs.prepare.outputs.version }}
+
+      # Build 只上传裸 binary，不打包发行档；发行档属于 release.yml。
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: tinysync_${{ needs.prepare.outputs.version }}_${{ matrix.goos }}_${{ matrix.goarch }}
+          path: dist/tinysync_${{ matrix.goos }}_${{ matrix.goarch }}${{ matrix.suffix }}
+          if-no-files-found: error
+
+  smoke:
+    name: Smoke ${{ matrix.os }}
+    needs: [prepare, test]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+
+      # 原生编译 + 原生执行：真正验证该平台可执行文件能启动并工作，
+      # 比"linux 上交叉编译出 exe"更有价值。
+      - name: Build native binary
+        shell: bash
+        run: |
+          npm ci --prefix web
+          npm run build --prefix web
+          binary="tinysync"
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then binary="tinysync.exe"; fi
+          go build -tags webui -trimpath -buildvcs=false \
+            -ldflags "-X tinysync/internal/buildinfo.Version=${{ needs.prepare.outputs.version }}" \
+            -o "${binary}" .
+
+      - name: Run native command smoke tests
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          binary="./tinysync"
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then binary="./tinysync.exe"; fi
+          bash scripts/smoke.sh "${binary}" '${{ needs.prepare.outputs.version }}'
+
+  notify:
+    name: Pushover notification
+    needs: [prepare, test, build, smoke]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify via Pushover
+        env:
+          PUSHOVER_TOKEN: ${{ secrets.PUSHOVER_TOKEN }}
+          PUSHOVER_USER: ${{ secrets.PUSHOVER_USER }}
+          HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+          CODECOV_REPORT_URL: ${{ format('https://app.codecov.io/gh/{0}/commit/{1}', github.repository, github.sha) }}
+        run: |
+          if [[ -z "${PUSHOVER_TOKEN}" || -z "${PUSHOVER_USER}" ]]; then
+            echo "Pushover secrets are not configured; skipping notification."
+            exit 0
+          fi
+
+          TEST_RESULT="${{ needs.test.result }}"
+          BUILD_RESULT="${{ needs.build.result }}"
+          SMOKE_RESULT="${{ needs.smoke.result }}"
+          if [[ "${TEST_RESULT}" == "success" && "${BUILD_RESULT}" == "success" && "${SMOKE_RESULT}" == "success" ]]; then
+            PRIORITY="0"
+            TITLE="TinySync 构建成功"
+          else
+            PRIORITY="1"
+            TITLE="TinySync 构建失败"
+          fi
+
+          MESSAGE=$(cat <<EOF
+          <b>TinySync 构建通知</b>
+          <u>测试结果</u>: ${TEST_RESULT}
+          <u>构建结果</u>: ${BUILD_RESULT}
+          <u>三平台 Smoke</u>: ${SMOKE_RESULT}
+          <u>版本</u>: <font color="#0000ff">${{ needs.prepare.outputs.version }}</font>
+          <u>分支</u>: <i>${{ github.ref_name }}</i>
+          <u>触发人</u>: <i>${{ github.actor }}</i>
+          <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">查看运行详情</a>
+          <a href="${CODECOV_REPORT_URL}">查看 Codecov 测试覆盖率报告</a>
+          <u>提交内容</u>:
+          ${HEAD_COMMIT_MESSAGE:-workflow_dispatch}
+          EOF
+          )
+
+          curl -fsS https://api.pushover.net/1/messages.json \
+            --data-urlencode "token=${PUSHOVER_TOKEN}" \
+            --data-urlencode "user=${PUSHOVER_USER}" \
+            --data-urlencode "title=${TITLE}" \
+            --data-urlencode "priority=${PRIORITY}" \
+            --data-urlencode "html=1" \
+            --data-urlencode "message=${MESSAGE}"

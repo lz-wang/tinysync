@@ -50,6 +50,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# 临时产物（serve.log / health.json / index.html）统一落在 smoke_root，
+# 不污染调用方目录；binary 已解析为绝对路径，cd 安全。
+cd "${smoke_root}"
+
 # 1. --version 与预期一致（验证 ldflags 注入链路）。
 actual_version=$("${binary}" --version)
 if [[ "${actual_version}" != "${expected_version}" ]]; then
