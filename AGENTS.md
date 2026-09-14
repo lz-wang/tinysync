@@ -51,5 +51,7 @@
 - `release.yml`（tag push / 手动指定 tag）发布"已明确版本号的不可变
   Git tag"：校验 tag 与 `make version` 一致、CHANGELOG 存在对应段落、
   六平台制品 + `checksums.txt`、三平台 Smoke、GitHub Release。
+- 两个 workflow 的构建产物都会镜像到 WebDAV（按版本目录，附逐文件
+  `.sha256`）；镜像失败不阻断 CI，GitHub Release 始终是权威分发渠道。
 - GitHub Release Notes 唯一来源是 `CHANGELOG.md` 对应版本段
   （经 `scripts/release-notes.sh` 提取）。

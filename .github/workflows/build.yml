@@ -1,7 +1,8 @@
 name: Build and Notify
 
 # Build = 验证"当前代码是否健康"。tag 属于 release.yml，这里没有 tag trigger，
-# 也不生成 GitHub Release 与发行包（只上传裸 binary artifact）。
+# 也不生成 GitHub Release；构建产物上传 Actions artifact 并镜像到 WebDAV
+# （HomeLab 内网获取开发版）。
 on:
   push:
     branches: ["main"]
@@ -77,21 +78,27 @@ jobs:
           - goos: linux
             goarch: amd64
             suffix: ""
+            archive: tar.gz
           - goos: linux
             goarch: arm64
             suffix: ""
+            archive: tar.gz
           - goos: darwin
             goarch: amd64
             suffix: ""
+            archive: tar.gz
           - goos: darwin
             goarch: arm64
             suffix: ""
+            archive: tar.gz
           - goos: windows
             goarch: amd64
             suffix: ".exe"
+            archive: zip
           - goos: windows
             goarch: arm64
             suffix: ".exe"
+            archive: zip
     steps:
       - uses: actions/checkout@v6
 
@@ -114,7 +121,40 @@ jobs:
       - name: Build binary
         run: make build-os OS=${{ matrix.goos }} ARCH=${{ matrix.goarch }} VERSION=${{ needs.prepare.outputs.version }}
 
-      # Build 只上传裸 binary，不打包发行档；发行档属于 release.yml。
+      # 参考 m2h：构建产物同时打包发行档镜像到 WebDAV（HomeLab 内网获取
+      # 开发版），按版本目录归档；镜像失败不阻断 CI。
+      - name: Package WebDAV archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.prepare.outputs.version }}"
+          name="tinysync_${version}_${{ matrix.goos }}_${{ matrix.goarch }}"
+          package_dir="release/${name}"
+          mkdir -p "${package_dir}"
+          cp "dist/tinysync_${{ matrix.goos }}_${{ matrix.goarch }}${{ matrix.suffix }}" "${package_dir}/tinysync${{ matrix.suffix }}"
+          cp README.md LICENSE "${package_dir}/"
+          if [[ "${{ matrix.archive }}" == "zip" ]]; then
+            archive="${GITHUB_WORKSPACE}/release/${name}.zip"
+            (cd "${package_dir}" && zip -qr "${archive}" .)
+          else
+            archive="${GITHUB_WORKSPACE}/release/${name}.tar.gz"
+            tar -C "${package_dir}" -czf "${archive}" .
+          fi
+          sha256sum "${archive}" > "${archive}.sha256"
+
+      - name: Upload archive and checksum to WebDAV
+        continue-on-error: true
+        uses: bxb100/action-upload-webdav@v1
+        with:
+          webdav_address: ${{ secrets.WEBDAV_SERVER }}
+          webdav_username: ${{ secrets.WEBDAV_USERNAME }}
+          webdav_password: ${{ secrets.WEBDAV_PASSWORD }}
+          webdav_upload_path: "/Shares/github/${{ github.repository }}/${{ needs.prepare.outputs.version }}"
+          files: |
+            release/tinysync_${{ needs.prepare.outputs.version }}_${{ matrix.goos }}_${{ matrix.goarch }}.${{ matrix.archive }}
+            release/tinysync_${{ needs.prepare.outputs.version }}_${{ matrix.goos }}_${{ matrix.goarch }}.${{ matrix.archive }}.sha256
+
+      # Build 同时上传裸 binary artifact，供 Actions 页面直接取用。
       - name: Upload binary artifact
         uses: actions/upload-artifact@v6
         with:

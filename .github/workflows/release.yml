@@ -198,6 +198,29 @@ jobs:
 
           rm -rf "${package_dir}"
 
+      # 参考 m2h：发行档镜像到 WebDAV（按版本目录），附带逐文件 .sha256；
+      # 镜像失败不阻断发布（GitHub Release 仍是权威分发渠道）。
+      - name: Generate archive checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="${GITHUB_WORKSPACE}/release/tinysync_${{ needs.prepare.outputs.version }}_${{ matrix.goos }}_${{ matrix.goarch }}.${{ matrix.archive }}"
+          sha256sum "${archive}" > "${archive}.sha256"
+
+      - name: Upload archive and checksum to WebDAV
+        continue-on-error: true
+        uses: bxb100/action-upload-webdav@v1
+        with:
+          webdav_address: ${{ secrets.WEBDAV_SERVER }}
+          webdav_username: ${{ secrets.WEBDAV_USERNAME }}
+          webdav_password: ${{ secrets.WEBDAV_PASSWORD }}
+          webdav_upload_path: "/Shares/github/${{ github.repository }}/${{ needs.prepare.outputs.version }}"
+          files: |
+            release/tinysync_${{ needs.prepare.outputs.version }}_${{ matrix.goos }}_${{ matrix.goarch }}.${{ matrix.archive }}
+            release/tinysync_${{ needs.prepare.outputs.version }}_${{ matrix.goos }}_${{ matrix.goarch }}.${{ matrix.archive }}.sha256
+
+      # GitHub Release artifact 只含发行档本体（.sha256 仅供 WebDAV）；
+      # Release 侧统一使用 publish 生成的 checksums.txt。
       - name: Upload release artifact
         uses: actions/upload-artifact@v6
         with:
