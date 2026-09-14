@@ -3,9 +3,11 @@ module tinysync
 go 1.26.0
 
 require (
+	github.com/emersion/go-webdav v0.7.0
 	github.com/gin-gonic/gin v1.12.0
 	github.com/urfave/cli/v3 v3.11.0
 	go.uber.org/zap v1.28.0
+	golang.org/x/net v0.51.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	modernc.org/sqlite v1.58.0
 )
@@ -41,7 +43,6 @@ require (
 	go.uber.org/multierr v1.10.0 // indirect
 	golang.org/x/arch v0.22.0 // indirect
 	golang.org/x/crypto v0.48.0 // indirect
-	golang.org/x/net v0.51.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
 	google.golang.org/protobuf v1.36.10 // indirect
