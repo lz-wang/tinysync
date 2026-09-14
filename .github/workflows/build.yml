@@ -114,8 +114,8 @@ jobs:
           go-version: "1.26.x"
           check-latest: true
 
-      - name: Install and build WebUI
-        run: make web-ci-install web-build
+      - name: Install WebUI dependencies
+        run: make web-ci-install
 
       # PR 的职责只是验证"能不能构建"：不打包、不上传。
       - name: Build binary
