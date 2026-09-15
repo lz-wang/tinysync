@@ -221,7 +221,7 @@ func (r *ManagedRepository) Upsert(ctx context.Context, files []syncjob.ManagedF
 					local_mtime_ns = excluded.local_mtime_ns,
 					updated_at = excluded.updated_at`,
 				f.JobID, f.RemotePath, f.LocalRelPath, string(f.State),
-				f.Remote.Size, nullInt64(f.Remote.ModifiedAt.UnixNano()), f.Remote.ETag,
+				f.Remote.Size, nullTime(f.Remote.ModifiedAt), f.Remote.ETag,
 				f.Remote.Checksum, f.Remote.Version,
 				f.LocalSize, f.LocalMtimeNs, f.UpdatedAt.UnixMilli(),
 			)
@@ -406,9 +406,14 @@ func boolToInt(b bool) int {
 	return 0
 }
 
-// nullInt64 把零时间以外的值转为非 NULL 存储。
-func nullInt64(v int64) sql.NullInt64 {
-	return sql.NullInt64{Int64: v, Valid: true}
+// nullTime 把时间转为可空列：零值时间存 NULL，避免把 time.Time{}
+// 的 UnixNano（负的巨大伪时间戳）写进 remote_mtime_ns；读回时
+// NULL 归一为零值时间，语义对称。
+func nullTime(t time.Time) sql.NullInt64 {
+	if t.IsZero() {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: t.UnixNano(), Valid: true}
 }
 
 // nullableInt64 把 NULL 转为 nil 指针。

@@ -44,6 +44,11 @@ GitHub Release 摘要一致。
 - 修复非根 RemoteRoot 之下远端返回 Source 根路径时可能越界扫描的问题。
 - 同步运行期间以 `409` 拒绝对该 Job 的修改与删除；Web 界面同步禁用
   对应按钮，避免传输与配置变更交叉产生状态竞争。
+- 创建 / 更新 Job 时即时校验 include / exclude pattern，非法 pattern
+  直接拒绝，不再留到首次运行时才失败。
+- 被 Sync Job 引用的 Source 现以 `409` 拒绝修改 endpoint，防止更换
+  远端后 Mirror 把既有本地文件误判为远端消失而删除；更换远端请新建
+  Source 后切换 Job。
 
 ### 移除
 

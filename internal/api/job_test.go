@@ -442,6 +442,45 @@ func TestJobRunningRejectsUpdateAndDeleteAPI(t *testing.T) {
 	}
 }
 
+// 被 Job 引用的 Source 拒绝修改 endpoint（409）：新 endpoint 可能指向
+// 另一个合法远端，Mirror 下轮会把既有 managed 文件全部误判为远端消失。
+// 同值 PATCH 与改名不受影响；解除引用后可改。
+func TestSourceEndpointChangeGuardAPI(t *testing.T) {
+	router := newJobRouter(t, fakeJobRemote{})
+	sourceID := createSourceViaAPI(t, router, "InUse", true)
+	payload, _ := jobPayload(t, "Holder", sourceID, "mirror", true)
+	rec := doJSON(t, router, "POST", "/api/v1/jobs", payload)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create job status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	rec = doJSON(t, router, "PATCH", "/api/v1/sources/"+sourceID, `{"endpoint": "https://other.example.com/dav"}`)
+	if rec.Code != http.StatusConflict {
+		t.Errorf("endpoint change on referenced source = %d %s, want 409", rec.Code, rec.Body.String())
+	}
+
+	// 同值 PATCH（幂等更新）允许。
+	rec = doJSON(t, router, "PATCH", "/api/v1/sources/"+sourceID, `{"endpoint": "https://dav.example.com"}`)
+	if rec.Code != http.StatusOK {
+		t.Errorf("same-endpoint PATCH = %d %s, want 200", rec.Code, rec.Body.String())
+	}
+	// 改名允许。
+	rec = doJSON(t, router, "PATCH", "/api/v1/sources/"+sourceID, `{"name": "Renamed"}`)
+	if rec.Code != http.StatusOK {
+		t.Errorf("name PATCH = %d, want 200", rec.Code)
+	}
+
+	// 删除 Job 解除引用后，endpoint 可改。
+	jobID, _ := decodeJSON(t, doJSON(t, router, "GET", "/api/v1/jobs", ""))["jobs"].([]any)[0].(map[string]any)["id"].(string)
+	if rec := doJSON(t, router, "DELETE", "/api/v1/jobs/"+jobID, ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("delete job = %d, want 204", rec.Code)
+	}
+	rec = doJSON(t, router, "PATCH", "/api/v1/sources/"+sourceID, `{"endpoint": "https://other.example.com/dav"}`)
+	if rec.Code != http.StatusOK {
+		t.Errorf("endpoint change after unreference = %d %s, want 200", rec.Code, rec.Body.String())
+	}
+}
+
 // 被 Job 引用的 Source 删除返回 409；Job 删除后可正常删除 Source。
 func TestSourceDeleteBlockedByJobAPI(t *testing.T) {
 	router := newJobRouter(t, fakeJobRemote{})

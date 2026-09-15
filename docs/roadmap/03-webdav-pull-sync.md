@@ -166,6 +166,15 @@ local file       → 保留
 
 绝对禁止 `walk(local_root) - remote_files` 差集删除。
 
+### Managed 所有权语义（v0.3 明确）
+
+v0.3 的 managed 所有权是**路径所有权**：Job 按 `(job_id, remote_path)`
+认领 LocalRoot 之下的对应路径。`local_size` / `local_mtime_ns` 已落库
+备用，但本轮不消费——用户在两轮同步之间手工替换某个 managed 本地文件
+的内容，后续 update / delete 仍会覆盖或删除它。基于本地内容指纹的
+drift detection（路径所有权升级为内容身份所有权）留待后续阶段基于
+既有列实现；v0.3 明确这是预期语义而非遗漏。
+
 ### Selector 变更导致的 relinquish
 
 「原来 include、已同步、现在 exclude」的文件不能按 Mirror remote-delete
@@ -222,8 +231,9 @@ scanner 仍完整遍历再过滤文件，避免 glob 推导错误导致 Mirror �
 
 ## LocalRoot 安全边界
 
-`LocalRoot` 校验：必须 absolute、已存在、是 directory，经
-`filepath.Abs` / `Clean` / `EvalSymlinks` 归一。
+`LocalRoot` 输入允许相对路径（相对进程工作目录）；必须已存在、是
+directory，持久化前经 `filepath.Abs` / `Clean` / `EvalSymlinks` 归一为
+canonical absolute——绝对路径是持久化契约，相对性只是输入便利。
 
 禁止重叠：
 

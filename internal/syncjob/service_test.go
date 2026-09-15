@@ -271,6 +271,50 @@ func TestUpdateReleasesMetadataOnMappingChange(t *testing.T) {
 	}
 }
 
+// Create / Update 即时校验 include/exclude pattern：非法 pattern
+// 直接拒绝（ErrInvalid），不留到首次 Run 才静默失败。
+func TestCreateAndUpdateValidatePatterns(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+	sourceID := env.mustSource(t)
+
+	job, err := env.service.Create(ctx, syncjob.CreateInput{
+		Name:       "photos-" + newTestName(),
+		SourceID:   sourceID,
+		RemoteRoot: "/photos",
+		LocalRoot:  t.TempDir(),
+		Mode:       syncjob.ModeCopy,
+		Include:    []string{"**/*.jpg"},
+		Exclude:    []string{"[invalid"},
+		Enabled:    true,
+	})
+	if !errors.Is(err, syncjob.ErrInvalid) {
+		t.Fatalf("Create with invalid exclude = %v, want ErrInvalid", err)
+	}
+
+	job, err = env.service.Create(ctx, syncjob.CreateInput{
+		Name:       "photos-" + newTestName(),
+		SourceID:   sourceID,
+		RemoteRoot: "/photos",
+		LocalRoot:  t.TempDir(),
+		Mode:       syncjob.ModeCopy,
+		Enabled:    true,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	bad := []string{"[invalid"}
+	if _, err := env.service.Update(ctx, job.ID, syncjob.UpdateInput{Include: &bad}); !errors.Is(err, syncjob.ErrInvalid) {
+		t.Errorf("Update with invalid include = %v, want ErrInvalid", err)
+	}
+	// 合法 pattern 正常更新。
+	good := []string{"docs/**", "**/*.pdf"}
+	if _, err := env.service.Update(ctx, job.ID, syncjob.UpdateInput{Include: &good}); err != nil {
+		t.Errorf("Update with valid include = %v, want nil", err)
+	}
+}
+
 // mapping 变更与配置替换必须原子：更新撞 name 唯一冲突时 metadata
 // 不丢失——先删后更的旧实现会在半成功状态下让 Job 永久失去对本地
 // 文件的管理关系（下轮 planner 把远端文件当 unknown local 全部跳过）。

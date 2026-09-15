@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -23,7 +24,7 @@ func registerSourceRoutes(group *gin.RouterGroup, svc *source.Service, jobs *syn
 	}
 	h := &sourceHandlers{svc: svc}
 	if jobs != nil {
-		h.deleteGuard = func(ctx context.Context, sourceID string) error {
+		h.refGuard = func(ctx context.Context, sourceID string) error {
 			count, err := jobs.CountBySource(ctx, sourceID)
 			if err != nil {
 				return err
@@ -45,8 +46,10 @@ func registerSourceRoutes(group *gin.RouterGroup, svc *source.Service, jobs *syn
 // sourceHandlers 是 Source 端点的 handler 集合。
 type sourceHandlers struct {
 	svc *source.Service
-	// deleteGuard 在真正删除前校验 Job 引用；nil 表示不启用保护。
-	deleteGuard func(ctx context.Context, sourceID string) error
+	// refGuard 校验 Source 是否被 Job 引用；nil 表示不启用保护。
+	// 删除始终校验；修改 endpoint 时校验（防止 Mirror Job 下轮连接到
+	// 另一个合法远端后把全部 managed 文件误判为远端消失）。
+	refGuard func(ctx context.Context, sourceID string) error
 }
 
 // sourceDTO 是 Source 的 API 表示。刻意不含 password 字段：
@@ -156,14 +159,34 @@ func (h *sourceHandlers) get(c *gin.Context) {
 	c.JSON(http.StatusOK, toSourceDTO(s))
 }
 
-// update PATCH /api/v1/sources/:id。
+// update PATCH /api/v1/sources/:id。被 Job 引用时允许改 name /
+// credentials / enabled，但拒绝修改 endpoint：新 endpoint 可能指向
+// 另一个合法远端，下轮完整扫描会把既有 managed 文件全部误判为
+// 远端消失，Mirror 将据其删除本地。更换 endpoint 的正确路径是
+// 新建 Source → Job 切换 SourceID（触发原子 metadata 重置）。
 func (h *sourceHandlers) update(c *gin.Context) {
 	var req updateSourceRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
-	updated, err := h.svc.Update(c.Request.Context(), c.Param("id"), source.UpdateInput{
+	id := c.Param("id")
+	if req.Endpoint != nil && h.refGuard != nil {
+		current, err := h.svc.Get(c.Request.Context(), id)
+		if err != nil {
+			handleSourceError(c, err)
+			return
+		}
+		if strings.TrimSpace(*req.Endpoint) != current.Endpoint {
+			if err := h.refGuard(c.Request.Context(), id); err != nil {
+				c.JSON(http.StatusConflict, gin.H{
+					"error": "source endpoint cannot be changed while referenced by sync jobs",
+				})
+				return
+			}
+		}
+	}
+	updated, err := h.svc.Update(c.Request.Context(), id, source.UpdateInput{
 		Name:     req.Name,
 		Endpoint: req.Endpoint,
 		Username: req.Username,
@@ -180,8 +203,8 @@ func (h *sourceHandlers) update(c *gin.Context) {
 // delete DELETE /api/v1/sources/:id。仅删除本地 Source 配置，
 // 不触及远端文件；被 Sync Job 引用时以 409 拒绝。
 func (h *sourceHandlers) delete(c *gin.Context) {
-	if h.deleteGuard != nil {
-		if err := h.deleteGuard(c.Request.Context(), c.Param("id")); err != nil {
+	if h.refGuard != nil {
+		if err := h.refGuard(c.Request.Context(), c.Param("id")); err != nil {
 			handleSourceError(c, err)
 			return
 		}

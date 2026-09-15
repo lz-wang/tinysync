@@ -49,6 +49,11 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Job, error) {
 	if !input.Mode.Valid() {
 		return Job{}, fmt.Errorf("%w: mode %q must be copy or mirror", ErrInvalid, input.Mode)
 	}
+	// pattern 在配置入口即时校验：非法 pattern 直接拒绝（400），
+	// 不留到首次 Run 才静默失败。
+	if _, err := NewSelector(input.Include, input.Exclude); err != nil {
+		return Job{}, err
+	}
 	if _, err := s.sources.Get(ctx, input.SourceID); err != nil {
 		return Job{}, err
 	}
@@ -153,6 +158,13 @@ func (s *Service) Update(ctx context.Context, id string, input UpdateInput) (Job
 	}
 	if input.Enabled != nil {
 		updated.Enabled = *input.Enabled
+	}
+	// 校验合并后的最终 pattern 集合：与 Create 一致，配置入口即拒绝
+	// 非法 pattern（mapping 未变时不触碰 managed metadata）。
+	if input.Include != nil || input.Exclude != nil {
+		if _, err := NewSelector(updated.Include, updated.Exclude); err != nil {
+			return Job{}, err
+		}
 	}
 
 	mappingChanged := updated.SourceID != current.SourceID ||

@@ -350,6 +350,45 @@ func TestManagedFileCRUD(t *testing.T) {
 	}
 }
 
+// 零值 ModifiedAt 存 NULL（不写 UnixNano 伪时间戳），读回零值，
+// 读写语义对称。
+func TestManagedZeroModifiedAtStoredAsNull(t *testing.T) {
+	db, repo, managed := openRepos(t)
+	mustSeedSource(t, db, "src_a")
+	if err := repo.Create(context.Background(), newJob("job_a", "photos", "src_a")); err != nil {
+		t.Fatalf("Create job: %v", err)
+	}
+
+	err := managed.Upsert(context.Background(), []syncjob.ManagedFile{{
+		JobID:        "job_a",
+		RemotePath:   "/no-mtime.txt",
+		LocalRelPath: "no-mtime.txt",
+		State:        syncjob.StatePending,
+		Remote:       source.Fingerprint{Size: 5, ETag: `"x"`},
+		UpdatedAt:    time.Unix(1757879400, 0).UTC(),
+	}})
+	if err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	var mtimeNS sql.NullInt64
+	if err := db.QueryRow(
+		"SELECT remote_mtime_ns FROM managed_files WHERE job_id = 'job_a'",
+	).Scan(&mtimeNS); err != nil {
+		t.Fatalf("query mtime: %v", err)
+	}
+	if mtimeNS.Valid {
+		t.Errorf("remote_mtime_ns = %d, want NULL for zero ModifiedAt", mtimeNS.Int64)
+	}
+	list, err := managed.ListByJob(context.Background(), "job_a")
+	if err != nil || len(list) != 1 {
+		t.Fatalf("ListByJob = %d entries (%v), want 1", len(list), err)
+	}
+	if !list[0].Remote.ModifiedAt.IsZero() {
+		t.Errorf("ModifiedAt after roundtrip = %v, want zero", list[0].Remote.ModifiedAt)
+	}
+}
+
 // Job 删除后 managed 记录经 FK CASCADE 清理。
 func TestManagedCascadeOnJobDelete(t *testing.T) {
 	db, repo, managed := openRepos(t)
