@@ -1,8 +1,11 @@
 package api
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -11,8 +14,9 @@ import (
 	"tinysync/internal/syncjob"
 )
 
-// registerJobRoutes 注册 Sync Job 管理与手动运行端点。svc 为 nil 时跳过
-// 注册（依赖缺失时由未知路径 404 兜底）；runner 为 nil 时只注册 CRUD。
+// registerJobRoutes 注册 Sync Job 管理、手动运行与同步历史端点。svc 为
+// nil 时跳过注册（依赖缺失时由未知路径 404 兜底）；runner 为 nil 时只
+// 注册 CRUD。
 func registerJobRoutes(group *gin.RouterGroup, svc *syncjob.Service, runner *syncjob.Runner) {
 	if svc == nil {
 		return
@@ -26,6 +30,9 @@ func registerJobRoutes(group *gin.RouterGroup, svc *syncjob.Service, runner *syn
 	if runner != nil {
 		group.POST("/jobs/:id/run", h.run)
 		group.GET("/jobs/:id/status", h.status)
+		group.GET("/runs", h.listRuns)
+		group.GET("/runs/:id", h.getRun)
+		group.GET("/runs/:id/items", h.listRunItems)
 	}
 }
 
@@ -35,19 +42,66 @@ type jobHandlers struct {
 	runner *syncjob.Runner
 }
 
-// jobDTO 是 Sync Job 的 API 表示。Include / Exclude 恒为数组（nil 归一）。
+// scheduleDTO 是调度配置的 discriminated object：按 type 消费互斥字段，
+// 不暴露 nullable 平铺字段。once 用 at（RFC3339）、interval 用 every
+// （Go duration）、cron 用 expression + timezone（IANA，缺省 UTC）。
+type scheduleDTO struct {
+	Type       string `json:"type"`
+	At         string `json:"at,omitempty"`
+	Every      string `json:"every,omitempty"`
+	Expression string `json:"expression,omitempty"`
+	Timezone   string `json:"timezone,omitempty"`
+}
+
+// toScheduleDTO 转换领域调度配置；anchor 等内部字段不输出。
+func toScheduleDTO(s syncjob.Schedule) *scheduleDTO {
+	out := &scheduleDTO{Type: string(s.Type)}
+	switch s.Type {
+	case syncjob.ScheduleOnce:
+		out.At = s.Value
+	case syncjob.ScheduleInterval:
+		out.Every = s.Value
+	case syncjob.ScheduleCron:
+		out.Expression = s.Value
+		out.Timezone = s.Timezone
+	}
+	return out
+}
+
+// scheduleFromDTO 把请求体中的调度配置转为领域对象；nil 透传表示
+// 「未提供」。字段合法性由 Service 校验。
+func scheduleFromDTO(dto *scheduleDTO) *syncjob.Schedule {
+	if dto == nil {
+		return nil
+	}
+	s := syncjob.Schedule{Type: syncjob.ScheduleType(dto.Type)}
+	switch s.Type {
+	case syncjob.ScheduleOnce:
+		s.Value = dto.At
+	case syncjob.ScheduleInterval:
+		s.Value = dto.Every
+	case syncjob.ScheduleCron:
+		s.Value = dto.Expression
+		s.Timezone = dto.Timezone
+	}
+	return &s
+}
+
+// jobDTO 是 Sync Job 的 API 表示。Include / Exclude 恒为数组（nil 归一），
+// schedule 恒输出（manual 表示仅手动触发）。
 type jobDTO struct {
-	ID         string   `json:"id"`
-	Name       string   `json:"name"`
-	SourceID   string   `json:"source_id"`
-	RemoteRoot string   `json:"remote_root"`
-	LocalRoot  string   `json:"local_root"`
-	Mode       string   `json:"mode"`
-	Include    []string `json:"include"`
-	Exclude    []string `json:"exclude"`
-	Enabled    bool     `json:"enabled"`
-	CreatedAt  string   `json:"created_at"`
-	UpdatedAt  string   `json:"updated_at"`
+	ID         string       `json:"id"`
+	Name       string       `json:"name"`
+	SourceID   string       `json:"source_id"`
+	RemoteRoot string       `json:"remote_root"`
+	LocalRoot  string       `json:"local_root"`
+	Mode       string       `json:"mode"`
+	Include    []string     `json:"include"`
+	Exclude    []string     `json:"exclude"`
+	Enabled    bool         `json:"enabled"`
+	Schedule   *scheduleDTO `json:"schedule"`
+	CreatedAt  string       `json:"created_at"`
+	UpdatedAt  string       `json:"updated_at"`
 }
 
 // toJobDTO 转换领域对象，时间输出 RFC3339。
@@ -70,34 +124,38 @@ func toJobDTO(j syncjob.Job) jobDTO {
 		Include:    include,
 		Exclude:    exclude,
 		Enabled:    j.Enabled,
+		Schedule:   toScheduleDTO(j.Schedule),
 		CreatedAt:  j.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:  j.UpdatedAt.Format(time.RFC3339),
 	}
 }
 
-// createJobRequest 是创建请求体；Enabled 缺省为 true。
+// createJobRequest 是创建请求体；Enabled 缺省为 true，schedule 缺省为
+// manual。
 type createJobRequest struct {
-	Name       string   `json:"name"`
-	SourceID   string   `json:"source_id"`
-	RemoteRoot string   `json:"remote_root"`
-	LocalRoot  string   `json:"local_root"`
-	Mode       string   `json:"mode"`
-	Include    []string `json:"include"`
-	Exclude    []string `json:"exclude"`
-	Enabled    *bool    `json:"enabled"`
+	Name       string       `json:"name"`
+	SourceID   string       `json:"source_id"`
+	RemoteRoot string       `json:"remote_root"`
+	LocalRoot  string       `json:"local_root"`
+	Mode       string       `json:"mode"`
+	Include    []string     `json:"include"`
+	Exclude    []string     `json:"exclude"`
+	Enabled    *bool        `json:"enabled"`
+	Schedule   *scheduleDTO `json:"schedule"`
 }
 
 // updateJobRequest 是更新请求体：nil 字段保留现有值；Include / Exclude
-// 提供 null 时同样保留，提供数组时整体替换。
+// 提供 null 时同样保留，提供数组时整体替换；schedule 提供时原子替换。
 type updateJobRequest struct {
-	Name       *string   `json:"name"`
-	SourceID   *string   `json:"source_id"`
-	RemoteRoot *string   `json:"remote_root"`
-	LocalRoot  *string   `json:"local_root"`
-	Mode       *string   `json:"mode"`
-	Include    *[]string `json:"include"`
-	Exclude    *[]string `json:"exclude"`
-	Enabled    *bool     `json:"enabled"`
+	Name       *string      `json:"name"`
+	SourceID   *string      `json:"source_id"`
+	RemoteRoot *string      `json:"remote_root"`
+	LocalRoot  *string      `json:"local_root"`
+	Mode       *string      `json:"mode"`
+	Include    *[]string    `json:"include"`
+	Exclude    *[]string    `json:"exclude"`
+	Enabled    *bool        `json:"enabled"`
+	Schedule   *scheduleDTO `json:"schedule"`
 }
 
 // runStatsDTO 是一轮同步的统计摘要。
@@ -110,13 +168,16 @@ type runStatsDTO struct {
 	BytesTransferred int64 `json:"bytes_transferred"`
 }
 
-// runStatusDTO 是运行状态快照。idle 时 run_id 与时间戳为空；
+// runStatusDTO 是运行状态快照：state 取最近一条持久化 run（含 skipped），
+// 重启后不再回到 idle。next_run_at 为下一次计划触发时间（RFC3339），
+// manual 或 once 已消费时省略。idle 时 run_id 与时间戳为空；
 // stats 恒输出，便于前端按稳定结构渲染。
 type runStatusDTO struct {
 	RunID      string      `json:"run_id,omitempty"`
 	State      string      `json:"state"`
 	StartedAt  string      `json:"started_at,omitempty"`
 	FinishedAt string      `json:"finished_at,omitempty"`
+	NextRunAt  string      `json:"next_run_at,omitempty"`
 	Stats      runStatsDTO `json:"stats"`
 	Error      string      `json:"error,omitempty"`
 }
@@ -179,6 +240,7 @@ func (h *jobHandlers) create(c *gin.Context) {
 		Include:    req.Include,
 		Exclude:    req.Exclude,
 		Enabled:    enabled,
+		Schedule:   scheduleFromDTO(req.Schedule),
 	})
 	if err != nil {
 		handleJobError(c, err)
@@ -218,6 +280,7 @@ func (h *jobHandlers) update(c *gin.Context) {
 		Include:    req.Include,
 		Exclude:    req.Exclude,
 		Enabled:    req.Enabled,
+		Schedule:   scheduleFromDTO(req.Schedule),
 	}
 	if req.Mode != nil {
 		mode := syncjob.Mode(*req.Mode)
@@ -262,15 +325,16 @@ func (h *jobHandlers) run(c *gin.Context) {
 	c.JSON(http.StatusAccepted, gin.H{"run_id": runID, "state": string(syncjob.RunRunning)})
 }
 
-// status GET /api/v1/jobs/:id/status。运行记录只存内存，
-// 进程重启后回到 idle。
+// status GET /api/v1/jobs/:id/status。数据源为持久化运行历史
+// （进行中的运行优先），重启后最近一次运行仍可查询；附带 next_run_at。
 func (h *jobHandlers) status(c *gin.Context) {
 	if h.runner == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
 	id := c.Param("id")
-	if _, err := h.svc.Get(c.Request.Context(), id); err != nil {
+	job, err := h.svc.Get(c.Request.Context(), id)
+	if err != nil {
 		handleJobError(c, err)
 		return
 	}
@@ -279,7 +343,207 @@ func (h *jobHandlers) status(c *gin.Context) {
 		handleRunError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, toRunStatusDTO(status))
+	dto := toRunStatusDTO(status)
+	if next, ok, err := h.runner.NextRunAt(c.Request.Context(), job); err != nil {
+		handleRunError(c, err)
+		return
+	} else if ok {
+		dto.NextRunAt = next.Format(time.RFC3339)
+	}
+	c.JSON(http.StatusOK, dto)
+}
+
+// runsDefaultLimit / runsMaxLimit 是历史列表分页参数。
+const (
+	runsDefaultLimit = 50
+	runsMaxLimit     = 200
+)
+
+// runDTO 是一轮运行的 API 表示；job_name 冗余输出便于全局历史渲染。
+type runDTO struct {
+	ID           string      `json:"id"`
+	JobID        string      `json:"job_id"`
+	JobName      string      `json:"job_name"`
+	Trigger      string      `json:"trigger"`
+	ScheduledFor string      `json:"scheduled_for,omitempty"`
+	Status       string      `json:"status"`
+	StartedAt    string      `json:"started_at"`
+	FinishedAt   string      `json:"finished_at,omitempty"`
+	Stats        runStatsDTO `json:"stats"`
+	Error        string      `json:"error,omitempty"`
+}
+
+// toRunDTO 转换运行记录，时间输出 RFC3339。
+func toRunDTO(run syncjob.RunRecord, jobName string) runDTO {
+	dto := runDTO{
+		ID:        run.ID,
+		JobID:     run.JobID,
+		JobName:   jobName,
+		Trigger:   string(run.Trigger),
+		Status:    string(run.State),
+		StartedAt: run.StartedAt.Format(time.RFC3339),
+		Error:     run.Error,
+		Stats: runStatsDTO{
+			FilesTotal:       run.Stats.FilesTotal,
+			FilesCreated:     run.Stats.FilesCreated,
+			FilesUpdated:     run.Stats.FilesUpdated,
+			FilesDeleted:     run.Stats.FilesDeleted,
+			FilesSkipped:     run.Stats.FilesSkipped,
+			BytesTransferred: run.Stats.BytesTransferred,
+		},
+	}
+	if run.ScheduledFor != nil {
+		dto.ScheduledFor = run.ScheduledFor.Format(time.RFC3339)
+	}
+	if run.FinishedAt != nil {
+		dto.FinishedAt = run.FinishedAt.Format(time.RFC3339)
+	}
+	return dto
+}
+
+// runItemDTO 是文件级变更明细的 API 表示。
+type runItemDTO struct {
+	ID     int64  `json:"id"`
+	RunID  string `json:"run_id"`
+	Path   string `json:"path"`
+	Action string `json:"action"`
+	Status string `json:"status"`
+	Bytes  int64  `json:"bytes"`
+	Error  string `json:"error,omitempty"`
+}
+
+// toRunItemDTO 转换明细记录。
+func toRunItemDTO(item syncjob.RunItem) runItemDTO {
+	return runItemDTO{
+		ID:     item.ID,
+		RunID:  item.RunID,
+		Path:   item.Path,
+		Action: string(item.Action),
+		Status: string(item.Status),
+		Bytes:  item.Bytes,
+		Error:  item.Error,
+	}
+}
+
+// jobNames 一次性取回全部 Job 名（HomeLab 规模下成本可忽略），
+// 供运行历史冗余 job_name 使用。
+func (h *jobHandlers) jobNames(ctx context.Context) map[string]string {
+	jobs, err := h.svc.List(ctx)
+	if err != nil {
+		return nil
+	}
+	names := make(map[string]string, len(jobs))
+	for _, j := range jobs {
+		names[j.ID] = j.Name
+	}
+	return names
+}
+
+// listRuns GET /api/v1/runs。全局运行历史：支持 job_id / status 过滤与
+// limit / offset 分页，按开始时间倒序，total 为过滤后总数。
+func (h *jobHandlers) listRuns(c *gin.Context) {
+	if h.runner == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	filter := syncjob.RunFilter{}
+	if jobID := c.Query("job_id"); jobID != "" {
+		filter.JobID = jobID
+	}
+	if status := c.Query("status"); status != "" {
+		switch syncjob.RunState(status) {
+		case syncjob.RunRunning, syncjob.RunSucceeded, syncjob.RunFailed, syncjob.RunSkipped:
+			filter.Status = syncjob.RunState(status)
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status filter"})
+			return
+		}
+	}
+	limit := runsDefaultLimit
+	if raw := c.Query("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > runsMaxLimit {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("limit must be an integer in [1, %d]", runsMaxLimit)})
+			return
+		}
+		limit = n
+	}
+	offset := 0
+	if raw := c.Query("offset"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "offset must be a non-negative integer"})
+			return
+		}
+		offset = n
+	}
+	filter.Limit = limit
+	filter.Offset = offset
+
+	runs, total, err := h.runner.ListRuns(c.Request.Context(), filter)
+	if err != nil {
+		handleRunError(c, err)
+		return
+	}
+	names := h.jobNames(c.Request.Context())
+	dtos := make([]runDTO, 0, len(runs))
+	for _, run := range runs {
+		dtos = append(dtos, toRunDTO(run, names[run.JobID]))
+	}
+	c.JSON(http.StatusOK, gin.H{"runs": dtos, "total": total})
+}
+
+// getRun GET /api/v1/runs/:id。运行摘要；不存在返回 404。
+func (h *jobHandlers) getRun(c *gin.Context) {
+	if h.runner == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	run, err := h.runner.GetRun(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		handleRunError(c, err)
+		return
+	}
+	names := h.jobNames(c.Request.Context())
+	c.JSON(http.StatusOK, toRunDTO(run, names[run.JobID]))
+}
+
+// listRunItems GET /api/v1/runs/:id/items。文件级变更明细，分页参数与
+// /runs 一致。
+func (h *jobHandlers) listRunItems(c *gin.Context) {
+	if h.runner == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	runID := c.Param("id")
+	limit := runsDefaultLimit
+	if raw := c.Query("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > runsMaxLimit {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("limit must be an integer in [1, %d]", runsMaxLimit)})
+			return
+		}
+		limit = n
+	}
+	offset := 0
+	if raw := c.Query("offset"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "offset must be a non-negative integer"})
+			return
+		}
+		offset = n
+	}
+	items, total, err := h.runner.ListRunItems(c.Request.Context(), runID, limit, offset)
+	if err != nil {
+		handleRunError(c, err)
+		return
+	}
+	dtos := make([]runItemDTO, 0, len(items))
+	for _, item := range items {
+		dtos = append(dtos, toRunItemDTO(item))
+	}
+	c.JSON(http.StatusOK, gin.H{"items": dtos, "total": total})
 }
 
 // handleJobError 把 Sync Job 领域错误映射为 REST 状态码。引用不存在的
@@ -303,17 +567,22 @@ func handleJobError(c *gin.Context, err error) {
 }
 
 // handleRunError 把手动运行的领域错误映射为 REST 状态码：
-// 202 之外的分支只有 404（Job 不存在）与 409（禁用、引用缺失、占用中）。
+// 202 之外的分支只有 404（Job / run 不存在）与 409（禁用、引用缺失、
+// 占用中、并发已满）。
 func handleRunError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, syncjob.ErrNotFound):
 		c.JSON(http.StatusNotFound, gin.H{"error": "sync job not found"})
+	case errors.Is(err, syncjob.ErrRunUnknown):
+		c.JSON(http.StatusNotFound, gin.H{"error": "run not found"})
 	case errors.Is(err, syncjob.ErrJobDisabled):
 		c.JSON(http.StatusConflict, gin.H{"error": "sync job is disabled"})
 	case errors.Is(err, syncjob.ErrSourceDisabled):
 		c.JSON(http.StatusConflict, gin.H{"error": "source is disabled"})
 	case errors.Is(err, syncjob.ErrRunActive):
 		c.JSON(http.StatusConflict, gin.H{"error": "another sync run is active"})
+	case errors.Is(err, syncjob.ErrConcurrencyLimit):
+		c.JSON(http.StatusConflict, gin.H{"error": "concurrency limit reached"})
 	case errors.Is(err, source.ErrNotFound):
 		c.JSON(http.StatusConflict, gin.H{"error": "source does not exist"})
 	default:

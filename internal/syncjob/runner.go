@@ -374,6 +374,57 @@ func (r *Runner) findActive(runID string) *activeRun {
 	return nil
 }
 
+// NextRunAt 返回 Job 的下一次计划触发时间：manual 恒无；once 已消费后
+// 无（未消费时返回配置时刻，即使已过期——调度器会立即补执行）；
+// interval / cron 按 schedule 与当前时刻计算。第二个返回值为 false
+// 表示没有下一次触发。
+func (r *Runner) NextRunAt(ctx context.Context, job Job) (time.Time, bool, error) {
+	var trigger RunTrigger
+	switch job.Schedule.Type {
+	case ScheduleOnce:
+		trigger = TriggerOnce
+	case ScheduleInterval:
+		trigger = TriggerInterval
+	case ScheduleCron:
+		trigger = TriggerCron
+	default:
+		return time.Time{}, false, nil
+	}
+	next, ok := job.Schedule.NextRun(r.Now())
+	if !ok {
+		return time.Time{}, false, nil
+	}
+	if trigger == TriggerOnce {
+		at, err := job.Schedule.OnceAt()
+		if err != nil {
+			return time.Time{}, false, nil
+		}
+		consumed, err := r.history.HasRunFor(ctx, job.ID, trigger, at)
+		if err != nil {
+			return time.Time{}, false, err
+		}
+		if consumed {
+			return time.Time{}, false, nil
+		}
+	}
+	return next, true, nil
+}
+
+// ListRuns 按过滤与分页查询持久化运行历史，total 为过滤后总数。
+func (r *Runner) ListRuns(ctx context.Context, filter RunFilter) ([]RunRecord, int, error) {
+	return r.history.List(ctx, filter)
+}
+
+// GetRun 按 ID 查询运行摘要；不存在时返回 ErrRunUnknown。
+func (r *Runner) GetRun(ctx context.Context, runID string) (RunRecord, error) {
+	return r.history.Get(ctx, runID)
+}
+
+// ListRunItems 分页查询 run 的文件级明细，total 为该 run 明细总数。
+func (r *Runner) ListRunItems(ctx context.Context, runID string, limit, offset int) ([]RunItem, int, error) {
+	return r.history.Items(ctx, runID, limit, offset)
+}
+
 // runItemRecorder 把引擎的 ItemRecorder 适配到 RunRepository：
 // 文件级明细直接追加到 sync_run_items。
 type runItemRecorder struct {

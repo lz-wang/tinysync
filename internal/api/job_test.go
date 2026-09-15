@@ -481,6 +481,215 @@ func TestSourceEndpointChangeGuardAPI(t *testing.T) {
 	}
 }
 
+// contentRemote 提供可成功下载的远端文件（内容按路径预置）。
+type contentRemote struct {
+	content map[string]string
+}
+
+func (r *contentRemote) Stat(ctx context.Context, path string) (source.FileInfo, error) {
+	return source.FileInfo{Path: path, IsDir: true}, nil
+}
+
+func (r *contentRemote) List(ctx context.Context, path string) ([]source.FileInfo, error) {
+	if path != "/photos" {
+		return nil, nil
+	}
+	files := make([]source.FileInfo, 0, len(r.content))
+	for p, c := range r.content {
+		files = append(files, source.FileInfo{
+			Path: p,
+			Fingerprint: source.Fingerprint{
+				Size:       int64(len(c)),
+				ModifiedAt: time.Unix(1757879400, 0).UTC(),
+				ETag:       `"` + p + `"`,
+			},
+		})
+	}
+	return files, nil
+}
+
+func (r *contentRemote) Open(ctx context.Context, path string) (io.ReadCloser, error) {
+	c, ok := r.content[path]
+	if !ok {
+		return nil, errors.New("no such remote file " + path)
+	}
+	return io.NopCloser(strings.NewReader(c)), nil
+}
+
+// createJobWithSchedule 经 API 创建带 schedule 的 Job 并返回 ID 与响应体。
+func createJobWithSchedule(t *testing.T, router *gin.Engine, name, sourceID, scheduleJSON string) (string, map[string]any) {
+	t.Helper()
+	payload, _ := jobPayload(t, name, sourceID, "copy", true)
+	body := strings.TrimSuffix(payload, "}") + `,"schedule": ` + scheduleJSON + `}`
+	rec := doJSON(t, router, "POST", "/api/v1/jobs", body)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create scheduled job status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	created := decodeJSON(t, rec)
+	id, _ := created["id"].(string)
+	if id == "" {
+		t.Fatalf("created job has no id: %s", rec.Body.String())
+	}
+	return id, created
+}
+
+// schedule 是 discriminated object：创建时输出 interval / cron / manual，
+// PATCH 原子替换，非法输入 400。
+func TestJobScheduleAPI(t *testing.T) {
+	router := newJobRouter(t, fakeJobRemote{})
+	sourceID := createSourceViaAPI(t, router, "NAS", true)
+
+	// 创建 interval Job。
+	id, created := createJobWithSchedule(t, router, "Scheduled", sourceID, `{"type": "interval", "every": "30m"}`)
+	schedule, _ := created["schedule"].(map[string]any)
+	if schedule["type"] != "interval" || schedule["every"] != "30m" {
+		t.Fatalf("created schedule = %v, want interval 30m", schedule)
+	}
+
+	// GET 往返 schedule（持久化）。
+	got := decodeJSON(t, doJSON(t, router, "GET", "/api/v1/jobs/"+id, ""))
+	schedule, _ = got["schedule"].(map[string]any)
+	if schedule["type"] != "interval" || schedule["every"] != "30m" {
+		t.Fatalf("persisted schedule = %v, want interval 30m", schedule)
+	}
+
+	// PATCH 替换为 cron。
+	rec := doJSON(t, router, "PATCH", "/api/v1/jobs/"+id,
+		`{"schedule": {"type": "cron", "expression": "0 3 * * *", "timezone": "Asia/Singapore"}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH schedule status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	updated := decodeJSON(t, rec)
+	schedule, _ = updated["schedule"].(map[string]any)
+	if schedule["type"] != "cron" || schedule["expression"] != "0 3 * * *" || schedule["timezone"] != "Asia/Singapore" {
+		t.Fatalf("patched schedule = %v, want cron with timezone", schedule)
+	}
+
+	// 非法 schedule → 400。
+	rec = doJSON(t, router, "PATCH", "/api/v1/jobs/"+id, `{"schedule": {"type": "interval", "every": "10s"}}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("invalid schedule PATCH = %d %s, want 400", rec.Code, rec.Body.String())
+	}
+	// schedule 缺省（创建）→ manual。
+	plain, _ := jobPayload(t, "Plain", sourceID, "copy", true)
+	created2 := decodeJSON(t, doJSON(t, router, "POST", "/api/v1/jobs", plain))
+	schedule, _ = created2["schedule"].(map[string]any)
+	if schedule["type"] != "manual" {
+		t.Errorf("default schedule = %v, want manual", schedule)
+	}
+}
+
+// interval Job 的 status 附带 next_run_at；manual Job 不输出。
+func TestJobStatusNextRunAPI(t *testing.T) {
+	router := newJobRouter(t, fakeJobRemote{})
+	sourceID := createSourceViaAPI(t, router, "NAS", true)
+
+	intervalID, _ := createJobWithSchedule(t, router, "Interval", sourceID, `{"type": "interval", "every": "30m"}`)
+	body := decodeJSON(t, doJSON(t, router, "GET", "/api/v1/jobs/"+intervalID+"/status", ""))
+	if next, _ := body["next_run_at"].(string); next == "" {
+		t.Errorf("interval job status missing next_run_at: %v", body)
+	}
+
+	manual, _ := jobPayload(t, "Manual", sourceID, "copy", true)
+	manualID, _ := decodeJSON(t, doJSON(t, router, "POST", "/api/v1/jobs", manual))["id"].(string)
+	body = decodeJSON(t, doJSON(t, router, "GET", "/api/v1/jobs/"+manualID+"/status", ""))
+	if _, has := body["next_run_at"]; has {
+		t.Errorf("manual job status should omit next_run_at: %v", body)
+	}
+}
+
+// /runs 全局历史：手动运行产生 trigger=manual 的持久化 run，
+// 列表 / 详情 / 明细与 job_id 过滤可用，未知 run 404。
+func TestRunsAPI(t *testing.T) {
+	remote := &contentRemote{content: map[string]string{"/photos/a.jpg": "v1"}}
+	router := newJobRouter(t, remote)
+	sourceID := createSourceViaAPI(t, router, "NAS", true)
+	payload, _ := jobPayload(t, "History", sourceID, "copy", true)
+	jobID, _ := decodeJSON(t, doJSON(t, router, "POST", "/api/v1/jobs", payload))["id"].(string)
+
+	if rec := doJSON(t, router, "POST", "/api/v1/jobs/"+jobID+"/run", ""); rec.Code != http.StatusAccepted {
+		t.Fatalf("run status = %d, want 202", rec.Code)
+	}
+	waitForRunState(t, router, jobID, syncjob.RunSucceeded)
+
+	// 列表（job_id 过滤）：trigger / status / job_name / 统计齐备。
+	rec := doJSON(t, router, "GET", "/api/v1/runs?job_id="+jobID, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list runs status = %d", rec.Code)
+	}
+	list := decodeJSON(t, rec)
+	total, _ := list["total"].(float64)
+	if total != 1 {
+		t.Fatalf("runs total = %v, want 1", total)
+	}
+	runs, _ := list["runs"].([]any)
+	run, _ := runs[0].(map[string]any)
+	runID, _ := run["id"].(string)
+	if run["job_id"] != jobID || run["job_name"] != "History" ||
+		run["trigger"] != "manual" || run["status"] != "succeeded" {
+		t.Fatalf("run summary = %v, want manual/succeeded with job name", run)
+	}
+	if _, has := run["stats"]; !has {
+		t.Errorf("run summary missing stats: %v", run)
+	}
+
+	// 详情与 id 一致。
+	detail := decodeJSON(t, doJSON(t, router, "GET", "/api/v1/runs/"+runID, ""))
+	if detail["id"] != runID || detail["status"] != "succeeded" {
+		t.Errorf("run detail = %v, want succeeded %s", detail, runID)
+	}
+
+	// 明细：1 个 create 条目。
+	items := decodeJSON(t, doJSON(t, router, "GET", "/api/v1/runs/"+runID+"/items", ""))
+	itemTotal, _ := items["total"].(float64)
+	if itemTotal != 1 {
+		t.Fatalf("items total = %v, want 1", itemTotal)
+	}
+	entry, _ := items["items"].([]any)[0].(map[string]any)
+	if entry["path"] != "a.jpg" || entry["action"] != "create" || entry["status"] != "succeeded" {
+		t.Errorf("run item = %v, want succeeded create a.jpg", entry)
+	}
+
+	// 未知 run 与非法参数。
+	if rec := doJSON(t, router, "GET", "/api/v1/runs/run_missing", ""); rec.Code != http.StatusNotFound {
+		t.Errorf("missing run = %d, want 404", rec.Code)
+	}
+	if rec := doJSON(t, router, "GET", "/api/v1/runs?status=queued", ""); rec.Code != http.StatusBadRequest {
+		t.Errorf("invalid status filter = %d, want 400", rec.Code)
+	}
+	if rec := doJSON(t, router, "GET", "/api/v1/runs?limit=0", ""); rec.Code != http.StatusBadRequest {
+		t.Errorf("limit 0 = %d, want 400", rec.Code)
+	}
+	if rec := doJSON(t, router, "GET", "/api/v1/runs?limit=999", ""); rec.Code != http.StatusBadRequest {
+		t.Errorf("limit 999 = %d, want 400", rec.Code)
+	}
+}
+
+// 全局并发已满：手动触发其他 Job 返回 409（同 Job 仍为 409 active）。
+func TestJobRunConcurrencyLimitAPI(t *testing.T) {
+	gate := make(chan struct{})
+	router := newJobRouter(t, &gateRemote{gate: gate})
+	sourceID := createSourceViaAPI(t, router, "NAS", true)
+
+	first, _ := jobPayload(t, "First", sourceID, "copy", true)
+	firstID, _ := decodeJSON(t, doJSON(t, router, "POST", "/api/v1/jobs", first))["id"].(string)
+	second, _ := jobPayload(t, "Second", sourceID, "copy", true)
+	secondID, _ := decodeJSON(t, doJSON(t, router, "POST", "/api/v1/jobs", second))["id"].(string)
+
+	if rec := doJSON(t, router, "POST", "/api/v1/jobs/"+firstID+"/run", ""); rec.Code != http.StatusAccepted {
+		t.Fatalf("first run = %d, want 202", rec.Code)
+	}
+	waitForRunState(t, router, firstID, syncjob.RunRunning)
+
+	rec := doJSON(t, router, "POST", "/api/v1/jobs/"+secondID+"/run", "")
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "concurrency") {
+		t.Errorf("run at capacity = %d %s, want 409 concurrency", rec.Code, rec.Body.String())
+	}
+
+	close(gate)
+	waitForRunState(t, router, firstID, syncjob.RunSucceeded, syncjob.RunFailed)
+}
+
 // 被 Job 引用的 Source 删除返回 409；Job 删除后可正常删除 Source。
 func TestSourceDeleteBlockedByJobAPI(t *testing.T) {
 	router := newJobRouter(t, fakeJobRemote{})
