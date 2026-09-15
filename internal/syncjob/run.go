@@ -112,9 +112,9 @@ type RunFilter struct {
 // RunRepository 是 sync_runs / sync_run_items 的持久化接口。
 // 实现需保证 Finalize 与 AppendItem 的失败语义：不产生半成功状态。
 type RunRepository interface {
-	// Insert 以 running 状态落库一轮新运行；run.ID 必须已生成。
-	// 必须在同步 goroutine 启动前调用成功，保证「已开始修改本地文件
-	// 却没有历史 run」的状态不存在。
+	// Insert 整体落库运行记录：正常运行带 running 状态且必须在同步
+	// goroutine 启动前调用成功（保证「已开始修改本地文件却没有历史
+	// run」的状态不存在）；调度跳过的记录直接携带 skipped 终态与原因。
 	Insert(ctx context.Context, run RunRecord) error
 	// Finalize 以 run 的 State / Stats / FinishedAt / Error 覆盖运行终态；
 	// 目标 run 不存在时返回 ErrRunUnknown。

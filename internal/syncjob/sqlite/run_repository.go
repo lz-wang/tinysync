@@ -31,13 +31,16 @@ func NewRunRepository(db *sql.DB) *RunRepository {
 	return &RunRepository{db: db}
 }
 
-// Insert 实现 syncjob.RunRepository。
+// Insert 实现 syncjob.RunRepository：整体落库运行记录。正常运行带
+// running 状态（goroutine 启动前写入）；调度跳过的记录直接携带
+// skipped 终态、原因与结束时间。
 func (r *RunRepository) Insert(ctx context.Context, run syncjob.RunRecord) error {
 	_, err := r.db.ExecContext(ctx, `INSERT INTO sync_runs
-		(id, job_id, trigger_type, scheduled_for, status, started_at)
-		VALUES (?, ?, ?, ?, ?, ?)`,
+		(id, job_id, trigger_type, scheduled_for, status, started_at, finished_at, error)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		run.ID, run.JobID, string(run.Trigger), nullMillis(run.ScheduledFor),
 		string(run.State), run.StartedAt.UnixMilli(),
+		nullMillis(run.FinishedAt), run.Error,
 	)
 	return mapRunError("insert run", run.ID, err)
 }
