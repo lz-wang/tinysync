@@ -43,7 +43,8 @@ var (
 
 // Job 是 Sync Job 的领域对象：把 Source 的 RemoteRoot 子树单向同步到
 // LocalRoot。Include / Exclude 是相对 RemoteRoot 的 doublestar pattern，
-// 统一以 / 分隔。
+// 统一以 / 分隔。Schedule 承载自动调度配置（见 schedule.go），
+// manual（含零值）表示仅手动触发。
 type Job struct {
 	ID         string
 	Name       string
@@ -54,6 +55,7 @@ type Job struct {
 	Include    []string
 	Exclude    []string
 	Enabled    bool
+	Schedule   Schedule
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
 }
@@ -73,7 +75,7 @@ func NewID() (string, error) {
 	return idPrefix + hex.EncodeToString(buf), nil
 }
 
-// CreateInput 是创建 Job 的输入。
+// CreateInput 是创建 Job 的输入。Schedule 为 nil 时缺省 manual。
 type CreateInput struct {
 	Name       string
 	SourceID   string
@@ -83,10 +85,12 @@ type CreateInput struct {
 	Include    []string
 	Exclude    []string
 	Enabled    bool
+	Schedule   *Schedule
 }
 
 // UpdateInput 是更新 Job 的输入，指针字段区分「未提供」与「零值」：
 // nil 表示保留现有值。Include / Exclude 提供 nil 时同样保留。
+// Schedule 提供 nil 以外的值时原子替换整个调度配置。
 type UpdateInput struct {
 	Name       *string
 	SourceID   *string
@@ -96,4 +100,5 @@ type UpdateInput struct {
 	Include    *[]string
 	Exclude    *[]string
 	Enabled    *bool
+	Schedule   *Schedule
 }

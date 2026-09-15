@@ -445,6 +445,72 @@ func TestDeleteJob(t *testing.T) {
 	}
 }
 
+// Create / Update 即时校验 schedule；interval 创建时设置相位 anchor，
+// schedule 变更重设 anchor 且不触碰 managed metadata（非 mapping 字段）。
+func TestCreateAndUpdateSchedule(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+
+	bad := env.validInput(t, "bad-schedule")
+	bad.Schedule = &syncjob.Schedule{Type: syncjob.ScheduleInterval, Value: "30s"}
+	if _, err := env.service.Create(ctx, bad); !errors.Is(err, syncjob.ErrInvalid) {
+		t.Errorf("Create with interval 30s = %v, want ErrInvalid", err)
+	}
+
+	// 创建 interval Job：value 归一、anchor 来自固定时钟。
+	input := env.validInput(t, "scheduled")
+	input.Schedule = &syncjob.Schedule{Type: syncjob.ScheduleInterval, Value: " 30m "}
+	job, err := env.service.Create(ctx, input)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if job.Schedule.Type != syncjob.ScheduleInterval || job.Schedule.Value != "30m" {
+		t.Errorf("created schedule = %+v, want interval 30m", job.Schedule)
+	}
+	if job.Schedule.AnchorAt == nil || !job.Schedule.AnchorAt.Equal(env.now) {
+		t.Errorf("interval anchor = %v, want fixed clock %v", job.Schedule.AnchorAt, env.now)
+	}
+
+	// 缺省 schedule 为 manual，与 v0.3 行为一致。
+	plain := env.validInput(t, "plain")
+	plainJob, err := env.service.Create(ctx, plain)
+	if err != nil {
+		t.Fatalf("Create plain: %v", err)
+	}
+	if plainJob.Schedule.Type != syncjob.ScheduleManual {
+		t.Errorf("default schedule type = %q, want manual", plainJob.Schedule.Type)
+	}
+
+	// 更新为 cron：原子替换整个 schedule，anchor 清空，managed 不释放。
+	seedManaged(t, env, job.ID)
+	cronSchedule := syncjob.Schedule{
+		Type:     syncjob.ScheduleCron,
+		Value:    "0 3 * * *",
+		Timezone: "Asia/Singapore",
+	}
+	updated, err := env.service.Update(ctx, job.ID, syncjob.UpdateInput{Schedule: &cronSchedule})
+	if err != nil {
+		t.Fatalf("Update schedule: %v", err)
+	}
+	if updated.Schedule.Type != syncjob.ScheduleCron ||
+		updated.Schedule.Value != "0 3 * * *" ||
+		updated.Schedule.Timezone != "Asia/Singapore" {
+		t.Errorf("updated schedule = %+v, want cron 0 3 * * * Asia/Singapore", updated.Schedule)
+	}
+	if updated.Schedule.AnchorAt != nil {
+		t.Errorf("cron schedule anchor = %v, want nil", updated.Schedule.AnchorAt)
+	}
+	if got := managedCount(t, env, job.ID); got != 1 {
+		t.Errorf("managed after schedule change = %d, want 1 (not a mapping change)", got)
+	}
+
+	// 非法 schedule 拒绝更新（持久化回读断言随 schedule 字段落库一并覆盖）。
+	worse := syncjob.Schedule{Type: syncjob.ScheduleOnce, Value: "not-a-time"}
+	if _, err := env.service.Update(ctx, job.ID, syncjob.UpdateInput{Schedule: &worse}); !errors.Is(err, syncjob.ErrInvalid) {
+		t.Errorf("Update with bad once = %v, want ErrInvalid", err)
+	}
+}
+
 // seedManaged 直接向 managed repo 写一条记录，供释放语义断言使用。
 func seedManaged(t *testing.T, env *testEnv, jobID string) {
 	t.Helper()

@@ -54,6 +54,14 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Job, error) {
 	if _, err := NewSelector(input.Include, input.Exclude); err != nil {
 		return Job{}, err
 	}
+	// schedule 同样在配置入口校验；缺省 manual 保证与 v0.3 行为一致。
+	schedule := Schedule{Type: ScheduleManual}
+	if input.Schedule != nil {
+		if err := input.Schedule.Validate(); err != nil {
+			return Job{}, err
+		}
+		schedule = input.Schedule.Normalized()
+	}
 	if _, err := s.sources.Get(ctx, input.SourceID); err != nil {
 		return Job{}, err
 	}
@@ -74,6 +82,11 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Job, error) {
 		return Job{}, err
 	}
 	now := s.Now()
+	if schedule.Type == ScheduleInterval {
+		// interval 相位从创建时刻起算（anchor），重启后按持久化值恢复。
+		anchor := now
+		schedule.AnchorAt = &anchor
+	}
 	job := Job{
 		ID:         id,
 		Name:       name,
@@ -84,6 +97,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Job, error) {
 		Include:    input.Include,
 		Exclude:    input.Exclude,
 		Enabled:    input.Enabled,
+		Schedule:   schedule,
 		CreatedAt:  now,
 		UpdatedAt:  now,
 	}
@@ -158,6 +172,20 @@ func (s *Service) Update(ctx context.Context, id string, input UpdateInput) (Job
 	}
 	if input.Enabled != nil {
 		updated.Enabled = *input.Enabled
+	}
+	if input.Schedule != nil {
+		// schedule 原子替换：整体校验归一后覆盖。interval 的相位基准
+		// 随变更重设；其他类型不携带 anchor。
+		if err := input.Schedule.Validate(); err != nil {
+			return Job{}, err
+		}
+		updated.Schedule = input.Schedule.Normalized()
+		if updated.Schedule.Type == ScheduleInterval {
+			anchor := s.Now()
+			updated.Schedule.AnchorAt = &anchor
+		} else {
+			updated.Schedule.AnchorAt = nil
+		}
 	}
 	// 校验合并后的最终 pattern 集合：与 Create 一致，配置入口即拒绝
 	// 非法 pattern（mapping 未变时不触碰 managed metadata）。
