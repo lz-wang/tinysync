@@ -231,7 +231,14 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 
 // execute 运行同步引擎并把终态落库；落库失败只记日志，不改变本轮结果。
 func (r *Runner) execute(ctx context.Context, job Job, remote source.Remote, run *activeRun) {
-	stats, runErr := Run(ctx, RunOptions{Remote: remote, Job: job, Managed: r.managed})
+	stats, runErr := Run(ctx, RunOptions{
+		Remote:                 remote,
+		Job:                    job,
+		Managed:                r.managed,
+		Items:                  runItemRecorder{repo: r.history},
+		RunID:                  run.runID,
+		MaxConcurrentTransfers: r.MaxConcurrentTransfers,
+	})
 	finishedAt := r.Now()
 	final := RunRecord{
 		ID:           run.runID,
@@ -365,6 +372,17 @@ func (r *Runner) findActive(runID string) *activeRun {
 		}
 	}
 	return nil
+}
+
+// runItemRecorder 把引擎的 ItemRecorder 适配到 RunRepository：
+// 文件级明细直接追加到 sync_run_items。
+type runItemRecorder struct {
+	repo RunRepository
+}
+
+// RecordItem 实现 ItemRecorder。
+func (a runItemRecorder) RecordItem(ctx context.Context, item RunItem) error {
+	return a.repo.AppendItem(ctx, item)
 }
 
 // runRecordToStatus 把持久化 run 转为状态快照。

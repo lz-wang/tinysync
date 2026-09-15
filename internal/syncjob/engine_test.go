@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -471,6 +472,249 @@ func TestRunMirrorDeleteRejectsParentSymlink(t *testing.T) {
 	if _, ok := f.managed.files["/link/a.txt"]; !ok {
 		t.Error("managed metadata removed despite rejected delete, want preserved")
 	}
+}
+
+// memItems 是 ItemRecorder 的内存实现。
+type memItems struct {
+	mu    sync.Mutex
+	items []RunItem
+}
+
+func (m *memItems) RecordItem(ctx context.Context, item RunItem) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.items = append(m.items, item)
+	return nil
+}
+
+func (m *memItems) all() []RunItem {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]RunItem(nil), m.items...)
+}
+
+// runWith 用自定义 RunOptions 执行一轮同步。
+func (f *engineFixture) runWith(remote source.Remote, adjust func(*RunOptions)) (RunStats, error) {
+	f.t.Helper()
+	options := RunOptions{Remote: remote, Job: f.job, Managed: f.managed}
+	if adjust != nil {
+		adjust(&options)
+	}
+	return Run(context.Background(), options)
+}
+
+// 文件级明细：变化文件写 create/update/delete/relinquish 条目，
+// unchanged 文件不产生明细。
+func TestRunRecordsItemsOnlyForChanges(t *testing.T) {
+	f := newEngineFixture(t, ModeMirror)
+	items := &memItems{}
+
+	// 首轮：a.txt / b.txt 下载。
+	remote := buildRemote(map[string]string{"/a.txt": "v1", "/b.txt": "keep"}, nil)
+	if _, err := f.runWith(remote, func(o *RunOptions) { o.Items = items; o.RunID = "run_1" }); err != nil {
+		t.Fatalf("first Run: %v", err)
+	}
+	created := items.all()
+	if len(created) != 2 {
+		t.Fatalf("first run items = %+v, want 2 create entries", created)
+	}
+	for _, item := range created {
+		if item.RunID != "run_1" || item.Action != ItemCreate || item.Status != ItemSucceeded || item.Bytes == 0 {
+			t.Errorf("item = %+v, want succeeded create with run_1", item)
+		}
+	}
+
+	// 第二轮全部 unchanged：零明细。
+	if _, err := f.runWith(remote, func(o *RunOptions) { o.Items = items; o.RunID = "run_2" }); err != nil {
+		t.Fatalf("unchanged Run: %v", err)
+	}
+	if got := len(items.all()); got != 2 {
+		t.Fatalf("items after unchanged run = %d, want 2 (no entries for unchanged)", got)
+	}
+
+	// 第三轮：a.txt 更新；排除 b.txt（relinquish）。
+	remote.contents["/a.txt"] = "v2-long"
+	setFingerprint(remote, "/a.txt", "v2-long", 1757879401)
+	f.job.Exclude = []string{"b.txt"}
+	if _, err := f.runWith(remote, func(o *RunOptions) { o.Items = items; o.RunID = "run_3" }); err != nil {
+		t.Fatalf("third Run: %v", err)
+	}
+	var updated, relinquished int
+	for _, item := range items.all() {
+		if item.RunID != "run_3" {
+			continue
+		}
+		switch item.Action {
+		case ItemUpdate:
+			updated++
+			if item.Path != "a.txt" || item.Status != ItemSucceeded {
+				t.Errorf("update item = %+v, want a.txt succeeded", item)
+			}
+		case ItemRelinquish:
+			relinquished++
+			if item.Path != "b.txt" || item.Status != ItemSucceeded {
+				t.Errorf("relinquish item = %+v, want b.txt succeeded", item)
+			}
+		}
+	}
+	if updated != 1 || relinquished != 1 {
+		t.Errorf("third run items = (%d updated, %d relinquished), want (1, 1)", updated, relinquished)
+	}
+
+	// 第四轮：远端只保留 b.txt（继续排除），a.txt 远端消失且仍受管
+	// → Mirror 删除产生 delete 明细。
+	f.job.Exclude = []string{"b.txt"}
+	remote.entries["/"] = []source.FileInfo{fileEntryOf("/b.txt", "keep", 1757879400)}
+	if _, err := f.runWith(remote, func(o *RunOptions) { o.Items = items; o.RunID = "run_4" }); err != nil {
+		t.Fatalf("fourth Run: %v", err)
+	}
+	var deleted int
+	for _, item := range items.all() {
+		if item.RunID == "run_4" && item.Action == ItemDelete {
+			deleted++
+			if item.Status != ItemSucceeded {
+				t.Errorf("delete item = %+v, want succeeded", item)
+			}
+		}
+	}
+	if deleted != 1 {
+		t.Errorf("delete items = %d, want 1", deleted)
+	}
+}
+
+// download 目标冲突记 skipped 明细：文件不覆盖且可追溯。
+func TestRunRecordsConflictItem(t *testing.T) {
+	f := newEngineFixture(t, ModeMirror)
+	if err := os.WriteFile(filepath.Join(f.root, "a.txt"), []byte("mine"), 0o644); err != nil {
+		t.Fatalf("seed unknown: %v", err)
+	}
+	remote := buildRemote(map[string]string{"/a.txt": "remote"}, nil)
+	items := &memItems{}
+
+	if _, err := f.runWith(remote, func(o *RunOptions) { o.Items = items }); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	got := items.all()
+	if len(got) != 1 || got[0].Action != ItemCreate || got[0].Status != ItemSkipped || got[0].Error == "" {
+		t.Fatalf("items = %+v, want one skipped create with reason", got)
+	}
+}
+
+// 传输失败：失败文件记 failed 明细；未派发文件不登记 pending；
+// relinquish 与 Mirror delete 不执行。
+func TestRunTransferFailureItemsAndSafety(t *testing.T) {
+	f := newEngineFixture(t, ModeMirror)
+	if _, err := f.run(buildRemote(map[string]string{"/a.txt": "v1", "/b.txt": "old"}, nil)); err != nil {
+		t.Fatalf("first Run: %v", err)
+	}
+
+	// b.txt 更新但 Open 失败；a.txt 远端消失（Mirror 待删除）。
+	broken := &engineRemote{
+		entries:   map[string][]source.FileInfo{"/": {}},
+		contents:  map[string]string{},
+		overrides: map[string]io.ReadCloser{},
+		openErrs:  map[string]error{},
+	}
+	broken.entries["/"] = []source.FileInfo{{
+		Path:        "/b.txt",
+		Fingerprint: source.Fingerprint{Size: 9, ModifiedAt: time.Unix(1757879402, 0).UTC(), ETag: `"changed"`},
+	}}
+	items := &memItems{}
+
+	_, err := f.runWith(broken, func(o *RunOptions) {
+		o.Items = items
+		o.MaxConcurrentTransfers = 1
+	})
+	if err == nil {
+		t.Fatal("Run with transfer failure = nil, want error")
+	}
+	got := items.all()
+	if len(got) != 1 || got[0].Action != ItemUpdate || got[0].Status != ItemFailed || got[0].Error == "" {
+		t.Fatalf("items = %+v, want one failed update entry", got)
+	}
+	f.mustFile("a.txt", "v1")  // remote delete 未执行
+	f.mustFile("b.txt", "old") // update 失败不破坏旧内容
+	if len(f.managed.files) != 2 {
+		t.Errorf("managed entries = %d, want 2 (untouched)", len(f.managed.files))
+	}
+}
+
+// 并发上限：全进程同时进行的远端下载不超过 MaxConcurrentTransfers，
+// 全部文件仍传输成功。
+func TestRunTransferConcurrencyCapped(t *testing.T) {
+	f := newEngineFixture(t, ModeCopy)
+	files := map[string]string{}
+	for _, name := range []string{"/a", "/b", "/c", "/d", "/e"} {
+		files[name] = "content-of" + name
+	}
+	probe := &probeRemote{
+		engineRemote: buildRemote(files, nil),
+		delay:        40 * time.Millisecond,
+	}
+
+	stats, err := f.runWith(probe, func(o *RunOptions) { o.MaxConcurrentTransfers = 2 })
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if stats.FilesCreated != 5 {
+		t.Errorf("stats = %+v, want 5 created", stats)
+	}
+	if probe.maxSeen > 2 {
+		t.Errorf("concurrent Open peak = %d, want <= 2", probe.maxSeen)
+	}
+	if probe.maxSeen < 2 {
+		t.Errorf("concurrent Open peak = %d, want overlap observed (>= 2)", probe.maxSeen)
+	}
+}
+
+// setFingerprint 按路径更新远端条目的指纹（entries 来自 map 遍历，顺序随机）。
+func setFingerprint(r *engineRemote, path, content string, mtime int64) {
+	for i := range r.entries["/"] {
+		if r.entries["/"][i].Path == path {
+			r.entries["/"][i].Fingerprint = source.Fingerprint{
+				Size:       int64(len(content)),
+				ModifiedAt: time.Unix(mtime, 0).UTC(),
+				ETag:       etagOf(content),
+			}
+			return
+		}
+	}
+	panic("setFingerprint: missing entry " + path)
+}
+
+// fileEntryOf 构造单个远端文件条目。
+func fileEntryOf(path, content string, mtime int64) source.FileInfo {
+	return source.FileInfo{
+		Path: path,
+		Fingerprint: source.Fingerprint{
+			Size:       int64(len(content)),
+			ModifiedAt: time.Unix(mtime, 0).UTC(),
+			ETag:       etagOf(content),
+		},
+	}
+}
+
+// probeRemote 包装 engineRemote 并测量 Open 的并发峰值。
+type probeRemote struct {
+	*engineRemote
+	mu      sync.Mutex
+	current int
+	maxSeen int
+	delay   time.Duration
+}
+
+func (p *probeRemote) Open(ctx context.Context, path string) (io.ReadCloser, error) {
+	p.mu.Lock()
+	p.current++
+	if p.current > p.maxSeen {
+		p.maxSeen = p.current
+	}
+	p.mu.Unlock()
+	time.Sleep(p.delay)
+	p.mu.Lock()
+	p.current--
+	p.mu.Unlock()
+	return p.engineRemote.Open(ctx, path)
 }
 
 // hangingReader 阻塞读取直到 Close，用于模拟慢传输。

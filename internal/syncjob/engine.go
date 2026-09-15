@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"tinysync/internal/source"
@@ -17,9 +18,22 @@ type RunOptions struct {
 	Job Job
 	// Managed 是 managed_files 持久化。
 	Managed ManagedRepository
+	// Items 接收文件级变更明细；nil 表示不记录（只累计 summary）。
+	Items ItemRecorder
+	// RunID 是本轮运行的持久化 ID，写入每条明细。
+	RunID string
+	// MaxConcurrentTransfers 是全进程同时进行的远端下载上限；
+	// <=0 视为 1。远端下载 I/O 并行，SQLite 状态推进始终串行。
+	MaxConcurrentTransfers int
 }
 
-// RunStats 是一轮同步的统计摘要，仅存内存（持久化历史属 v0.4）。
+// ItemRecorder 接收文件级变更明细。返回错误视为本轮失败：历史明细缺失
+// 与 metadata 缺失同等对待，不做静默降级。
+type ItemRecorder interface {
+	RecordItem(ctx context.Context, item RunItem) error
+}
+
+// RunStats 是一轮同步的统计摘要。
 type RunStats struct {
 	FilesTotal       int
 	FilesCreated     int
@@ -29,13 +43,28 @@ type RunStats struct {
 	BytesTransferred int64
 }
 
+// transferJob 是待传输的单文件任务。
+type transferJob struct {
+	entry  planEntry
+	action RunItemAction // ItemCreate | ItemUpdate
+}
+
+// transferOutcome 是一次并发下载的结果。
+type transferOutcome struct {
+	job transferJob
+	err error
+}
+
 // Run 按契约顺序执行一轮同步：完整扫描 → Selector → 读取 managed →
 // 计划 → 本地 preflight → create/update → relinquish → Copy/Mirror
-// remote-delete。强制安全规则：
+// remote-delete。传输阶段为「有界并发下载 + 单协调者串行推进」：
+// pending 登记与 synced 推进全部由协调者串行写（SQLite 单连接），
+// 仅远端下载 I/O 并行。强制安全规则：
 //
 //   - 远端扫描未完整成功：整体失败，零本地变更（含删除）；
-//   - 任一传输失败：整体失败，跳过后续 relinquish 与删除，
-//     失败前已完成传输的文件保持 synced，下一轮继续收敛。
+//   - 任一传输失败：取消剩余工作并等待在途 worker 收敛，整体失败，
+//     跳过后续 relinquish 与删除；失败前已完成传输的文件保持 synced，
+//     已派发未完成的文件保持 pending（下一轮强制重传）继续收敛。
 func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 	var stats RunStats
 	job := opts.Job
@@ -79,24 +108,35 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 	downloader := NewDownloader(opts.Remote)
 	now := time.Now().UTC()
 
-	// transferFile 执行单个文件：pending 登记 → 原子下载 → synced 推进。
-	// pending 先行登记保证传输中断的文件留在 managed 中（Mirror 授权
-	// 语义完整）；下载成功后以本地实际 size/mtime 推进为 synced。
-	transfer := func(e planEntry) error {
-		if err := opts.Managed.Upsert(ctx, []ManagedFile{{
+	// recordItem 记录文件级明细；记录失败使本轮失败（不静默丢历史）。
+	recordItem := func(item RunItem) error {
+		if opts.Items == nil {
+			return nil
+		}
+		item.RunID = opts.RunID
+		if err := opts.Items.RecordItem(ctx, item); err != nil {
+			return fmt.Errorf("record run item %s: %w", item.Path, err)
+		}
+		return nil
+	}
+
+	// markPending 在派发前登记 pending（协调者串行写）：pending 先行
+	// 登记保证传输中断的文件留在 managed 中（Mirror 授权语义完整）。
+	markPending := func(j transferJob) error {
+		return opts.Managed.Upsert(ctx, []ManagedFile{{
 			JobID:        job.ID,
-			RemotePath:   e.remote.Path,
-			LocalRelPath: e.relPath,
+			RemotePath:   j.entry.remote.Path,
+			LocalRelPath: j.entry.relPath,
 			State:        StatePending,
-			Remote:       e.remote.Fingerprint,
+			Remote:       j.entry.remote.Fingerprint,
 			UpdatedAt:    now,
-		}}); err != nil {
-			return err
-		}
-		if err := downloader.Download(ctx, e.remote.Path, job.LocalRoot, e.relPath, e.remote.Fingerprint); err != nil {
-			return err
-		}
-		target, err := resolveLocalTarget(job.LocalRoot, e.relPath)
+		}})
+	}
+
+	// applySuccess 在下载成功后以本地实际 size/mtime 推进 synced
+	//（协调者串行写）并记录明细。
+	applySuccess := func(j transferJob) error {
+		target, err := resolveLocalTarget(job.LocalRoot, j.entry.relPath)
 		if err != nil {
 			return err
 		}
@@ -106,60 +146,154 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 		}
 		mtimeNs := info.ModTime().UnixNano()
 		size := info.Size()
-		return opts.Managed.Upsert(ctx, []ManagedFile{{
+		if err := opts.Managed.Upsert(ctx, []ManagedFile{{
 			JobID:        job.ID,
-			RemotePath:   e.remote.Path,
-			LocalRelPath: e.relPath,
+			RemotePath:   j.entry.remote.Path,
+			LocalRelPath: j.entry.relPath,
 			State:        StateSynced,
-			Remote:       e.remote.Fingerprint,
+			Remote:       j.entry.remote.Fingerprint,
 			LocalSize:    &size,
 			LocalMtimeNs: &mtimeNs,
 			UpdatedAt:    now,
-		}})
+		}}); err != nil {
+			return err
+		}
+		if err := recordItem(RunItem{
+			Path:   j.entry.relPath,
+			Action: j.action,
+			Status: ItemSucceeded,
+			Bytes:  size,
+		}); err != nil {
+			return err
+		}
+		switch j.action {
+		case ItemCreate:
+			stats.FilesCreated++
+		case ItemUpdate:
+			stats.FilesUpdated++
+		}
+		stats.BytesTransferred += size
+		return nil
 	}
 
-	// 6a. skip 条目校验本地文件在位：managed synced 但本地缺失时转为修复下载。
+	// 组装传输任务（确定性顺序：修复 → 下载 → 更新）。
+	var jobs []transferJob
+
+	// 6a. skip 条目校验本地文件在位：managed synced 但本地缺失时转为
+	// 修复下载；其余 unchanged 只累计 skipped（不写明细）。
 	for _, e := range plan.Skips {
 		target, err := resolveLocalTarget(job.LocalRoot, e.relPath)
 		if err == nil {
 			if _, statErr := os.Lstat(target); os.IsNotExist(statErr) {
-				if err := transfer(e); err != nil {
-					return stats, transferFailure(err)
-				}
-				stats.FilesCreated++
-				stats.BytesTransferred += e.remote.Fingerprint.Size
+				jobs = append(jobs, transferJob{entry: e, action: ItemCreate})
 				continue
 			}
 		}
 		stats.FilesSkipped++
 	}
 
-	// 6b. downloads。
+	// 6b. downloads：冲突条目记 skipped 明细（永不覆盖），其余入队。
 	for _, e := range plan.Downloads {
-		if _, conflicted := conflicts[e.relPath]; conflicted {
+		if reason, conflicted := conflicts[e.relPath]; conflicted {
 			stats.FilesSkipped++
+			if err := recordItem(RunItem{
+				Path:   e.relPath,
+				Action: ItemCreate,
+				Status: ItemSkipped,
+				Error:  reason,
+			}); err != nil {
+				return stats, err
+			}
 			continue
 		}
-		if err := transfer(e); err != nil {
-			return stats, transferFailure(err)
-		}
-		stats.FilesCreated++
-		stats.BytesTransferred += e.remote.Fingerprint.Size
+		jobs = append(jobs, transferJob{entry: e, action: ItemCreate})
 	}
 
 	// 6c. updates。
 	for _, e := range plan.Updates {
-		if err := transfer(e); err != nil {
-			return stats, transferFailure(err)
+		jobs = append(jobs, transferJob{entry: e, action: ItemUpdate})
+	}
+
+	// 传输阶段：pending 登记串行、下载并发、结果单点收敛。
+	// 首次失败后停止派发、取消在途工作并排空结果——失败后完成的下载
+	// 不推进 synced（保留 pending 供下一轮重传），relinquish 与
+	// Mirror delete 一律不执行。
+	limit := opts.MaxConcurrentTransfers
+	if limit < 1 {
+		limit = 1
+	}
+	var (
+		wg       sync.WaitGroup
+		results  = make(chan transferOutcome)
+		firstErr error
+		inflight int
+	)
+	fail := func(err error) {
+		if firstErr == nil {
+			firstErr = err
 		}
-		stats.FilesUpdated++
-		stats.BytesTransferred += e.remote.Fingerprint.Size
+	}
+	next := 0
+	for next < len(jobs) || inflight > 0 {
+		for next < len(jobs) && inflight < limit && firstErr == nil && ctx.Err() == nil {
+			j := jobs[next]
+			next++
+			if err := markPending(j); err != nil {
+				fail(transferFailure(fmt.Errorf("register pending for %s: %w", j.entry.relPath, err)))
+				break
+			}
+			inflight++
+			wg.Add(1)
+			go func(j transferJob) {
+				defer wg.Done()
+				err := downloader.Download(ctx, j.entry.remote.Path, job.LocalRoot, j.entry.relPath, j.entry.remote.Fingerprint)
+				results <- transferOutcome{job: j, err: err}
+			}(j)
+		}
+		if inflight == 0 {
+			break
+		}
+		out := <-results
+		inflight--
+		if out.err != nil {
+			fail(transferFailure(fmt.Errorf("transfer %s: %w", out.job.entry.relPath, out.err)))
+			// 失败明细尽力记录：主错误（传输失败）优先，不被覆盖。
+			_ = recordItem(RunItem{
+				Path:   out.job.entry.relPath,
+				Action: out.job.action,
+				Status: ItemFailed,
+				Error:  out.err.Error(),
+			})
+			continue
+		}
+		if firstErr != nil || ctx.Err() != nil {
+			continue
+		}
+		if err := applySuccess(out.job); err != nil {
+			fail(transferFailure(fmt.Errorf("finalize transfer %s: %w", out.job.entry.relPath, err)))
+		}
+	}
+	wg.Wait()
+	if firstErr != nil {
+		return stats, firstErr
+	}
+	if err := ctx.Err(); err != nil {
+		return stats, transferFailure(err)
 	}
 
 	// 7. relinquish：仅清理 metadata，本地文件保留。
 	if len(plan.Relinquish) > 0 {
 		if err := opts.Managed.Delete(ctx, job.ID, plan.Relinquish); err != nil {
 			return stats, err
+		}
+		for _, remotePath := range plan.Relinquish {
+			rel, err := remoteRelPath(job.RemoteRoot, remotePath)
+			if err != nil {
+				return stats, err
+			}
+			if err := recordItem(RunItem{Path: rel, Action: ItemRelinquish, Status: ItemSucceeded}); err != nil {
+				return stats, err
+			}
 		}
 	}
 
@@ -182,9 +316,19 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 				return stats, fmt.Errorf("mirror delete %s: %w", target, err)
 			}
 			if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+				// 主错误优先；失败明细尽力记录。
+				_ = recordItem(RunItem{
+					Path:   rel,
+					Action: ItemDelete,
+					Status: ItemFailed,
+					Error:  err.Error(),
+				})
 				return stats, fmt.Errorf("mirror delete %s: %w", target, err)
 			}
 			stats.FilesDeleted++
+			if err := recordItem(RunItem{Path: rel, Action: ItemDelete, Status: ItemSucceeded}); err != nil {
+				return stats, err
+			}
 		}
 		if err := opts.Managed.Delete(ctx, job.ID, plan.Deletes); err != nil {
 			return stats, err
