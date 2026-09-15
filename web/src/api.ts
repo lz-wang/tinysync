@@ -196,3 +196,41 @@ export function updateJob(id: string, input: UpdateJobInput): Promise<JobRespons
 export async function deleteJob(id: string): Promise<void> {
     await requestJSON<void>('DELETE', `/api/v1/jobs/${id}`)
 }
+
+// RunState 是手动运行的状态机取值；运行记录只存内存，
+// 进程重启后回到 idle。
+export type RunState = 'idle' | 'running' | 'succeeded' | 'failed'
+
+// RunStatsResponse 是一轮同步的统计摘要。
+export interface RunStatsResponse {
+    files_total: number
+    files_created: number
+    files_updated: number
+    files_deleted: number
+    files_skipped: number
+    bytes_transferred: number
+}
+
+// RunStatusResponse 对应 GET /api/v1/jobs/:id/status。
+export interface RunStatusResponse {
+    run_id?: string
+    state: RunState
+    started_at?: string
+    finished_at?: string
+    stats: RunStatsResponse
+    error?: string
+}
+
+// RunJobResponse 对应 POST /api/v1/jobs/:id/run 的 202 响应。
+export interface RunJobResponse {
+    run_id: string
+    state: RunState
+}
+
+export function runJob(id: string): Promise<RunJobResponse> {
+    return requestJSON<RunJobResponse>('POST', `/api/v1/jobs/${id}/run`)
+}
+
+export function fetchJobStatus(id: string): Promise<RunStatusResponse> {
+    return requestJSON<RunStatusResponse>('GET', `/api/v1/jobs/${id}/status`)
+}
