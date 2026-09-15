@@ -3,6 +3,7 @@ module tinysync
 go 1.26.0
 
 require (
+	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/emersion/go-webdav v0.7.1-0.20260411103855-046391163625
 	github.com/gin-gonic/gin v1.12.0
 	github.com/urfave/cli/v3 v3.11.0
