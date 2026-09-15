@@ -42,6 +42,10 @@ type Repository interface {
 	List(ctx context.Context) ([]Job, error)
 	// Update 整体替换可变字段；不存在时返回 ErrNotFound。
 	Update(ctx context.Context, job Job) error
+	// UpdateAndResetManaged 在单个事务中更新 Job 并删除其全部 managed
+	// 记录。mapping（source / remoteRoot / localRoot）变更必须原子：
+	// metadata 释放与配置替换同成功同失败，不存在半成功状态。
+	UpdateAndResetManaged(ctx context.Context, job Job) error
 	// Delete 硬删除 Job（managed metadata 由 FK CASCADE 清理）；
 	// 不存在时返回 ErrNotFound。
 	Delete(ctx context.Context, id string) error

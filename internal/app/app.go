@@ -48,7 +48,7 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 	// 应用服务带 LocalRoot 归属保护，Runner 提供手动运行与内存状态。
 	jobRepo := jobsqlite.NewRepository(db)
 	managedRepo := jobsqlite.NewManagedRepository(db)
-	jobs := syncjob.NewService(jobRepo, managedRepo, sources, cfg.DataDir)
+	jobs := syncjob.NewService(jobRepo, sources, cfg.DataDir)
 	runner := syncjob.NewRunner(jobRepo, managedRepo, sources, webdav.NewFactory())
 
 	server := api.NewServer(cfg, webFS, api.Dependencies{

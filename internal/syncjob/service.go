@@ -20,10 +20,9 @@ type SourceService interface {
 }
 
 // Service 是 Sync Job 的应用服务：校验、LocalRoot 归属保护、ID 与
-// 时间戳生成、mapping 变更时的 metadata 安全释放；调用方不接触存储细节。
+// 时间戳生成、mapping 变更时的原子 metadata 释放；调用方不接触存储细节。
 type Service struct {
 	repo    Repository
-	managed ManagedRepository
 	sources SourceService
 	// dataDir 是 TinySync 数据目录，同步 LocalRoot 不得与其重叠。
 	dataDir string
@@ -32,10 +31,9 @@ type Service struct {
 }
 
 // NewService 构造应用服务；dataDir 用于归属保护检查。
-func NewService(repo Repository, managed ManagedRepository, sources SourceService, dataDir string) *Service {
+func NewService(repo Repository, sources SourceService, dataDir string) *Service {
 	return &Service{
 		repo:    repo,
-		managed: managed,
 		sources: sources,
 		dataDir: dataDir,
 		Now:     func() time.Time { return time.Now().UTC() },
@@ -101,9 +99,9 @@ func (s *Service) List(ctx context.Context) ([]Job, error) {
 }
 
 // Update 按 ID 更新 Job，nil 字段保留现有值。mapping 字段（source /
-// remoteRoot / localRoot）变更时安全释放 managed metadata——先释放再更新：
-// 释放后更新失败时旧 mapping 下次 Run 会自然重建 metadata，而反向顺序
-// 若更新成功、释放失败，残留记录会被 Mirror 误判为远端消失。
+// remoteRoot / localRoot）变更时在单个事务中原子替换配置并释放 managed
+// metadata——分开执行存在半成功状态（如更新撞 name 冲突而 metadata
+// 已清空，Job 将永久失去对本地文件的管理关系）。
 func (s *Service) Update(ctx context.Context, id string, input UpdateInput) (Job, error) {
 	current, err := s.repo.Get(ctx, id)
 	if err != nil {
@@ -160,12 +158,13 @@ func (s *Service) Update(ctx context.Context, id string, input UpdateInput) (Job
 	mappingChanged := updated.SourceID != current.SourceID ||
 		updated.RemoteRoot != current.RemoteRoot ||
 		updated.LocalRoot != current.LocalRoot
+	updated.UpdatedAt = s.Now()
 	if mappingChanged {
-		if err := s.managed.DeleteAllForJob(ctx, id); err != nil {
+		if err := s.repo.UpdateAndResetManaged(ctx, updated); err != nil {
 			return Job{}, err
 		}
+		return updated, nil
 	}
-	updated.UpdatedAt = s.Now()
 	if err := s.repo.Update(ctx, updated); err != nil {
 		return Job{}, err
 	}

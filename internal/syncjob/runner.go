@@ -167,6 +167,15 @@ func (r *Runner) Start(ctx context.Context, jobID string) (string, error) {
 	return runID, nil
 }
 
+// IsRunning 判断指定 Job 是否正在运行，供 API 层修改/删除保护使用：
+// 运行中的 Job 拒绝 PATCH / DELETE，避免旧 mapping 的 metadata Upsert
+// 与配置变更交叉产生状态竞争。
+func (r *Runner) IsRunning(jobID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.current != nil && r.current.jobID == jobID
+}
+
 // GetStatus 返回 Job 的运行状态：进行中返回 running 快照，
 // 否则返回最近一次完成的状态；从未运行过为 idle。
 func (r *Runner) GetStatus(ctx context.Context, jobID string) (RunStatus, error) {

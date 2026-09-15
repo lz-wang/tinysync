@@ -93,6 +93,10 @@ func (r *memJobRepo) Update(ctx context.Context, job Job) error {
 	return nil
 }
 
+func (r *memJobRepo) UpdateAndResetManaged(ctx context.Context, job Job) error {
+	return r.Update(ctx, job)
+}
+
 func (r *memJobRepo) Delete(ctx context.Context, id string) error {
 	delete(r.jobs, id)
 	return nil

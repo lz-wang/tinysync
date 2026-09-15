@@ -44,7 +44,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	env := &testEnv{
 		db:        db,
 		managed:   sqlite.NewManagedRepository(db),
-		service:   syncjob.NewService(sqlite.NewRepository(db), sqlite.NewManagedRepository(db), sourceSvc, dataDir),
+		service:   syncjob.NewService(sqlite.NewRepository(db), sourceSvc, dataDir),
 		sourceSvc: sourceSvc,
 		dataDir:   dataDir,
 		now:       time.Unix(1757879400, 0).UTC(),
@@ -268,6 +268,50 @@ func TestUpdateReleasesMetadataOnMappingChange(t *testing.T) {
 	}
 	if got := managedCount(t, env, job.ID); got != 0 {
 		t.Errorf("after remoteRoot change managed = %d, want 0", got)
+	}
+}
+
+// mapping 变更与配置替换必须原子：更新撞 name 唯一冲突时 metadata
+// 不丢失——先删后更的旧实现会在半成功状态下让 Job 永久失去对本地
+// 文件的管理关系（下轮 planner 把远端文件当 unknown local 全部跳过）。
+func TestUpdateMappingConflictKeepsManaged(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+	sourceID := env.mustSource(t)
+
+	job, err := env.service.Create(ctx, syncjob.CreateInput{
+		Name:       "photos-" + newTestName(),
+		SourceID:   sourceID,
+		RemoteRoot: "/photos",
+		LocalRoot:  t.TempDir(),
+		Mode:       syncjob.ModeMirror,
+		Enabled:    true,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	other, err := env.service.Create(ctx, syncjob.CreateInput{
+		Name:       "taken-" + newTestName(),
+		SourceID:   sourceID,
+		RemoteRoot: "/docs",
+		LocalRoot:  t.TempDir(),
+		Mode:       syncjob.ModeCopy,
+		Enabled:    true,
+	})
+	if err != nil {
+		t.Fatalf("Create other: %v", err)
+	}
+	seedManaged(t, env, job.ID)
+
+	// 一次 PATCH 同时改 remoteRoot（mapping 变更）与 name（撞唯一约束）。
+	root := "/elsewhere"
+	name := other.Name
+	_, err = env.service.Update(ctx, job.ID, syncjob.UpdateInput{RemoteRoot: &root, Name: &name})
+	if !errors.Is(err, syncjob.ErrConflict) {
+		t.Fatalf("Update with mapping + name conflict = %v, want ErrConflict", err)
+	}
+	if got := managedCount(t, env, job.ID); got != 1 {
+		t.Errorf("managed after failed mapping update = %d, want 1 (metadata must survive)", got)
 	}
 }
 

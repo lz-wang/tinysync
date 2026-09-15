@@ -80,7 +80,7 @@ func newJobRouter(t *testing.T, remote source.Remote) *gin.Engine {
 	sourceSvc := source.NewService(sourcesqlite.New(db), fakeFactory{remote: remote})
 	jobRepo := jobsqlite.NewRepository(db)
 	managedRepo := jobsqlite.NewManagedRepository(db)
-	jobSvc := syncjob.NewService(jobRepo, managedRepo, sourceSvc, dataDir)
+	jobSvc := syncjob.NewService(jobRepo, sourceSvc, dataDir)
 	runner := syncjob.NewRunner(jobRepo, managedRepo, sourceSvc, fakeFactory{remote: remote})
 	return NewRouter(testWebFS(), Dependencies{Sources: sourceSvc, Jobs: jobSvc, Runner: runner})
 }
@@ -406,6 +406,39 @@ func TestJobRunConflictAndFailureAPI(t *testing.T) {
 	}
 	if errMsg, _ := final["error"].(string); !strings.Contains(errMsg, "remote exploded") {
 		t.Errorf("error = %q, want containing remote exploded", errMsg)
+	}
+}
+
+// 运行中的 Job 拒绝修改与删除（409）：旧 mapping 的传输可能仍在
+// 推进 metadata，与配置变更/删除交叉会产生状态竞争；运行结束后恢复。
+func TestJobRunningRejectsUpdateAndDeleteAPI(t *testing.T) {
+	gate := make(chan struct{})
+	router := newJobRouter(t, &gateRemote{gate: gate})
+	sourceID := createSourceViaAPI(t, router, "NAS", true)
+	payload, _ := jobPayload(t, "InFlight", sourceID, "copy", true)
+	rec := doJSON(t, router, "POST", "/api/v1/jobs", payload)
+	jobID, _ := decodeJSON(t, rec)["id"].(string)
+
+	if rec := doJSON(t, router, "POST", "/api/v1/jobs/"+jobID+"/run", ""); rec.Code != http.StatusAccepted {
+		t.Fatalf("run status = %d, want 202", rec.Code)
+	}
+	waitForRunState(t, router, jobID, syncjob.RunRunning)
+
+	if rec := doJSON(t, router, "PATCH", "/api/v1/jobs/"+jobID, `{"name": "Renamed"}`); rec.Code != http.StatusConflict {
+		t.Errorf("PATCH running job = %d %s, want 409", rec.Code, rec.Body.String())
+	}
+	if rec := doJSON(t, router, "DELETE", "/api/v1/jobs/"+jobID, ""); rec.Code != http.StatusConflict {
+		t.Errorf("DELETE running job = %d %s, want 409", rec.Code, rec.Body.String())
+	}
+
+	// 运行结束（gate 释放 → 扫描失败）后恢复可改可删。
+	close(gate)
+	waitForRunState(t, router, jobID, syncjob.RunSucceeded, syncjob.RunFailed)
+	if rec := doJSON(t, router, "PATCH", "/api/v1/jobs/"+jobID, `{"name": "Renamed"}`); rec.Code != http.StatusOK {
+		t.Errorf("PATCH after run = %d %s, want 200", rec.Code, rec.Body.String())
+	}
+	if rec := doJSON(t, router, "DELETE", "/api/v1/jobs/"+jobID, ""); rec.Code != http.StatusNoContent {
+		t.Errorf("DELETE after run = %d, want 204", rec.Code)
 	}
 }
 

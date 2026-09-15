@@ -98,11 +98,46 @@ func (r *Repository) List(ctx context.Context) ([]syncjob.Job, error) {
 
 // Update 实现 syncjob.Repository：整体替换可变字段。
 func (r *Repository) Update(ctx context.Context, job syncjob.Job) error {
-	include, exclude, err := marshalPatterns(job.Include, job.Exclude)
+	res, err := r.updateExec(ctx, r.db, job)
 	if err != nil {
 		return err
 	}
-	res, err := r.db.ExecContext(ctx, `UPDATE sync_jobs SET
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return fmt.Errorf("%w: %s", syncjob.ErrNotFound, job.ID)
+	}
+	return nil
+}
+
+// UpdateAndResetManaged 实现 syncjob.Repository：单事务内整体替换
+// 可变字段并删除该 Job 的全部 managed 记录。mapping 变更与 metadata
+// 释放同成功同失败——先删后更或先更后删的分开执行都存在半成功状态
+// （如更新撞 name 唯一冲突时 metadata 已被清空，Job 失去管理关系）。
+func (r *Repository) UpdateAndResetManaged(ctx context.Context, job syncjob.Job) error {
+	return storage.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+		res, err := r.updateExec(ctx, tx, job)
+		if err != nil {
+			return err
+		}
+		if n, err := res.RowsAffected(); err == nil && n == 0 {
+			return fmt.Errorf("%w: %s", syncjob.ErrNotFound, job.ID)
+		}
+		if _, err := tx.ExecContext(ctx, "DELETE FROM managed_files WHERE job_id = ?", job.ID); err != nil {
+			return fmt.Errorf("delete managed files of job %s: %w", job.ID, err)
+		}
+		return nil
+	})
+}
+
+// updateExec 执行 sync_jobs 的整体更新语句，execer 兼容 *sql.DB 与
+// *sql.Tx；约束错误映射为领域错误。
+func (r *Repository) updateExec(ctx context.Context, exec interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}, job syncjob.Job) (sql.Result, error) {
+	include, exclude, err := marshalPatterns(job.Include, job.Exclude)
+	if err != nil {
+		return nil, err
+	}
+	res, err := exec.ExecContext(ctx, `UPDATE sync_jobs SET
 		name = ?, source_id = ?, remote_root = ?, local_root = ?, mode = ?,
 		include_patterns = ?, exclude_patterns = ?, enabled = ?, updated_at = ?
 		WHERE id = ?`,
@@ -110,12 +145,9 @@ func (r *Repository) Update(ctx context.Context, job syncjob.Job) error {
 		include, exclude, boolToInt(job.Enabled), job.UpdatedAt.UnixMilli(), job.ID,
 	)
 	if err != nil {
-		return mapJobError("update job", job.ID, err)
+		return nil, mapJobError("update job", job.ID, err)
 	}
-	if n, err := res.RowsAffected(); err == nil && n == 0 {
-		return fmt.Errorf("%w: %s", syncjob.ErrNotFound, job.ID)
-	}
-	return nil
+	return res, nil
 }
 
 // Delete 实现 syncjob.Repository（硬删除；managed_files 经 CASCADE 清理）。

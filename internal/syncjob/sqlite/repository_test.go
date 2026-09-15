@@ -196,6 +196,79 @@ func TestJobDeleteAndCountBySource(t *testing.T) {
 	}
 }
 
+// UpdateAndResetManaged 原子性：成功时配置替换且 managed 清空；
+// 更新失败（name 唯一冲突）时整体回滚，managed 记录完整保留。
+func TestJobUpdateAndResetManagedAtomic(t *testing.T) {
+	db, repo, managed := openRepos(t)
+	mustSeedSource(t, db, "src_a")
+	if err := repo.Create(context.Background(), newJob("job_a", "photos", "src_a")); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := repo.Create(context.Background(), newJob("job_b", "docs", "src_a")); err != nil {
+		t.Fatalf("Create b: %v", err)
+	}
+	seedManagedRows(t, managed, "job_a")
+
+	// 成功路径：更新生效，managed 清空。
+	updated := newJob("job_a", "vacation", "src_a")
+	if err := repo.UpdateAndResetManaged(context.Background(), updated); err != nil {
+		t.Fatalf("UpdateAndResetManaged: %v", err)
+	}
+	got, err := repo.Get(context.Background(), "job_a")
+	if err != nil || got.Name != "vacation" {
+		t.Fatalf("Get after reset = %+v (%v), want name vacation", got, err)
+	}
+	if rows := countManaged(t, managed, "job_a"); rows != 0 {
+		t.Errorf("managed after reset = %d, want 0", rows)
+	}
+
+	// 失败路径：mapping 改动 + name 撞唯一约束 → 回滚，managed 保留。
+	seedManagedRows(t, managed, "job_a")
+	conflicting := newJob("job_a", "docs", "src_a")
+	conflicting.RemoteRoot = "/elsewhere"
+	if err := repo.UpdateAndResetManaged(context.Background(), conflicting); !errors.Is(err, syncjob.ErrConflict) {
+		t.Fatalf("conflicting reset = %v, want ErrConflict", err)
+	}
+	if rows := countManaged(t, managed, "job_a"); rows != 1 {
+		t.Errorf("managed after rollback = %d, want 1 (metadata must survive)", rows)
+	}
+	kept, err := repo.Get(context.Background(), "job_a")
+	if err != nil {
+		t.Fatalf("Get after rollback: %v", err)
+	}
+	if kept.Name != "vacation" || kept.RemoteRoot != "/photos" {
+		t.Errorf("job after rollback = %+v, want successful update state intact", kept)
+	}
+}
+
+// seedManagedRows 向 managed 仓库写入一条测试记录。
+func seedManagedRows(t *testing.T, managed *ManagedRepository, jobID string) {
+	t.Helper()
+	size := int64(10)
+	err := managed.Upsert(context.Background(), []syncjob.ManagedFile{{
+		JobID:        jobID,
+		RemotePath:   "/photos/a.jpg",
+		LocalRelPath: "photos/a.jpg",
+		State:        syncjob.StateSynced,
+		Remote:       source.Fingerprint{Size: 10, ETag: `"a"`},
+		LocalSize:    &size,
+		UpdatedAt:    time.Unix(1757879400, 0).UTC(),
+	}})
+	if err != nil {
+		t.Fatalf("seed managed rows: %v", err)
+	}
+}
+
+// countManaged 统计 Job 的 managed 记录数。
+func countManaged(t *testing.T, managed *ManagedRepository, jobID string) int {
+	t.Helper()
+	list, err := managed.ListByJob(context.Background(), jobID)
+	if err != nil {
+		t.Fatalf("list managed: %v", err)
+	}
+	return len(list)
+}
+
 // managed 记录 Upsert（同 key 更新）、ListByJob 排序、批量 Delete、
 // 全量 DeleteAllForJob，以及 local_rel_path 唯一冲突。
 func TestManagedFileCRUD(t *testing.T) {

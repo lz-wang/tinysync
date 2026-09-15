@@ -301,56 +301,68 @@ function JobTable({
                     </TableRow>
                 </TableHead>
                 <TableBody>
-                    {jobs.map(job => (
-                        <TableRow key={job.id}>
-                            <TableCell>{job.name}</TableCell>
-                            <TableCell>{sourceName(job.source_id)}</TableCell>
-                            <TableCell sx={{ fontFamily: 'monospace' }}>
-                                {job.remote_root}
-                            </TableCell>
-                            <TableCell sx={{ fontFamily: 'monospace' }}>{job.local_root}</TableCell>
-                            <TableCell>
-                                <Chip
-                                    label={job.mode === 'mirror' ? 'Mirror' : 'Copy'}
-                                    color={job.mode === 'mirror' ? 'warning' : 'default'}
-                                    size="small"
-                                />
-                            </TableCell>
-                            <TableCell align="right">
-                                <Chip
-                                    label={job.enabled ? 'On' : 'Off'}
-                                    color={job.enabled ? 'success' : 'default'}
-                                    size="small"
-                                />
-                            </TableCell>
-                            <TableCell>
-                                <RunCell
-                                    job={job}
-                                    status={runStates[job.id]}
-                                    anyRunning={anyRunning}
-                                    onRun={() => onRun(job)}
-                                />
-                            </TableCell>
-                            <TableCell align="right">
-                                <Stack
-                                    direction="row"
-                                    spacing={0.5}
-                                    sx={{ justifyContent: 'flex-end' }}
-                                >
-                                    <Button size="small" onClick={() => onEdit(job)}>
-                                        Edit
-                                    </Button>
-                                    <Button
+                    {jobs.map(job => {
+                        // 运行中的 Job 禁用 Edit / Delete：后端同样以 409
+                        // 拒绝，避免传输中配置变更或删除产生状态竞争。
+                        const running = runStates[job.id]?.state === 'running'
+                        return (
+                            <TableRow key={job.id}>
+                                <TableCell>{job.name}</TableCell>
+                                <TableCell>{sourceName(job.source_id)}</TableCell>
+                                <TableCell sx={{ fontFamily: 'monospace' }}>
+                                    {job.remote_root}
+                                </TableCell>
+                                <TableCell sx={{ fontFamily: 'monospace' }}>
+                                    {job.local_root}
+                                </TableCell>
+                                <TableCell>
+                                    <Chip
+                                        label={job.mode === 'mirror' ? 'Mirror' : 'Copy'}
+                                        color={job.mode === 'mirror' ? 'warning' : 'default'}
                                         size="small"
-                                        color="error"
-                                        onClick={() => onDelete(job)}
+                                    />
+                                </TableCell>
+                                <TableCell align="right">
+                                    <Chip
+                                        label={job.enabled ? 'On' : 'Off'}
+                                        color={job.enabled ? 'success' : 'default'}
+                                        size="small"
+                                    />
+                                </TableCell>
+                                <TableCell>
+                                    <RunCell
+                                        job={job}
+                                        status={runStates[job.id]}
+                                        anyRunning={anyRunning}
+                                        onRun={() => onRun(job)}
+                                    />
+                                </TableCell>
+                                <TableCell align="right">
+                                    <Stack
+                                        direction="row"
+                                        spacing={0.5}
+                                        sx={{ justifyContent: 'flex-end' }}
                                     >
-                                        Delete
-                                    </Button>
-                                </Stack>
-                            </TableCell>
-                        </TableRow>
-                    ))}
+                                        <Button
+                                            size="small"
+                                            disabled={running}
+                                            onClick={() => onEdit(job)}
+                                        >
+                                            Edit
+                                        </Button>
+                                        <Button
+                                            size="small"
+                                            color="error"
+                                            disabled={running}
+                                            onClick={() => onDelete(job)}
+                                        >
+                                            Delete
+                                        </Button>
+                                    </Stack>
+                                </TableCell>
+                            </TableRow>
+                        )
+                    })}
                 </TableBody>
             </Table>
         </TableContainer>
