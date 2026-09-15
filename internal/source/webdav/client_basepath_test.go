@@ -160,3 +160,84 @@ func TestDotDotStaysInsideRoot(t *testing.T) {
 	}
 	assertRequestsStayInRoot(t, bs)
 }
+
+// trailingSlashServer 模拟要求 collection URL 以 / 结尾、且不自动重定向的
+// WebDAV 服务：只有 /dav/user/ 提供正常服务，/dav/user 直接 405，
+// 不帮客户端修正 URL。
+type trailingSlashServer struct {
+	server *httptest.Server
+
+	mu       sync.Mutex
+	seenPath []string
+}
+
+// newTrailingSlashServer 启动严格 trailing slash 测试服务。
+// 刻意不使用 http.ServeMux：它会把 /dav/user 自动 301 到 /dav/user/，
+// 从而掩盖 trailing slash 丢失问题。
+func newTrailingSlashServer(t *testing.T) *trailingSlashServer {
+	t.Helper()
+	ts := &trailingSlashServer{}
+	dav := &xnetdav.Handler{
+		FileSystem: testFS(t),
+		LockSystem: xnetdav.NewMemLS(),
+		Prefix:     "/dav/user/",
+	}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ts.record(r.URL.Path)
+		switch r.URL.Path {
+		case "/dav/user/":
+			dav.ServeHTTP(w, r)
+		case "/dav/user":
+			http.Error(w, "missing trailing slash", http.StatusMethodNotAllowed)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	ts.server = startServer(t, handler)
+	return ts
+}
+
+func (ts *trailingSlashServer) record(path string) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	ts.seenPath = append(ts.seenPath, path)
+}
+
+func (ts *trailingSlashServer) paths() []string {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	return append([]string(nil), ts.seenPath...)
+}
+
+// endpoint 以 / 结尾时，Stat("/") 的第一个请求必须就是 /dav/user/，
+// 不能依赖服务器把 /dav/user 重定向回来。go-webdav v0.7.0 的
+// ResolveHref 会丢掉 endpoint 的 trailing slash，导致这类服务直接
+// 拒绝 Source root 请求。
+func TestStatRootPreservesTrailingSlash(t *testing.T) {
+	ts := newTrailingSlashServer(t)
+	factory := NewFactory()
+	r, err := factory.Create(source.Source{
+		Name:     "test",
+		Type:     source.TypeWebDAV,
+		Endpoint: ts.server.URL + "/dav/user/",
+	}, "")
+	if err != nil {
+		t.Fatalf("Factory.Create: %v", err)
+	}
+
+	if _, err := r.Stat(t.Context(), "/"); err != nil {
+		t.Fatalf("Stat / on %s: %v", ts.server.URL+"/dav/user/", err)
+	}
+	got := ts.paths()
+	if len(got) == 0 {
+		t.Fatal("no request reached the server")
+	}
+	if got[0] != "/dav/user/" {
+		t.Errorf("first request = %q, want /dav/user/ without redirect", got[0])
+	}
+	for _, p := range got {
+		if !strings.HasPrefix(p, "/dav/user/") {
+			t.Errorf("request escaped collection: %s", p)
+		}
+	}
+}
