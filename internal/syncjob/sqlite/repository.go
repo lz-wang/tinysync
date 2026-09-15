@@ -21,7 +21,9 @@ import (
 
 // jobColumns 是 sync_jobs 的普通读取列清单。
 const jobColumns = "id, name, source_id, remote_root, local_root, mode, " +
-	"include_patterns, exclude_patterns, enabled, created_at, updated_at"
+	"include_patterns, exclude_patterns, enabled, " +
+	"schedule_type, schedule_value, schedule_timezone, schedule_anchor_at, " +
+	"created_at, updated_at"
 
 // managedColumns 是 managed_files 的读取列清单。
 const managedColumns = "job_id, remote_path, local_rel_path, state, " +
@@ -54,12 +56,16 @@ func (r *Repository) Create(ctx context.Context, job syncjob.Job) error {
 	if err != nil {
 		return err
 	}
+	schedule := persistedSchedule(job.Schedule)
 	_, err = r.db.ExecContext(ctx, `INSERT INTO sync_jobs
 		(id, name, source_id, remote_root, local_root, mode,
-		 include_patterns, exclude_patterns, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 include_patterns, exclude_patterns, enabled,
+		 schedule_type, schedule_value, schedule_timezone, schedule_anchor_at,
+		 created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		job.ID, job.Name, job.SourceID, job.RemoteRoot, job.LocalRoot, string(job.Mode),
 		include, exclude, boolToInt(job.Enabled),
+		string(schedule.Type), schedule.Value, schedule.Timezone, anchorMillis(schedule.AnchorAt),
 		job.CreatedAt.UnixMilli(), job.UpdatedAt.UnixMilli(),
 	)
 	return mapJobError("create job", job.ID, err)
@@ -137,12 +143,17 @@ func (r *Repository) updateExec(ctx context.Context, exec interface {
 	if err != nil {
 		return nil, err
 	}
+	schedule := persistedSchedule(job.Schedule)
 	res, err := exec.ExecContext(ctx, `UPDATE sync_jobs SET
 		name = ?, source_id = ?, remote_root = ?, local_root = ?, mode = ?,
-		include_patterns = ?, exclude_patterns = ?, enabled = ?, updated_at = ?
+		include_patterns = ?, exclude_patterns = ?, enabled = ?,
+		schedule_type = ?, schedule_value = ?, schedule_timezone = ?,
+		schedule_anchor_at = ?, updated_at = ?
 		WHERE id = ?`,
 		job.Name, job.SourceID, job.RemoteRoot, job.LocalRoot, string(job.Mode),
-		include, exclude, boolToInt(job.Enabled), job.UpdatedAt.UnixMilli(), job.ID,
+		include, exclude, boolToInt(job.Enabled),
+		string(schedule.Type), schedule.Value, schedule.Timezone, anchorMillis(schedule.AnchorAt),
+		job.UpdatedAt.UnixMilli(), job.ID,
 	)
 	if err != nil {
 		return nil, mapJobError("update job", job.ID, err)
@@ -266,17 +277,22 @@ type rowScanner interface {
 // scanJob 把一行结果转为领域对象；时间为 UTC。
 func scanJob(row rowScanner) (syncjob.Job, error) {
 	var (
-		job             syncjob.Job
-		mode            string
-		includeJSON     string
-		excludeJSON     string
-		enabled         int
-		createdAtMillis int64
-		updatedAtMillis int64
+		job              syncjob.Job
+		mode             string
+		includeJSON      string
+		excludeJSON      string
+		enabled          int
+		scheduleType     string
+		scheduleValue    string
+		scheduleTimezone string
+		scheduleAnchor   sql.NullInt64
+		createdAtMillis  int64
+		updatedAtMillis  int64
 	)
 	if err := row.Scan(&job.ID, &job.Name, &job.SourceID, &job.RemoteRoot,
 		&job.LocalRoot, &mode, &includeJSON, &excludeJSON,
-		&enabled, &createdAtMillis, &updatedAtMillis); err != nil {
+		&enabled, &scheduleType, &scheduleValue, &scheduleTimezone, &scheduleAnchor,
+		&createdAtMillis, &updatedAtMillis); err != nil {
 		return syncjob.Job{}, err
 	}
 	job.Mode = syncjob.Mode(mode)
@@ -288,9 +304,41 @@ func scanJob(row rowScanner) (syncjob.Job, error) {
 		return syncjob.Job{}, fmt.Errorf("parse exclude patterns: %w", err)
 	}
 	job.Enabled = enabled == 1
+	job.Schedule = syncjob.Schedule{
+		Type:     syncjob.ScheduleType(scheduleType),
+		Value:    scheduleValue,
+		Timezone: scheduleTimezone,
+		AnchorAt: anchorFromMillis(scheduleAnchor),
+	}
 	job.CreatedAt = time.UnixMilli(createdAtMillis).UTC()
 	job.UpdatedAt = time.UnixMilli(updatedAtMillis).UTC()
 	return job, nil
+}
+
+// persistedSchedule 归一待写入的 schedule：类型为零值或未知时按 manual
+// 落库，与 schema CHECK 约束一致（Job 构造方省略 Schedule 视为手动）。
+func persistedSchedule(s syncjob.Schedule) syncjob.Schedule {
+	if !s.Type.Valid() {
+		return syncjob.Schedule{Type: syncjob.ScheduleManual}
+	}
+	return s
+}
+
+// anchorMillis 把 interval anchor 转为可空列：nil 存 NULL。
+func anchorMillis(t *time.Time) sql.NullInt64 {
+	if t == nil {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: t.UnixMilli(), Valid: true}
+}
+
+// anchorFromMillis 把可空列读回 anchor 指针，时间为 UTC。
+func anchorFromMillis(n sql.NullInt64) *time.Time {
+	if !n.Valid {
+		return nil
+	}
+	t := time.UnixMilli(n.Int64).UTC()
+	return &t
 }
 
 // scanManaged 把一行结果转为领域对象；时间为 UTC。

@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"reflect"
+	"strconv"
 	"testing"
 	"time"
 
@@ -40,7 +41,8 @@ func mustSeedSource(t *testing.T, db *sql.DB, id string) {
 	}
 }
 
-// newJob 构造测试用领域对象，时间戳固定以便断言。
+// newJob 构造测试用领域对象，时间戳固定以便断言；schedule 显式 manual，
+// 与落库后的取值一致（省略 Schedule 的零值 Job 由仓库归一为 manual）。
 func newJob(id, name, sourceID string) syncjob.Job {
 	now := time.Unix(1757879400, 0).UTC()
 	return syncjob.Job{
@@ -53,6 +55,7 @@ func newJob(id, name, sourceID string) syncjob.Job {
 		Include:    []string{"**/*.jpg"},
 		Exclude:    []string{"tmp/**"},
 		Enabled:    true,
+		Schedule:   syncjob.Schedule{Type: syncjob.ScheduleManual},
 		CreatedAt:  now,
 		UpdatedAt:  now,
 	}
@@ -163,6 +166,86 @@ func TestJobUpdate(t *testing.T) {
 	}
 	if err := repo.Update(context.Background(), newJob("job_a", "docs", "src_a")); !errors.Is(err, syncjob.ErrConflict) {
 		t.Errorf("Update to conflicting name = %v, want ErrConflict", err)
+	}
+}
+
+// schedule 字段往返：四种类型（含 anchor 有无）Create/Get/Update 深度相等；
+// 省略 Schedule 的零值 Job 按 manual 落库（CHECK 约束不接受空类型）；
+// UpdateAndResetManaged 不丢失 schedule。
+func TestJobScheduleRoundTrip(t *testing.T) {
+	db, repo, managed := openRepos(t)
+	mustSeedSource(t, db, "src_a")
+	ctx := context.Background()
+
+	anchor := time.Unix(1757879400, 0).UTC()
+	onceAt := anchor.Add(24 * time.Hour)
+	schedules := []syncjob.Schedule{
+		{Type: syncjob.ScheduleManual},
+		{Type: syncjob.ScheduleOnce, Value: onceAt.Format(time.RFC3339)},
+		{Type: syncjob.ScheduleInterval, Value: "30m", AnchorAt: &anchor},
+		{Type: syncjob.ScheduleCron, Value: "0 3 * * *", Timezone: "Asia/Singapore"},
+	}
+	for i, schedule := range schedules {
+		id := "job_s" + strconv.Itoa(i)
+		job := newJob(id, "sched-"+strconv.Itoa(i), "src_a")
+		job.Schedule = schedule
+		if err := repo.Create(ctx, job); err != nil {
+			t.Fatalf("Create %s: %v", id, err)
+		}
+		got, err := repo.Get(ctx, id)
+		if err != nil {
+			t.Fatalf("Get %s: %v", id, err)
+		}
+		if !reflect.DeepEqual(got, job) {
+			t.Errorf("Get %s = %+v, want %+v", id, got, job)
+		}
+		// interval anchor 往返后保持 UTC 时刻相等。
+		if schedule.AnchorAt != nil {
+			if got.Schedule.AnchorAt == nil || !got.Schedule.AnchorAt.Equal(*schedule.AnchorAt) {
+				t.Errorf("anchor roundtrip = %v, want %v", got.Schedule.AnchorAt, *schedule.AnchorAt)
+			}
+		}
+	}
+
+	// 零值 schedule 落库为 manual。
+	raw := syncjob.Job{
+		ID: "job_raw", Name: "raw", SourceID: "src_a",
+		RemoteRoot: "/", LocalRoot: "/tmp/raw", Mode: syncjob.ModeCopy, Enabled: true,
+		CreatedAt: anchor, UpdatedAt: anchor,
+	}
+	if err := repo.Create(ctx, raw); err != nil {
+		t.Fatalf("Create raw: %v", err)
+	}
+	got, err := repo.Get(ctx, "job_raw")
+	if err != nil {
+		t.Fatalf("Get raw: %v", err)
+	}
+	if got.Schedule != (syncjob.Schedule{Type: syncjob.ScheduleManual}) {
+		t.Errorf("raw schedule = %+v, want manual", got.Schedule)
+	}
+
+	// UpdateAndResetManaged：mapping 变更时 schedule 完整保留。
+	job := newJob("job_reset", "reset", "src_a")
+	job.Schedule = schedules[3]
+	if err := repo.Create(ctx, job); err != nil {
+		t.Fatalf("Create reset: %v", err)
+	}
+	seedManagedRows(t, managed, "job_reset")
+	mappingChange := job
+	mappingChange.Name = "reset-2"
+	mappingChange.RemoteRoot = "/elsewhere"
+	if err := repo.UpdateAndResetManaged(ctx, mappingChange); err != nil {
+		t.Fatalf("UpdateAndResetManaged: %v", err)
+	}
+	kept, err := repo.Get(ctx, "job_reset")
+	if err != nil {
+		t.Fatalf("Get after reset: %v", err)
+	}
+	if kept.Schedule != job.Schedule {
+		t.Errorf("schedule after reset = %+v, want %+v", kept.Schedule, job.Schedule)
+	}
+	if rows := countManaged(t, managed, "job_reset"); rows != 0 {
+		t.Errorf("managed after reset = %d, want 0", rows)
 	}
 }
 

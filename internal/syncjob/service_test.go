@@ -504,10 +504,20 @@ func TestCreateAndUpdateSchedule(t *testing.T) {
 		t.Errorf("managed after schedule change = %d, want 1 (not a mapping change)", got)
 	}
 
-	// 非法 schedule 拒绝更新（持久化回读断言随 schedule 字段落库一并覆盖）。
+	// 非法 schedule 拒绝更新，现有配置不受影响（含持久化回读）。
 	worse := syncjob.Schedule{Type: syncjob.ScheduleOnce, Value: "not-a-time"}
 	if _, err := env.service.Update(ctx, job.ID, syncjob.UpdateInput{Schedule: &worse}); !errors.Is(err, syncjob.ErrInvalid) {
 		t.Errorf("Update with bad once = %v, want ErrInvalid", err)
+	}
+	after, err := env.service.Get(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if after.Schedule.Type != syncjob.ScheduleCron ||
+		after.Schedule.Value != "0 3 * * *" ||
+		after.Schedule.Timezone != "Asia/Singapore" ||
+		after.Schedule.AnchorAt != nil {
+		t.Errorf("schedule after failed update = %+v, want cron kept", after.Schedule)
 	}
 }
 
