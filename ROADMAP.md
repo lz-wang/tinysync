@@ -19,7 +19,7 @@ Local Files）已实现；调度、持久化历史、发布、认证与 MCP 尚�
 
 ## 当前状态与优先级
 
-本地核对日期：2026-09-15。当前实现、测试和 workflow 支持以下判断。
+本地核对日期：2026-09-16。当前实现、测试和 workflow 支持以下判断。
 
 - **已实现**：`serve`、`version` / `--version`、数据目录与端口配置、日志、HTTP 生命周期、health/version API、内嵌状态页及 fallback 构建；SQLite 持久化与 migration、Source 领域（模型、SQLite Repository、WebDAV 只读 adapter、应用服务）、Source CRUD 与连接测试 REST API、Sources Web 管理界面；Sync Job 领域（模型、Selector、remote scanner、planner、原子下载、Copy/Mirror engine、手动运行 Runner、SQLite Repository）、Jobs REST API 与 Web 管理界面、端到端与跨重启持久化测试。
 - **已有工程配置**：Git 版本注入、Go 测试、前端静态检查、Codecov、六平台构建、三平台原生 Smoke、Build/Release 分离及 WebDAV 镜像。
@@ -28,11 +28,13 @@ Local Files）已实现；调度、持久化历史、发布、认证与 MCP 尚�
 
 v0.2.0 持久化与 Source 管理已发布：远端 Release workflow 成功（2026-09-15），
 六平台发行档与 `checksums.txt` 核对到位，WebDAV 镜像与通知独立验收通过。
-v0.3.0 WebDAV Pull Sync 已完成实现并通过本地与浏览器验收：
-第一条手动触发的 WebDAV → Local 单向同步链路可用（Copy / Mirror、
-doublestar 选择器、原子下载、managed_files 删除授权、手动 Run 与实时状态）。
-当前状态为**实现完成，发布待验收**：待 `make ci`、远端三平台 smoke 与
-六平台构建通过后打 `v0.3.0` tag 进入发布验收。
+v0.3.0 WebDAV Pull Sync 已发布：第一条手动触发的 WebDAV → Local 单向
+同步链路可用（Copy / Mirror、doublestar 选择器、原子下载、managed_files
+删除授权、手动 Run 与实时状态）。tag `v0.3.0` 指向 751f2b7，Release
+workflow run 34998126731 成功（2026-09-16），六平台发行档与
+`checksums.txt` 核对到位，WebDAV 镜像与 Pushover 通知送达确认。
+主线进入 v0.4.0 调度与同步历史：自动调度、重叠跳过、并发控制与
+`sync_runs` / `sync_run_items` 持久化历史。
 
 ## 架构与边界
 
@@ -56,8 +58,8 @@ doublestar 选择器、原子下载、managed_files 删除授权、手动 Run �
 | --- | --- | --- | --- |
 | v0.1.0 | [工程与发布基线](docs/roadmap/01-engineering-baseline.md) | 已发布，镜像待独立验收 | 验证 tag、检查、三平台 Smoke、六平台发行档及 GitHub Release；记录镜像结果 |
 | v0.2.0 | [持久化与 Source](docs/roadmap/02-persistence-and-sources.md) | 已完成 | Web UI / REST 创建 WebDAV Source，持久化并验证连接，尚不执行同步 |
-| v0.3.0 | [WebDAV Pull Sync](docs/roadmap/03-webdav-pull-sync.md) | 实现完成，发布待验收 | 手动执行 Copy / Mirror，支持选择器、原子下载与本地文件归属保护 |
-| v0.4.0 | [调度与同步历史](docs/roadmap/04-scheduler-and-history.md) | 规划 | 自动调度、重叠跳过、并发控制及运行/文件明细可追踪 |
+| v0.3.0 | [WebDAV Pull Sync](docs/roadmap/03-webdav-pull-sync.md) | 已完成 | 手动执行 Copy / Mirror，支持选择器、原子下载与本地文件归属保护 |
+| v0.4.0 | [调度与同步历史](docs/roadmap/04-scheduler-and-history.md) | 当前阶段 | 自动调度、重叠跳过、并发控制及运行/文件明细可追踪 |
 | v0.5.0 | [S3 与 SFTP](docs/roadmap/05-s3-and-sftp.md) | 规划 | 同一同步引擎支持三种协议，上层不依赖协议分支 |
 | v0.6.0 | [文件浏览与发布](docs/roadmap/06-file-browser-and-publishing.md) | 规划 | 只读远端浏览、本地下载与选择性 HTTP 发布，限制访问根目录 |
 | v0.7.0 | [认证与 API Token](docs/roadmap/07-authentication-and-tokens.md) | 规划 | Web session 与 API Token 分离，支持 scope、过期和撤销 |

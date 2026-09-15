@@ -423,9 +423,15 @@ Release 验收 → `docs: 记录 v0.3.0 发布验收并推进 v0.4.0`）。
 `make build` 通过；核心同步矩阵 engine tests、真实 WebDAV + SQLite 端到端、
 跨重启持久化、原生 smoke（含 Job binary 链路）全部通过；浏览器人工验收
 （创建 Job、Run Now、Succeeded 统计、Failed 错误展示、运行状态跨刷新保持）。
+发布前评审追加的 4 个修复 commit（中断传输可恢复、路径安全加固、mapping
+原子转换、配置校验收紧）已合入并复跑全部门禁。
 
-发布验收待执行：`make ci` / 远端三平台 smoke / 六平台构建 / `v0.3.0` tag /
-Release 资产核对。当前状态：**实现完成，发布待验收**。
+发布验收已完成：`v0.3.0` tag 指向 751f2b7，Release workflow run
+34998126731 成功（2026-09-16：validate、三平台原生 smoke、release checks、
+GitHub Release 与 WebDAV 镜像、Pushover 通知送达）；六个发行档与
+`checksums.txt` 核对到位；WebDAV 镜像上传至
+`/Shares/github/lz-wang/tinysync/0.3.0/`（6 archives + checksums.txt，
+逐文件核对上传日志）。当前状态：**已完成**。
 
 ## 端到端验收
 
