@@ -25,9 +25,9 @@ Sync Job → Selector → Sync Engine → Local Files 尚未实现。
 - **v0.1.0 已发布**：远端 `v0.1.0` Release workflow 成功（2026-09-14），六平台发行档案与 `checksums.txt` 已核对到位；WebDAV 镜像按发布规范需独立验收，不能由 GitHub Release 成功推导。
 - **尚未实现**：Sync Job、同步引擎、调度与历史、文件浏览/发布、认证与 Token、MCP。
 
-v0.2.0 持久化与 Source 管理已实现并通过本地验证（单测、原生 smoke、浏览器验收），
-发布验收（tag / Release workflow / 发行资产）待执行；随后主线进入 v0.3.0
-WebDAV Pull Sync。
+v0.2.0 持久化与 Source 管理已发布：远端 Release workflow 成功（2026-09-15），
+六平台发行档与 `checksums.txt` 核对到位，WebDAV 镜像与通知独立验收通过。
+主线进入 v0.3.0 WebDAV Pull Sync。
 只创建 Source 所需的表，不预建全部领域；v0.3.0 再交付第一个手动同步 Job。
 工程基线已有实现，下一阶段重心转向领域能力。
 
@@ -52,8 +52,8 @@ WebDAV Pull Sync。
 | 版本 | 阶段方案 | 当前状态 | 完成标准摘要 |
 | --- | --- | --- | --- |
 | v0.1.0 | [工程与发布基线](docs/roadmap/01-engineering-baseline.md) | 已发布，镜像待独立验收 | 验证 tag、检查、三平台 Smoke、六平台发行档及 GitHub Release；记录镜像结果 |
-| v0.2.0 | [持久化与 Source](docs/roadmap/02-persistence-and-sources.md) | 实现完成，发布待验收 | Web UI / REST 创建 WebDAV Source，持久化并验证连接，尚不执行同步 |
-| v0.3.0 | [WebDAV Pull Sync](docs/roadmap/03-webdav-pull-sync.md) | 规划 | 手动执行 Copy / Mirror，支持选择器、原子下载与本地文件归属保护 |
+| v0.2.0 | [持久化与 Source](docs/roadmap/02-persistence-and-sources.md) | 已完成 | Web UI / REST 创建 WebDAV Source，持久化并验证连接，尚不执行同步 |
+| v0.3.0 | [WebDAV Pull Sync](docs/roadmap/03-webdav-pull-sync.md) | 当前阶段 | 手动执行 Copy / Mirror，支持选择器、原子下载与本地文件归属保护 |
 | v0.4.0 | [调度与同步历史](docs/roadmap/04-scheduler-and-history.md) | 规划 | 自动调度、重叠跳过、并发控制及运行/文件明细可追踪 |
 | v0.5.0 | [S3 与 SFTP](docs/roadmap/05-s3-and-sftp.md) | 规划 | 同一同步引擎支持三种协议，上层不依赖协议分支 |
 | v0.6.0 | [文件浏览与发布](docs/roadmap/06-file-browser-and-publishing.md) | 规划 | 只读远端浏览、本地下载与选择性 HTTP 发布，限制访问根目录 |

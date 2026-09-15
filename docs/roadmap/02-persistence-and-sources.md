@@ -153,5 +153,9 @@ Connection Test 测试完成（含连接失败）返回 200 与 `ok` / `latency_
 
 本地验收已完成：Go 单测（storage / source / api 全覆盖）、原生 smoke
 （真实 binary + SQLite + REST + 跨重启持久化）、浏览器人工验收（创建、刷新、
-编辑、连接测试、删除、进程重启）。发布验收（tag、Release workflow、发行资产、
-三平台原生 smoke）待执行。
+编辑、连接测试、删除、进程重启）。
+
+发布验收已完成：`v0.2.0` tag 指向 a0859d3，Release workflow 成功
+（2026-09-15，run 34977460579），三平台原生 smoke 与 `make ci` 通过，
+六个发行档及 `checksums.txt` 已核对到位；WebDAV 镜像与 Pushover 通知
+独立验收通过。
