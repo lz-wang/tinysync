@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
@@ -19,10 +20,19 @@ import (
 	"tinysync/internal/source"
 )
 
-// HTTP 客户端硬化参数。
+// HTTP 客户端硬化参数。刻意不设置 http.Client.Timeout：它会覆盖整个
+// response body 生命周期，把正常的大文件下载拦腰砍断；连接与响应头
+// 阶段由 Transport 分段超时兜底，body 传输由调用方的 Run context 控制。
 const (
-	// clientTimeout 是单次 HTTP 请求的整体超时上限。
-	clientTimeout = 15 * time.Second
+	// dialTimeout 是建立 TCP 连接的最长时间。
+	dialTimeout = 10 * time.Second
+	// tlsHandshakeTimeout 是 TLS 握手的最长时间。
+	tlsHandshakeTimeout = 10 * time.Second
+	// responseHeaderTimeout 是发出请求到收到响应头的最长时间，
+	// 不约束 body 传输。
+	responseHeaderTimeout = 30 * time.Second
+	// idleConnTimeout 是空闲连接在池中的存活时间。
+	idleConnTimeout = 90 * time.Second
 	// maxRedirects 是单次请求允许的最多重定向次数。
 	maxRedirects = 5
 )
@@ -63,12 +73,26 @@ func normalizeHrefPrefix(endpointPath string) string {
 }
 
 // newHTTPClient 构造带安全边界的 HTTP 客户端：
-// 整体超时、最多 5 次重定向、拒绝跨 host 重定向（避免凭据外流）、
+// Transport 分段超时、最多 5 次重定向、拒绝跨 host 重定向（避免凭据外流）、
 // 拒绝 HTTPS 到 HTTP 的降级重定向。
 func newHTTPClient() *http.Client {
 	return &http.Client{
-		Timeout:       clientTimeout,
+		Transport:     newHTTPTransport(responseHeaderTimeout),
 		CheckRedirect: redirectPolicy,
+	}
+}
+
+// newHTTPTransport 构造分段超时的 Transport：dial / TLS 握手 / 响应头
+// 各自限时，body 传输不限时；headerTimeout 由调用方按场景注入。
+func newHTTPTransport(headerTimeout time.Duration) *http.Transport {
+	return &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   dialTimeout,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   tlsHandshakeTimeout,
+		ResponseHeaderTimeout: headerTimeout,
+		IdleConnTimeout:       idleConnTimeout,
 	}
 }
 
