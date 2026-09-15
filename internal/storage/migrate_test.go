@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -33,6 +34,17 @@ func sourceCount(t *testing.T, db *sql.DB) int {
 	return count
 }
 
+// embeddedLatestVersion 返回内嵌 migration 的最新版本号，
+// 供「升级到最新版本」类断言使用，避免随新 migration 硬编码失效。
+func embeddedLatestVersion(t *testing.T) int {
+	t.Helper()
+	migrations, err := loadMigrations(migrationFS)
+	if err != nil {
+		t.Fatalf("load migrations: %v", err)
+	}
+	return migrations[len(migrations)-1].version
+}
+
 // 全新数据库自动初始化到最新版本，sources 表可用且约束生效。
 func TestMigrateFreshDatabase(t *testing.T) {
 	dataDir := t.TempDir()
@@ -46,7 +58,7 @@ func TestMigrateFreshDatabase(t *testing.T) {
 	if err := Migrate(ctx, db, dataDir); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
-	assertVersion(t, db, 1)
+	assertVersion(t, db, embeddedLatestVersion(t))
 
 	insert := func(id, name string) error {
 		_, err := db.Exec(`INSERT INTO sources
@@ -95,7 +107,7 @@ func TestMigrateIdempotent(t *testing.T) {
 	if err := Migrate(ctx, db, dataDir); err != nil {
 		t.Fatalf("second Migrate: %v", err)
 	}
-	assertVersion(t, db, 1)
+	assertVersion(t, db, embeddedLatestVersion(t))
 	if got := sourceCount(t, db); got != 1 {
 		t.Errorf("sources rows = %d, want 1", got)
 	}
@@ -125,7 +137,7 @@ func TestMigrateLegacyDatabaseCreatesBackup(t *testing.T) {
 	if err := Migrate(ctx, db, dataDir); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
-	assertVersion(t, db, 1)
+	assertVersion(t, db, embeddedLatestVersion(t))
 
 	var legacy string
 	if err := db.QueryRow("SELECT value FROM legacy_data").Scan(&legacy); err != nil {
@@ -243,6 +255,116 @@ func TestMigrateRollsBackFirstBrokenMigration(t *testing.T) {
 	}
 	if count != 0 {
 		t.Errorf("user tables after rollback = %d, want 0", count)
+	}
+}
+
+// 真实 v1→v2 升级回归：v0.2.0 数据库（含 Source 与密码）迁移后数据完整
+// 保留、被引用 Source 禁删、备份可重开且停留在 v1、sync_jobs 可用。
+func TestMigrateV1ToV2PreservesSources(t *testing.T) {
+	dataDir := t.TempDir()
+	db, err := Open(dataDir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	// 用真实的 0001 schema 先构造 v0.2.0 形态的库。
+	v1SQL, err := fs.ReadFile(migrationFS, "migrations/0001_sources.sql")
+	if err != nil {
+		t.Fatalf("read embedded v1 schema: %v", err)
+	}
+	v1FS := fstest.MapFS{
+		"migrations/0001_sources.sql": &fstest.MapFile{Data: v1SQL},
+	}
+	if err := migrate(ctx, db, dataDir, v1FS); err != nil {
+		t.Fatalf("build v1 database: %v", err)
+	}
+	assertVersion(t, db, 1)
+	if _, err := db.Exec(`INSERT INTO sources
+		(id, name, type, endpoint, username, password, enabled, created_at, updated_at)
+		VALUES ('src_a', 'nas', 'webdav', 'https://example.com/dav/', 'user', 'secret', 1, 1, 1)`); err != nil {
+		t.Fatalf("insert source: %v", err)
+	}
+
+	// 真实迁移到最新版本。
+	if err := Migrate(ctx, db, dataDir); err != nil {
+		t.Fatalf("Migrate v1->v2: %v", err)
+	}
+	assertVersion(t, db, 2)
+
+	// Source 完整保留（含密码明文）。
+	var name, password string
+	if err := db.QueryRow(
+		"SELECT name, password FROM sources WHERE id = 'src_a'",
+	).Scan(&name, &password); err != nil {
+		t.Fatalf("query source after migrate: %v", err)
+	}
+	if name != "nas" || password != "secret" {
+		t.Errorf("source after migrate = (%q, %q), want (nas, secret)", name, password)
+	}
+
+	// sync_jobs 可创建，且受 FK RESTRICT 保护：被引用的 Source 禁删。
+	if _, err := db.Exec(`INSERT INTO sync_jobs
+		(id, name, source_id, remote_root, local_root, mode,
+		 include_patterns, exclude_patterns, enabled, created_at, updated_at)
+		VALUES ('job_a', 'photos', 'src_a', '/photos', '/tmp/backup', 'mirror',
+		 '[]', '[]', 1, 1, 1)`); err != nil {
+		t.Fatalf("insert sync job: %v", err)
+	}
+	if _, err := db.Exec("DELETE FROM sources WHERE id = 'src_a'"); err == nil {
+		t.Fatal("delete referenced source = nil, want FK RESTRICT error")
+	}
+
+	// managed_files 可创建，受 UNIQUE(job_id, local_rel_path) 与 CASCADE 保护。
+	insertManaged := func(remotePath, relPath string) error {
+		_, err := db.Exec(`INSERT INTO managed_files
+			(job_id, remote_path, local_rel_path, state, remote_size,
+			 remote_mtime_ns, remote_etag, remote_checksum, remote_version,
+			 local_size, local_mtime_ns, updated_at)
+			VALUES ('job_a', ?, ?, 'synced', 10, 1, '', '', '', 10, 1, 1)`,
+			remotePath, relPath)
+		return err
+	}
+	if err := insertManaged("/photos/a.jpg", "photos/a.jpg"); err != nil {
+		t.Fatalf("insert managed file: %v", err)
+	}
+	if err := insertManaged("/photos/b.jpg", "photos/a.jpg"); err == nil {
+		t.Fatal("insert duplicate local_rel_path = nil, want UNIQUE violation")
+	}
+	if _, err := db.Exec("DELETE FROM sync_jobs WHERE id = 'job_a'"); err != nil {
+		t.Fatalf("delete sync job: %v", err)
+	}
+	var managed int
+	if err := db.QueryRow("SELECT count(*) FROM managed_files").Scan(&managed); err != nil {
+		t.Fatalf("count managed files: %v", err)
+	}
+	if managed != 0 {
+		t.Errorf("managed rows after job delete = %d, want 0 (CASCADE)", managed)
+	}
+
+	// 升级备份存在、可重开、停留在 v1 且含迁移前数据。
+	entries, err := os.ReadDir(filepath.Join(dataDir, backupsDirName))
+	if err != nil {
+		t.Fatalf("read backups dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("backup files = %d, want 1", len(entries))
+	}
+	if !strings.HasPrefix(entries[0].Name(), "tinysync-v1-") {
+		t.Errorf("backup name = %q, want tinysync-v1- prefix", entries[0].Name())
+	}
+	backupDB, err := sql.Open("sqlite", filepath.Join(dataDir, backupsDirName, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("open backup: %v", err)
+	}
+	defer backupDB.Close()
+	assertVersion(t, backupDB, 1)
+	if got := sourceCount(t, backupDB); got != 1 {
+		t.Errorf("backup sources rows = %d, want 1", got)
+	}
+	if _, err := backupDB.Query("SELECT count(*) FROM sync_jobs"); err == nil {
+		t.Error("backup should not contain sync_jobs table")
 	}
 }
 
