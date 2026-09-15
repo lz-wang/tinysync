@@ -39,7 +39,12 @@ func NewCommand(webFS fs.FS) *cli.Command {
 				Usage: "启动 TinySync 服务（Web UI + REST API）",
 				Flags: serveFlags(),
 				Action: func(ctx context.Context, c *cli.Command) error {
-					return runServer(ctx, c.String("datadir"), c.Int("port"), webFS)
+					return runServer(ctx, config.Options{
+						DataDir:                c.String("datadir"),
+						Port:                   c.Int("port"),
+						MaxConcurrentJobs:      c.Int("max-concurrent-jobs"),
+						MaxConcurrentTransfers: c.Int("max-concurrent-transfers"),
+					}, webFS)
 				},
 			},
 			{
@@ -54,7 +59,7 @@ func NewCommand(webFS fs.FS) *cli.Command {
 	}
 }
 
-// serveFlags 是 serve 子命令的启动参数：datadir 与 port。
+// serveFlags 是 serve 子命令的启动参数：datadir、port 与并发上限。
 // 环境变量作为默认值来源，命令行参数优先。
 func serveFlags() []cli.Flag {
 	return []cli.Flag{
@@ -70,13 +75,25 @@ func serveFlags() []cli.Flag {
 			Value:   config.DefaultPort,
 			Sources: cli.EnvVars("TINYSYNC_PORT"),
 		},
+		&cli.IntFlag{
+			Name:    "max-concurrent-jobs",
+			Usage:   "同时运行的同步 Job 数上限",
+			Value:   config.DefaultMaxConcurrentJobs,
+			Sources: cli.EnvVars("TINYSYNC_MAX_CONCURRENT_JOBS"),
+		},
+		&cli.IntFlag{
+			Name:    "max-concurrent-transfers",
+			Usage:   "同时进行的远端文件下载上限",
+			Value:   config.DefaultMaxConcurrentTransfers,
+			Sources: cli.EnvVars("TINYSYNC_MAX_CONCURRENT_TRANSFERS"),
+		},
 	}
 }
 
-// runServer 用 CLI/env 传入的 datadir/port 加载配置、初始化日志，
+// runServer 用 CLI/env 传入的配置加载 Config、初始化日志，
 // 交给 app.Run 启动服务并阻塞至 ctx 取消。
-func runServer(ctx context.Context, dataDir string, port int, webFS fs.FS) error {
-	cfg, err := config.Load(config.Options{DataDir: dataDir, Port: port})
+func runServer(ctx context.Context, opts config.Options, webFS fs.FS) error {
+	cfg, err := config.Load(opts)
 	if err != nil {
 		return err
 	}

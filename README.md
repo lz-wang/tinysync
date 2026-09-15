@@ -38,7 +38,10 @@ tinysync version    # 打印版本号（同 --version）
 tinysync --version  # 打印版本号
 ```
 
-环境变量 `TINYSYNC_DATADIR`、`TINYSYNC_PORT` 可作为 `--datadir`、`--port`
+环境变量 `TINYSYNC_DATADIR`、`TINYSYNC_PORT`、`TINYSYNC_MAX_CONCURRENT_JOBS`、
+`TINYSYNC_MAX_CONCURRENT_TRANSFERS` 可作为 `--datadir`、`--port`、
+`--max-concurrent-jobs`（同时运行的同步 Job 数上限，默认 1）、
+`--max-concurrent-transfers`（同时进行的远端文件下载上限，默认 4）
 的默认值；命令行参数优先。
 
 ## 版本机制

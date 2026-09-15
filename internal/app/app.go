@@ -58,11 +58,13 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 
 	// 装配 Sync Job 领域：仓库共享同一 DB（FK RESTRICT / CASCADE 生效），
 	// 应用服务带 LocalRoot 归属保护，Runner 提供手动运行并以持久化
-	// 历史为运行状态事实来源。
+	// 历史为运行状态事实来源；并发上限来自运行配置。
 	jobRepo := jobsqlite.NewRepository(db)
 	managedRepo := jobsqlite.NewManagedRepository(db)
 	jobs := syncjob.NewService(jobRepo, sources, cfg.DataDir)
 	runner := syncjob.NewRunner(jobRepo, managedRepo, sources, webdav.NewFactory(), runs)
+	runner.MaxConcurrentJobs = cfg.MaxConcurrentJobs
+	runner.MaxConcurrentTransfers = cfg.MaxConcurrentTransfers
 	scheduler := syncjob.NewScheduler(jobRepo, runner, runs)
 
 	server := api.NewServer(cfg, webFS, api.Dependencies{

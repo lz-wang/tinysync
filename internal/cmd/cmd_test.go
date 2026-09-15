@@ -49,6 +49,12 @@ func TestNewCommand(t *testing.T) {
 	if !hasFlag("serve", "port") {
 		t.Error("serve command has no --port flag")
 	}
+	if !hasFlag("serve", "max-concurrent-jobs") {
+		t.Error("serve command has no --max-concurrent-jobs flag")
+	}
+	if !hasFlag("serve", "max-concurrent-transfers") {
+		t.Error("serve command has no --max-concurrent-transfers flag")
+	}
 
 	// serve 作为主命令不应 Hidden。
 	for _, c := range root.Commands {

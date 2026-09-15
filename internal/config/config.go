@@ -15,19 +15,32 @@ const DefaultPort = 9466
 // DefaultDataDir 是默认运行时数据根目录。
 const DefaultDataDir = "./data"
 
+// 并发默认值：Job 数保持 v0.3 的全局单运行行为，远端下载并发给到
+// 适度吞吐（SQLite 状态推进始终串行，不受此值影响）。
+const (
+	DefaultMaxConcurrentJobs      = 1
+	DefaultMaxConcurrentTransfers = 4
+)
+
 // Config 是进程运行所需的全部配置。
 type Config struct {
 	// DataDir 是运行时数据根目录（日志在 <datadir>/logs/）。
 	DataDir string
 	// Port 是 HTTP 监听端口。
 	Port int
+	// MaxConcurrentJobs 是全进程同时运行的同步 Job 数上限。
+	MaxConcurrentJobs int
+	// MaxConcurrentTransfers 是全进程同时进行的远端文件下载上限。
+	MaxConcurrentTransfers int
 }
 
 // Default 返回内置默认配置。
 func Default() *Config {
 	return &Config{
-		DataDir: DefaultDataDir,
-		Port:    DefaultPort,
+		DataDir:                DefaultDataDir,
+		Port:                   DefaultPort,
+		MaxConcurrentJobs:      DefaultMaxConcurrentJobs,
+		MaxConcurrentTransfers: DefaultMaxConcurrentTransfers,
 	}
 }
 
@@ -35,10 +48,13 @@ func Default() *Config {
 type Options struct {
 	DataDir string
 	Port    int
+	// 并发参数为 0 表示未提供（回退默认值）。
+	MaxConcurrentJobs      int
+	MaxConcurrentTransfers int
 }
 
 // Load 用传入参数装配 Config：空缺项回退默认值，DataDir 解析为绝对路径，
-// Port 校验合法范围。
+// Port 校验合法范围，并发参数必须为正整数。
 func Load(opts Options) (*Config, error) {
 	cfg := Default()
 	if opts.DataDir != "" {
@@ -50,6 +66,18 @@ func Load(opts Options) (*Config, error) {
 	}
 	if cfg.Port < 1 || cfg.Port > 65535 {
 		return nil, fmt.Errorf("port %d out of range [1, 65535]", cfg.Port)
+	}
+	if opts.MaxConcurrentJobs != 0 {
+		cfg.MaxConcurrentJobs = opts.MaxConcurrentJobs
+	}
+	if opts.MaxConcurrentTransfers != 0 {
+		cfg.MaxConcurrentTransfers = opts.MaxConcurrentTransfers
+	}
+	if cfg.MaxConcurrentJobs < 1 {
+		return nil, fmt.Errorf("max-concurrent-jobs %d must be a positive integer", cfg.MaxConcurrentJobs)
+	}
+	if cfg.MaxConcurrentTransfers < 1 {
+		return nil, fmt.Errorf("max-concurrent-transfers %d must be a positive integer", cfg.MaxConcurrentTransfers)
 	}
 	if !filepath.IsAbs(cfg.DataDir) {
 		abs, err := filepath.Abs(cfg.DataDir)

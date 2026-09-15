@@ -19,6 +19,15 @@ GitHub Release 摘要一致。
 
 内部重构、测试、构建和文档维护不进入发布摘要，除非它们直接交付新特性或修复用户可见故障。
 
+## [Unreleased]
+
+### 新增
+
+- 支持通过 `--max-concurrent-jobs` / `--max-concurrent-transfers`
+  （环境变量 `TINYSYNC_MAX_CONCURRENT_JOBS` /
+  `TINYSYNC_MAX_CONCURRENT_TRANSFERS`）配置同时运行的同步 Job 数
+  （默认 1）与同时进行的远端文件下载上限（默认 4）。
+
 ## [0.3.0] - 2026-09-16
 
 ### 新增
