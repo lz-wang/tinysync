@@ -18,18 +18,20 @@ import {
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
     fetchJobStatus,
+    type JobMode,
     type JobResponse,
     listJobs,
     listSources,
     type RunStatusResponse,
     runJob,
+    type ScheduleSpec,
     type SourceResponse,
 } from '../api'
 import DeleteJobDialog from '../features/jobs/DeleteJobDialog'
 import JobDialog from '../features/jobs/JobDialog'
 
-// pollIntervalMs 是运行中的状态轮询间隔；运行记录只存内存，
-// 每次轮询都是轻量请求。v0.3 全局同一时刻至多一个运行。
+// pollIntervalMs 是运行中的状态轮询间隔；状态读取走持久化历史，
+// 轮询仅用于刷新正在进行的运行。
 const pollIntervalMs = 1500
 
 // formatBytes 把字节数转为人类可读摘要。
@@ -50,8 +52,37 @@ function formatBytes(bytes: number): string {
     return `${value.toFixed(1)} ${unit}`
 }
 
-// JobsPage 提供 Sync Job 管理界面：创建、编辑、删除，以及
-// Run Now 手动运行与 1.5s 轮询的实时状态。
+// formatDateTime 把 RFC3339 时间渲染为本地可读形式。
+function formatDateTime(value?: string): string {
+    if (value === undefined || value === '') {
+        return '—'
+    }
+    const d = new Date(value)
+    if (Number.isNaN(d.getTime())) {
+        return value
+    }
+    return d.toLocaleString()
+}
+
+// formatSchedule 把调度配置转为人类可读摘要。
+function formatSchedule(schedule: ScheduleSpec): string {
+    switch (schedule.type) {
+        case 'once':
+            return `Once · ${formatDateTime(schedule.at)}`
+        case 'interval':
+            return `Every ${schedule.every ?? '?'}`
+        case 'cron':
+            return schedule.timezone !== undefined && schedule.timezone !== ''
+                ? `Cron · ${schedule.expression} (${schedule.timezone})`
+                : `Cron · ${schedule.expression ?? '?'}`
+        default:
+            return 'Manual'
+    }
+}
+
+// JobsPage 提供 Sync Job 管理界面：创建、编辑、删除（含调度配置），
+// Run Now 手动运行与 1.5s 轮询的实时状态；Last Run / Next Run 来自
+// 持久化历史，刷新与重启不丢失。
 export default function JobsPage() {
     const [jobs, setJobs] = useState<JobResponse[] | null>(null)
     const [sources, setSources] = useState<SourceResponse[]>([])
@@ -60,9 +91,12 @@ export default function JobsPage() {
     const [editing, setEditing] = useState<JobResponse | null>(null)
     const [deleting, setDeleting] = useState<JobResponse | null>(null)
     const [runStates, setRunStates] = useState<Record<string, RunStatusResponse>>({})
-    // pollTimer 是当前运行任务的轮询定时器；v0.3 全局单运行，
-    // 任一时刻至多存在一个进行中的轮询。
-    const pollTimer = useRef<number | null>(null)
+    // runStatesRef 供轮询定时器读取最新状态，避免反复重建定时器。
+    const runStatesRef = useRef(runStates)
+
+    useEffect(() => {
+        runStatesRef.current = runStates
+    }, [runStates])
 
     const reload = useCallback(async () => {
         // Source 列表供编辑器选择；Source 加载失败不阻塞 Job 列表展示。
@@ -81,7 +115,7 @@ export default function JobsPage() {
                 if (!cancelled) {
                     setJobs(nextJobs)
                 }
-                // 拉取每个 Job 的最近运行状态，展示上次结果。
+                // 拉取每个 Job 的最近运行状态（持久化历史）。
                 if (nextJobs !== null) {
                     const statuses = await Promise.allSettled(
                         nextJobs.map(job => fetchJobStatus(job.id)),
@@ -110,33 +144,26 @@ export default function JobsPage() {
         }
     }, [reload])
 
-    // 卸载时清理轮询定时器。
-    useEffect(
-        () => () => {
-            if (pollTimer.current !== null) {
-                window.clearInterval(pollTimer.current)
+    // 轮询所有运行中的 Job；v0.4 起多个 Job 可并行运行。
+    useEffect(() => {
+        const timer = window.setInterval(() => {
+            const runningIds = Object.entries(runStatesRef.current)
+                .filter(([, status]) => status.state === 'running')
+                .map(([id]) => id)
+            if (runningIds.length === 0) {
+                return
             }
-        },
-        [],
-    )
-
-    const startPolling = useCallback((jobId: string) => {
-        if (pollTimer.current !== null) {
-            window.clearInterval(pollTimer.current)
-        }
-        pollTimer.current = window.setInterval(() => {
-            void fetchJobStatus(jobId)
-                .then(status => {
-                    setRunStates(prev => ({ ...prev, [jobId]: status }))
-                    if (status.state !== 'running' && pollTimer.current !== null) {
-                        window.clearInterval(pollTimer.current)
-                        pollTimer.current = null
-                    }
-                })
-                .catch(() => {
-                    // 单次轮询失败不终止跟踪，下一轮重试。
-                })
+            for (const id of runningIds) {
+                void fetchJobStatus(id)
+                    .then(status => {
+                        setRunStates(prev => ({ ...prev, [id]: status }))
+                    })
+                    .catch(() => {
+                        // 单次轮询失败不终止跟踪，下一轮重试。
+                    })
+            }
         }, pollIntervalMs)
+        return () => window.clearInterval(timer)
     }, [])
 
     async function handleRun(job: JobResponse) {
@@ -146,7 +173,6 @@ export default function JobsPage() {
                 ...prev,
                 [job.id]: { state: 'running', stats: prev[job.id]?.stats ?? emptyStats() },
             }))
-            startPolling(job.id)
         } catch (e) {
             setLoadError(e instanceof Error ? e.message : String(e))
         }
@@ -181,10 +207,6 @@ export default function JobsPage() {
         return found?.name ?? sourceId
     }
 
-    // v0.3 全局单运行：任一 Job 运行中时全部 Run 按钮禁用，
-    // 避免必然失败的 409 请求。
-    const anyRunning = Object.values(runStates).some(state => state.state === 'running')
-
     return (
         <Stack spacing={2}>
             <Card variant="outlined">
@@ -210,7 +232,11 @@ export default function JobsPage() {
                                 Add Job
                             </Button>
                         </Box>
-                        {loadError !== null && <Alert severity="error">{loadError}</Alert>}
+                        {loadError !== null && (
+                            <Alert severity="error" onClose={() => setLoadError(null)}>
+                                {loadError}
+                            </Alert>
+                        )}
                         {jobs === null && loadError === null ? (
                             <CircularProgress size={24} aria-label="加载中" />
                         ) : jobs !== null ? (
@@ -218,7 +244,6 @@ export default function JobsPage() {
                                 jobs={jobs}
                                 sourceName={sourceName}
                                 runStates={runStates}
-                                anyRunning={anyRunning}
                                 onRun={job => void handleRun(job)}
                                 onEdit={job => {
                                     setEditing(job)
@@ -265,7 +290,6 @@ function JobTable({
     jobs,
     sourceName,
     runStates,
-    anyRunning,
     onRun,
     onEdit,
     onDelete,
@@ -273,7 +297,6 @@ function JobTable({
     jobs: JobResponse[]
     sourceName: (sourceId: string) => string
     runStates: Record<string, RunStatusResponse>
-    anyRunning: boolean
     onRun: (job: JobResponse) => void
     onEdit: (job: JobResponse) => void
     onDelete: (job: JobResponse) => void
@@ -292,10 +315,10 @@ function JobTable({
                     <TableRow>
                         <TableCell>Name</TableCell>
                         <TableCell>Source</TableCell>
-                        <TableCell>Remote Root</TableCell>
-                        <TableCell>Local Root</TableCell>
                         <TableCell>Mode</TableCell>
-                        <TableCell align="right">Enabled</TableCell>
+                        <TableCell>Schedule</TableCell>
+                        <TableCell>Last Run</TableCell>
+                        <TableCell>Next Run</TableCell>
                         <TableCell>Run</TableCell>
                         <TableCell align="right">Actions</TableCell>
                     </TableRow>
@@ -304,36 +327,41 @@ function JobTable({
                     {jobs.map(job => {
                         // 运行中的 Job 禁用 Edit / Delete：后端同样以 409
                         // 拒绝，避免传输中配置变更或删除产生状态竞争。
+                        // 其他 Job 的运行不再影响本 Job 的操作。
                         const running = runStates[job.id]?.state === 'running'
                         return (
                             <TableRow key={job.id}>
                                 <TableCell>{job.name}</TableCell>
                                 <TableCell>{sourceName(job.source_id)}</TableCell>
-                                <TableCell sx={{ fontFamily: 'monospace' }}>
-                                    {job.remote_root}
-                                </TableCell>
-                                <TableCell sx={{ fontFamily: 'monospace' }}>
-                                    {job.local_root}
+                                <TableCell>
+                                    <ModeChip mode={job.mode} />
                                 </TableCell>
                                 <TableCell>
-                                    <Chip
-                                        label={job.mode === 'mirror' ? 'Mirror' : 'Copy'}
-                                        color={job.mode === 'mirror' ? 'warning' : 'default'}
-                                        size="small"
-                                    />
+                                    <Stack
+                                        direction="row"
+                                        spacing={0.5}
+                                        sx={{ alignItems: 'center' }}
+                                    >
+                                        {!job.enabled && (
+                                            <Chip label="Off" size="small" color="default" />
+                                        )}
+                                        <Typography variant="body2">
+                                            {formatSchedule(job.schedule)}
+                                        </Typography>
+                                    </Stack>
                                 </TableCell>
-                                <TableCell align="right">
-                                    <Chip
-                                        label={job.enabled ? 'On' : 'Off'}
-                                        color={job.enabled ? 'success' : 'default'}
-                                        size="small"
-                                    />
+                                <TableCell sx={{ minWidth: 220 }}>
+                                    <RunStateCaption status={runStates[job.id]} />
+                                </TableCell>
+                                <TableCell>
+                                    {runStates[job.id]?.next_run_at !== undefined
+                                        ? formatDateTime(runStates[job.id].next_run_at)
+                                        : '—'}
                                 </TableCell>
                                 <TableCell>
                                     <RunCell
-                                        job={job}
-                                        status={runStates[job.id]}
-                                        anyRunning={anyRunning}
+                                        running={running}
+                                        enabled={job.enabled}
                                         onRun={() => onRun(job)}
                                     />
                                 </TableCell>
@@ -369,31 +397,35 @@ function JobTable({
     )
 }
 
-// RunCell 展示单个 Job 的运行控制与最近状态：
-// Run Now 按钮、运行中 spinner、成功统计摘要或失败原因。
+// ModeChip 展示同步模式。
+function ModeChip({ mode }: { mode: JobMode }) {
+    return (
+        <Chip
+            label={mode === 'mirror' ? 'Mirror' : 'Copy'}
+            color={mode === 'mirror' ? 'warning' : 'default'}
+            size="small"
+        />
+    )
+}
+
+// RunCell 展示单个 Job 的运行控制：Run Now 只受本 Job 运行状态控制，
+// 全局容量冲突由请求错误提示呈现。
 function RunCell({
-    job,
-    status,
-    anyRunning,
+    running,
+    enabled,
     onRun,
 }: {
-    job: JobResponse
-    status: RunStatusResponse | undefined
-    anyRunning: boolean
+    running: boolean
+    enabled: boolean
     onRun: () => void
 }) {
-    const running = status?.state === 'running'
-    const canRun = job.enabled && !anyRunning && !running
     return (
-        <Stack spacing={0.5} sx={{ minWidth: 220 }}>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <Button size="small" variant="outlined" disabled={!canRun} onClick={onRun}>
-                    Run Now
-                </Button>
-                {running && <CircularProgress size={16} aria-label="运行中" />}
-            </Box>
-            <RunStateCaption status={status} />
-        </Stack>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <Button size="small" variant="outlined" disabled={!enabled || running} onClick={onRun}>
+                Run Now
+            </Button>
+            {running && <CircularProgress size={16} aria-label="运行中" />}
+        </Box>
     )
 }
 
@@ -410,6 +442,22 @@ function RunStateCaption({ status }: { status: RunStatusResponse | undefined }) 
             <Typography variant="caption" color="text.secondary">
                 Running…
             </Typography>
+        )
+    }
+    if (status.state === 'skipped') {
+        return (
+            <Box>
+                <Chip label="Skipped" color="default" size="small" />
+                {status.error !== undefined && (
+                    <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{ display: 'block', mt: 0.5, wordBreak: 'break-word' }}
+                    >
+                        {status.error}
+                    </Typography>
+                )}
+            </Box>
         )
     }
     if (status.state === 'failed') {

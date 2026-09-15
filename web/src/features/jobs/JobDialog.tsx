@@ -16,6 +16,8 @@ import {
     createJob,
     type JobMode,
     type JobResponse,
+    type ScheduleSpec,
+    type ScheduleType,
     type SourceResponse,
     type UpdateJobInput,
     updateJob,
@@ -45,7 +47,21 @@ function textToPatterns(text: string): string[] {
         .filter(line => line !== '')
 }
 
-// JobDialog 创建 / 编辑 Sync Job。Remote Root 只做路径文本输入
+// toDatetimeLocal 把 RFC3339 时间转为 datetime-local 输入值（本地时区）。
+function toDatetimeLocal(value?: string): string {
+    if (value === undefined || value === '') {
+        return ''
+    }
+    const d = new Date(value)
+    if (Number.isNaN(d.getTime())) {
+        return ''
+    }
+    const pad = (n: number): string => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+// JobDialog 创建 / 编辑 Sync Job：Source、Root、Mode、Selector 与
+// Schedule 集中在同一个对话框。Remote Root 只做路径文本输入
 //（远端文件浏览器属后续阶段）；Include / Exclude 为多行文本。
 export default function JobDialog({ open, job, sources, onClose, onSaved }: JobDialogProps) {
     const [name, setName] = useState('')
@@ -56,6 +72,11 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
     const [includeText, setIncludeText] = useState('')
     const [excludeText, setExcludeText] = useState('')
     const [enabled, setEnabled] = useState(true)
+    const [scheduleType, setScheduleType] = useState<ScheduleType>('manual')
+    const [onceAt, setOnceAt] = useState('')
+    const [intervalEvery, setIntervalEvery] = useState('')
+    const [cronExpression, setCronExpression] = useState('')
+    const [cronTimezone, setCronTimezone] = useState('')
     const [saving, setSaving] = useState(false)
     const [error, setError] = useState<string | null>(null)
 
@@ -63,6 +84,7 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
         if (!open) {
             return
         }
+        const schedule = job?.schedule
         setName(job?.name ?? '')
         setSourceId(job?.source_id ?? '')
         setRemoteRoot(job?.remote_root ?? '/')
@@ -71,14 +93,60 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
         setIncludeText(patternsToText(job?.include ?? []))
         setExcludeText(patternsToText(job?.exclude ?? []))
         setEnabled(job?.enabled ?? true)
+        setScheduleType(schedule?.type ?? 'manual')
+        setOnceAt(toDatetimeLocal(schedule?.at))
+        setIntervalEvery(schedule?.type === 'interval' ? (schedule.every ?? '') : '')
+        setCronExpression(schedule?.type === 'cron' ? (schedule.expression ?? '') : '')
+        setCronTimezone(schedule?.type === 'cron' ? (schedule.timezone ?? '') : '')
         setSaving(false)
         setError(null)
     }, [open, job])
 
+    // buildSchedule 组装当前输入的调度配置；输入不完整时返回 null
+    //（语义合法性由后端校验）。
+    function buildSchedule(): ScheduleSpec | null {
+        switch (scheduleType) {
+            case 'manual':
+                return { type: 'manual' }
+            case 'once': {
+                if (onceAt === '') {
+                    return null
+                }
+                const at = new Date(onceAt)
+                if (Number.isNaN(at.getTime())) {
+                    return null
+                }
+                return { type: 'once', at: at.toISOString() }
+            }
+            case 'interval':
+                return intervalEvery.trim() === ''
+                    ? null
+                    : { type: 'interval', every: intervalEvery.trim() }
+            case 'cron': {
+                if (cronExpression.trim() === '') {
+                    return null
+                }
+                const spec: ScheduleSpec = { type: 'cron', expression: cronExpression.trim() }
+                if (cronTimezone.trim() !== '') {
+                    spec.timezone = cronTimezone.trim()
+                }
+                return spec
+            }
+        }
+    }
+
+    const schedule = buildSchedule()
     const canSave =
-        name.trim() !== '' && sourceId !== '' && localRoot.trim() !== '' && remoteRoot.trim() !== ''
+        name.trim() !== '' &&
+        sourceId !== '' &&
+        localRoot.trim() !== '' &&
+        remoteRoot.trim() !== '' &&
+        schedule !== null
 
     async function handleSave() {
+        if (schedule === null) {
+            return
+        }
         setSaving(true)
         setError(null)
         const include = textToPatterns(includeText)
@@ -94,6 +162,7 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
                     include,
                     exclude,
                     enabled,
+                    schedule,
                 })
                 onSaved(created)
                 return
@@ -122,6 +191,9 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
             }
             if (enabled !== job.enabled) {
                 patch.enabled = enabled
+            }
+            if (JSON.stringify(schedule) !== JSON.stringify(job.schedule)) {
+                patch.schedule = schedule
             }
             const updated = await updateJob(job.id, patch)
             onSaved(updated)
@@ -208,6 +280,57 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
                         helperText="One glob per line; exclude always wins over include"
                         sx={{ '& textarea': { fontFamily: 'monospace' } }}
                     />
+                    <TextField
+                        select
+                        label="Schedule"
+                        value={scheduleType}
+                        onChange={e => setScheduleType(e.target.value as ScheduleType)}
+                        helperText="Automatic triggers run with the same safety rules as manual runs"
+                    >
+                        <MenuItem value="manual">Manual — run only on demand</MenuItem>
+                        <MenuItem value="once">Once — at a specific time</MenuItem>
+                        <MenuItem value="interval">Interval — every fixed period</MenuItem>
+                        <MenuItem value="cron">Cron — 5-field expression</MenuItem>
+                    </TextField>
+                    {scheduleType === 'once' && (
+                        <TextField
+                            label="Run At"
+                            type="datetime-local"
+                            value={onceAt}
+                            onChange={e => setOnceAt(e.target.value)}
+                            helperText="Missed runs execute once when the service is back"
+                        />
+                    )}
+                    {scheduleType === 'interval' && (
+                        <TextField
+                            label="Every"
+                            value={intervalEvery}
+                            onChange={e => setIntervalEvery(e.target.value)}
+                            placeholder="30m"
+                            helperText="Go duration, minimum 1m (e.g. 30m, 6h); phase survives restarts"
+                            sx={{ '& input': { fontFamily: 'monospace' } }}
+                        />
+                    )}
+                    {scheduleType === 'cron' && (
+                        <>
+                            <TextField
+                                label="Cron Expression"
+                                value={cronExpression}
+                                onChange={e => setCronExpression(e.target.value)}
+                                placeholder="0 3 * * *"
+                                helperText="Standard 5-field expression (minute hour day month weekday)"
+                                sx={{ '& input': { fontFamily: 'monospace' } }}
+                            />
+                            <TextField
+                                label="Timezone"
+                                value={cronTimezone}
+                                onChange={e => setCronTimezone(e.target.value)}
+                                placeholder="Asia/Singapore"
+                                helperText="IANA timezone; empty means UTC"
+                                sx={{ '& input': { fontFamily: 'monospace' } }}
+                            />
+                        </>
+                    )}
                     <FormControlLabel
                         control={
                             <Switch

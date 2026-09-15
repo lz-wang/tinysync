@@ -131,6 +131,19 @@ export function testSource(id: string): Promise<TestSourceResponse> {
 // Mirror 额外按 managed 授权删除远端已消失的本地文件。
 export type JobMode = 'copy' | 'mirror'
 
+// ScheduleType 是调度类型：manual 仅手动触发。
+export type ScheduleType = 'manual' | 'once' | 'interval' | 'cron'
+
+// ScheduleSpec 是调度配置的 discriminated object：按 type 消费互斥字段
+//（once 用 at、interval 用 every、cron 用 expression + timezone）。
+export interface ScheduleSpec {
+    type: ScheduleType
+    at?: string
+    every?: string
+    expression?: string
+    timezone?: string
+}
+
 // JobResponse 是 Sync Job 的 API 表示，与后端 jobDTO 一一对应。
 export interface JobResponse {
     id: string
@@ -142,6 +155,7 @@ export interface JobResponse {
     include: string[]
     exclude: string[]
     enabled: boolean
+    schedule: ScheduleSpec
     created_at: string
     updated_at: string
 }
@@ -151,7 +165,8 @@ export interface JobsListResponse {
     jobs: JobResponse[]
 }
 
-// CreateJobInput 对应 POST /api/v1/jobs 请求体；enabled 缺省为 true。
+// CreateJobInput 对应 POST /api/v1/jobs 请求体；enabled / schedule
+// 缺省为 true / manual。
 export interface CreateJobInput {
     name: string
     source_id: string
@@ -161,10 +176,11 @@ export interface CreateJobInput {
     include: string[]
     exclude: string[]
     enabled: boolean
+    schedule?: ScheduleSpec
 }
 
 // UpdateJobInput 对应 PATCH 请求体：undefined 字段保留现有值；
-// include / exclude 提供数组时整体替换（空数组表示 include all / 无排除）。
+// include / exclude 提供数组时整体替换；schedule 提供时原子替换。
 export interface UpdateJobInput {
     name?: string
     source_id?: string
@@ -174,6 +190,7 @@ export interface UpdateJobInput {
     include?: string[]
     exclude?: string[]
     enabled?: boolean
+    schedule?: ScheduleSpec
 }
 
 export async function listJobs(): Promise<JobResponse[]> {
@@ -197,9 +214,9 @@ export async function deleteJob(id: string): Promise<void> {
     await requestJSON<void>('DELETE', `/api/v1/jobs/${id}`)
 }
 
-// RunState 是手动运行的状态机取值；运行记录只存内存，
-// 进程重启后回到 idle。
-export type RunState = 'idle' | 'running' | 'succeeded' | 'failed'
+// RunState 是运行的状态机取值。运行记录持久化于服务端，
+// 重启后最近一次运行（含 skipped）仍可查询。
+export type RunState = 'idle' | 'running' | 'succeeded' | 'failed' | 'skipped'
 
 // RunStatsResponse 是一轮同步的统计摘要。
 export interface RunStatsResponse {
@@ -212,11 +229,13 @@ export interface RunStatsResponse {
 }
 
 // RunStatusResponse 对应 GET /api/v1/jobs/:id/status。
+// next_run_at 为下一次计划触发时间，manual 或 once 已消费时省略。
 export interface RunStatusResponse {
     run_id?: string
     state: RunState
     started_at?: string
     finished_at?: string
+    next_run_at?: string
     stats: RunStatsResponse
     error?: string
 }
