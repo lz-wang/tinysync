@@ -21,10 +21,10 @@ Local Files）已实现；调度、持久化历史、发布、认证与 MCP 尚�
 
 本地核对日期：2026-09-16。当前实现、测试和 workflow 支持以下判断。
 
-- **已实现**：`serve`、`version` / `--version`、数据目录与端口配置、日志、HTTP 生命周期、health/version API、内嵌状态页及 fallback 构建；SQLite 持久化与 migration、Source 领域（模型、SQLite Repository、WebDAV 只读 adapter、应用服务）、Source CRUD 与连接测试 REST API、Sources Web 管理界面；Sync Job 领域（模型、Selector、remote scanner、planner、原子下载、Copy/Mirror engine、手动运行 Runner、SQLite Repository）、Jobs REST API 与 Web 管理界面、端到端与跨重启持久化测试。
+- **已实现**：`serve`、`version` / `--version`、数据目录与端口配置、日志、HTTP 生命周期、health/version API、内嵌状态页及 fallback 构建；SQLite 持久化与 migration、Source 领域（模型、SQLite Repository、WebDAV 只读 adapter、应用服务）、Source CRUD 与连接测试 REST API、Sources Web 管理界面；Sync Job 领域（模型、Selector、remote scanner、planner、原子下载、Copy/Mirror engine、手动运行 Runner、SQLite Repository）、Jobs REST API 与 Web 管理界面、端到端与跨重启持久化测试；调度与历史（Schedule 模型与持久化、Scheduler、多 Job Runner、有界并发传输、`sync_runs` / `sync_run_items` 持久化、runs REST API、History Web UI、并发配置）。
 - **已有工程配置**：Git 版本注入、Go 测试、前端静态检查、Codecov、六平台构建、三平台原生 Smoke、Build/Release 分离及 WebDAV 镜像。
 - **v0.1.0 已发布**：远端 `v0.1.0` Release workflow 成功（2026-09-14），六平台发行档案与 `checksums.txt` 已核对到位；WebDAV 镜像按发布规范需独立验收，不能由 GitHub Release 成功推导。
-- **尚未实现**：调度与历史、文件浏览/发布、认证与 Token、MCP。
+- **尚未实现**：文件浏览/发布、认证与 Token、MCP。
 
 v0.2.0 持久化与 Source 管理已发布：远端 Release workflow 成功（2026-09-15），
 六平台发行档与 `checksums.txt` 核对到位，WebDAV 镜像与通知独立验收通过。
@@ -33,8 +33,14 @@ v0.3.0 WebDAV Pull Sync 已发布：第一条手动触发的 WebDAV → Local �
 删除授权、手动 Run 与实时状态）。tag `v0.3.0` 指向 751f2b7，Release
 workflow run 34998126731 成功（2026-09-16），六平台发行档与
 `checksums.txt` 核对到位，WebDAV 镜像与 Pushover 通知送达确认。
-主线进入 v0.4.0 调度与同步历史：自动调度、重叠跳过、并发控制与
-`sync_runs` / `sync_run_items` 持久化历史。
+v0.4.0 调度与同步历史已完成实现（2026-09-16）：Schedule 模型与校验
+（manual / once / interval / cron，once 补执行、interval 锚点相位、
+cron 时区，missed 周期不补跑）、Scheduler、多 Job Runner（重叠跳过、
+并发上限、run 先持久化）、有界并行传输与文件级历史、
+`0003_scheduler_history.sql`、runs REST API 与 History Web UI、
+并发运行配置；真实 WebDAV + SQLite + Scheduler 端到端覆盖自动同步、
+补执行、容量跳过、跨重启历史与 retention。本地验证 `make check` 全绿、
+`make build` 通过；发布门禁与发行验收未开始。
 
 ## 架构与边界
 
@@ -59,7 +65,7 @@ workflow run 34998126731 成功（2026-09-16），六平台发行档与
 | v0.1.0 | [工程与发布基线](docs/roadmap/01-engineering-baseline.md) | 已发布，镜像待独立验收 | 验证 tag、检查、三平台 Smoke、六平台发行档及 GitHub Release；记录镜像结果 |
 | v0.2.0 | [持久化与 Source](docs/roadmap/02-persistence-and-sources.md) | 已完成 | Web UI / REST 创建 WebDAV Source，持久化并验证连接，尚不执行同步 |
 | v0.3.0 | [WebDAV Pull Sync](docs/roadmap/03-webdav-pull-sync.md) | 已完成 | 手动执行 Copy / Mirror，支持选择器、原子下载与本地文件归属保护 |
-| v0.4.0 | [调度与同步历史](docs/roadmap/04-scheduler-and-history.md) | 当前阶段 | 自动调度、重叠跳过、并发控制及运行/文件明细可追踪 |
+| v0.4.0 | [调度与同步历史](docs/roadmap/04-scheduler-and-history.md) | 已完成 | 自动调度、重叠跳过、并发控制及运行/文件明细可追踪 |
 | v0.5.0 | [S3 与 SFTP](docs/roadmap/05-s3-and-sftp.md) | 规划 | 同一同步引擎支持三种协议，上层不依赖协议分支 |
 | v0.6.0 | [文件浏览与发布](docs/roadmap/06-file-browser-and-publishing.md) | 规划 | 只读远端浏览、本地下载与选择性 HTTP 发布，限制访问根目录 |
 | v0.7.0 | [认证与 API Token](docs/roadmap/07-authentication-and-tokens.md) | 规划 | Web session 与 API Token 分离，支持 scope、过期和撤销 |

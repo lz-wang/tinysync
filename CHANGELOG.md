@@ -23,10 +23,28 @@ GitHub Release 摘要一致。
 
 ### 新增
 
+- 支持 Job 自动调度：once（指定时刻，离线错过恢复后补执行一次）、
+  interval（固定周期，按持久化锚点保持相位，重启不漂移且不补跑离线
+  期间错过的周期）与 cron（标准 5-field 表达式，支持 IANA 时区）。
+  调度触发与手动运行遵循同等安全规则；同一 Job 运行重叠时调度自动
+  跳过并记录原因，不排队。
+- 同步运行历史持久化：每轮运行（含手动、调度与被跳过的运行）及
+  文件级变更明细落库，进程重启后仍可查询；异常退出遗留的运行在
+  下次启动自动收敛为失败；每 Job 保留最近 500 轮运行，超出部分连同
+  文件明细自动清理。
+- 提供同步历史 REST API：`GET /api/v1/runs`（按 Job 与状态过滤、
+  分页）、`GET /api/v1/runs/:id` 与 `GET /api/v1/runs/:id/items`；
+  `GET /api/v1/jobs/:id/status` 改读持久化历史并附带 `next_run_at`，
+  重启后不再回到 idle。Job 的创建与更新接口支持 schedule 配置。
+- Web 界面新增 History 页面：全局运行历史列表与运行详情（含文件
+  变化时间线）；Jobs 页面新增 Schedule / Last Run / Next Run 列，
+  Job 编辑器支持配置调度；手动运行不再受其他 Job 运行影响，全局
+  并发冲突以错误提示呈现。
 - 支持通过 `--max-concurrent-jobs` / `--max-concurrent-transfers`
   （环境变量 `TINYSYNC_MAX_CONCURRENT_JOBS` /
   `TINYSYNC_MAX_CONCURRENT_TRANSFERS`）配置同时运行的同步 Job 数
-  （默认 1）与同时进行的远端文件下载上限（默认 4）。
+  （默认 1）与同时进行的远端文件下载上限（默认 4）；远端文件下载
+  在上限内并行，本地状态推进保持串行一致。
 
 ## [0.3.0] - 2026-09-16
 

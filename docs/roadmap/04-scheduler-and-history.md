@@ -383,20 +383,62 @@ schedule editor 直接加入既有对话框，不另建 Scheduler 管理页面�
 
 ## 交付清单
 
-- [ ] `0003_scheduler_history.sql`：`sync_jobs` schedule 列、`sync_runs`、`sync_run_items`、索引与 FK，真实 v2→v3 迁移与备份测试。
-- [ ] Schedule 模型与校验：manual / once / interval / cron、IANA timezone、interval anchor、Next 计算、非法输入拒绝。
-- [ ] SQLite Job repository 读写 schedule 字段；既有 Job 升级后自动 manual。
-- [ ] Run / RunItem 模型与 RunRepository（SQLite 实现）；启动时 stale-running recovery。
-- [ ] 多 Job Runner：active map、MaxConcurrentJobs、run 先持久化、same-job overlap 与容量控制、StartScheduled 与 skipped 记录。
-- [ ] 并行传输：MaxConcurrentTransfers、有界下载、单协调者串行状态推进、失败取消、文件级历史（unchanged 不写 item）。
-- [ ] 自动调度器：once / interval / cron、不补跑、once 恢复补执行、overlap / capacity → skipped、next run 计算。
-- [ ] 并发配置：CLI / env、默认 Jobs=1 / Transfers=4、正整数校验。
-- [ ] REST API：Job schedule、持久化 status + next_run_at、/runs 列表 / 详情 / 明细、分页与过滤。
-- [ ] Web UI：Jobs 表 Schedule / Last Run / Next Run、JobDialog schedule editor、/history 与 /history/:runId、移除全局单运行假设。
-- [ ] 端到端：真实 WebDAV + SQLite + scheduler，跨 restart、overlap、capacity、retention。
-- [ ] `make check` 全绿；`make build` 通过（Web 嵌入资源变更）。
+- [x] `0003_scheduler_history.sql`：`sync_jobs` schedule 列、`sync_runs`、`sync_run_items`、索引与 FK，真实 v2→v3 迁移与备份测试。
+- [x] Schedule 模型与校验：manual / once / interval / cron、IANA timezone、interval anchor、Next 计算、非法输入拒绝。
+- [x] SQLite Job repository 读写 schedule 字段；既有 Job 升级后自动 manual。
+- [x] Run / RunItem 模型与 RunRepository（SQLite 实现）；启动时 stale-running recovery。
+- [x] 多 Job Runner：active map、MaxConcurrentJobs、run 先持久化、same-job overlap 与容量控制、StartScheduled 与 skipped 记录。
+- [x] 并行传输：MaxConcurrentTransfers、有界下载、单协调者串行状态推进、失败取消、文件级历史（unchanged 不写 item）。
+- [x] 自动调度器：once / interval / cron、不补跑、once 恢复补执行、overlap / capacity → skipped、next run 计算。
+- [x] 并发配置：CLI / env、默认 Jobs=1 / Transfers=4、正整数校验。
+- [x] REST API：Job schedule、持久化 status + next_run_at、/runs 列表 / 详情 / 明细、分页与过滤。
+- [x] Web UI：Jobs 表 Schedule / Last Run / Next Run、JobDialog schedule editor、/history 与 /history/:runId、移除全局单运行假设。
+- [x] 端到端：真实 WebDAV + SQLite + scheduler，跨 restart、overlap、capacity、retention。
+- [x] `make check` 全绿；`make build` 通过（Web 嵌入资源变更）。
+
+## 实现记录
+
+实现路径：
+
+- 领域与调度：`internal/syncjob`（`schedule.go`、`run.go`、`scheduler.go`、
+  重构后的 `runner.go` / `engine.go`）。
+- 持久化：`internal/storage/migrations/0003_scheduler_history.sql`、
+  `internal/syncjob/sqlite/run_repository.go`、既有 `repository.go`
+  扩展 schedule 四列。
+- 装配与配置：`internal/app/app.go`（stale 恢复、调度器生命周期、
+  并发注入）、`internal/config` / `internal/cmd`（两个并发 flag 与 env）。
+- REST API：`internal/api/job.go`（schedule DTO、next_run_at、
+  /runs / /runs/:id / /runs/:id/items）。
+- Web UI：`web/src/api.ts`、`web/src/features/jobs/JobDialog.tsx`、
+  `web/src/pages/JobsPage.tsx`、`web/src/pages/HistoryPage.tsx`、
+  `web/src/pages/RunDetailPage.tsx`、`web/src/features/history/shared.tsx`。
+- 端到端：`internal/e2e/scheduler_history_test.go`（真实 x/net/webdav
+  服务端 + SQLite + Scheduler：自动同步、once 补执行、容量跳过、
+  跨重启历史与 stale 恢复、retention 级联）。
+
+实现要点（与契约的对应关系）：
+
+- cron 依赖为 `github.com/robfig/cron/v3` 的 5-field parser，仅
+  parse + Next；`time/tzdata` 内嵌保证无系统 zoneinfo 环境可用。
+- 调度幂等：interval / cron 由内存游标窗口 (from, now] 保证不补跑，
+  once 由 `sync_runs(job_id, trigger_type, scheduled_for)` 消费判定；
+  `next_run_at` 运行时计算，不持久化。
+- 传输阶段 pending 逐条登记（协调者串行写，仅覆盖实际派发的文件），
+  下载按 `MaxConcurrentTransfers` 并行，synced 推进 / 明细 / 统计由
+  单协调者串行写；失败后排空在途结果且不推进 synced（保留 pending），
+  relinquish 与 Mirror delete 保持后置。
+- unchanged 文件只累计 summary；create / update / delete / relinquish、
+  本地冲突（skipped）与传输失败（failed）写 `sync_run_items`。
 
 ## 完成标准
 
 > TinySync 可以作为常驻 HomeLab 服务自动运行 WebDAV 同步任务，
 > 并完整追踪每次同步发生了什么。
+
+本地验收已完成（2026-09-16）：`make check` 全绿（Go 全量测试、vet、
+goimports-reviser、Biome、TypeScript）；`make build` 通过（webui 嵌入
+路径）；`go test -race` 通过（syncjob 与 e2e）；验收矩阵中除「发布」
+相关项外全部由单元测试与端到端测试覆盖，其中 restart / UI restart
+（Last Run 不消失、Next Run 重新计算）经跨重启持久化测试验证。
+发布门禁（`make ci`、原生 Smoke、Release workflow、发行档与镜像验收）
+未开始，进入 v0.4.0 发布流程前需按[构建与发布](../guides/release.md)执行。
