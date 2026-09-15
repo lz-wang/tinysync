@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -84,7 +85,14 @@ func (r *memJobRepo) Get(ctx context.Context, id string) (Job, error) {
 	return job, nil
 }
 
-func (r *memJobRepo) List(ctx context.Context) ([]Job, error) { return nil, nil }
+func (r *memJobRepo) List(ctx context.Context) ([]Job, error) {
+	list := make([]Job, 0, len(r.jobs))
+	for _, j := range r.jobs {
+		list = append(list, j)
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].Name < list[j].Name })
+	return list, nil
+}
 
 func (r *memJobRepo) Update(ctx context.Context, job Job) error {
 	if _, ok := r.jobs[job.ID]; !ok {
@@ -176,13 +184,28 @@ func (m *memRunRepo) Latest(ctx context.Context, jobID string) (RunRecord, error
 func (m *memRunRepo) List(ctx context.Context, filter RunFilter) ([]RunRecord, int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var list []RunRecord
-	for _, id := range m.order {
+	// 复刻 SQLite 语义：started_at 倒序，插入序倒序兜底同毫秒并列。
+	type entry struct {
+		run   RunRecord
+		index int
+	}
+	entries := make([]entry, 0, len(m.order))
+	for index, id := range m.order {
 		run := m.runs[id]
 		if filter.JobID != "" && run.JobID != filter.JobID {
 			continue
 		}
-		list = append(list, run)
+		entries = append(entries, entry{run: run, index: index})
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		if !entries[i].run.StartedAt.Equal(entries[j].run.StartedAt) {
+			return entries[i].run.StartedAt.After(entries[j].run.StartedAt)
+		}
+		return entries[i].index > entries[j].index
+	})
+	list := make([]RunRecord, 0, len(entries))
+	for _, e := range entries {
+		list = append(list, e.run)
 	}
 	return list, len(list), nil
 }

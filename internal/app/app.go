@@ -63,6 +63,7 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 	managedRepo := jobsqlite.NewManagedRepository(db)
 	jobs := syncjob.NewService(jobRepo, sources, cfg.DataDir)
 	runner := syncjob.NewRunner(jobRepo, managedRepo, sources, webdav.NewFactory(), runs)
+	scheduler := syncjob.NewScheduler(jobRepo, runner, runs)
 
 	server := api.NewServer(cfg, webFS, api.Dependencies{
 		Sources: sources,
@@ -77,6 +78,8 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 		}
 	}()
 	logging.Infof("tinysync ready, listening on %s", cfg.ListenAddr())
+	// 调度器在 HTTP 服务就绪后启动：生产触发，Runner 执行，历史持久化。
+	scheduler.Start(ctx)
 
 	select {
 	case <-ctx.Done():
@@ -85,6 +88,8 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 	}
 
 	logging.Infof("shutting down")
+	// 先停触发来源，再排空存量请求与运行。
+	scheduler.Stop()
 	if err := server.Shutdown(context.Background()); err != nil {
 		return err
 	}
