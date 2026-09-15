@@ -132,6 +132,12 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	return s.repo.Delete(ctx, id)
 }
 
+// GetPassword 返回密码明文；仅用于构造远端客户端的内部链路
+// （如 Sync Job 运行时），不进入任何 API 响应。
+func (s *Service) GetPassword(ctx context.Context, id string) (string, error) {
+	return s.repo.GetPassword(ctx, id)
+}
+
 // TestConnection 真正连接远端验证配置：对根路径执行 Stat（WebDAV 为
 // PROPFIND）。连接失败返回 OK=false 的结果与 nil 错误；Source 不存在
 // 或存储故障才返回错误。

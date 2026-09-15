@@ -1,22 +1,39 @@
 package api
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"tinysync/internal/source"
+	"tinysync/internal/syncjob"
 )
 
 // registerSourceRoutes 注册 Source 管理端点。svc 为 nil 时跳过注册
 // （依赖缺失时由未知路径 404 兜底，避免生产静默降级之外的 panic）。
-func registerSourceRoutes(group *gin.RouterGroup, svc *source.Service) {
+// jobs 非 nil 时启用删除保护：被 Job 引用的 Source 返回 409，
+// 数据库层 FK RESTRICT 作为并发路径的兜底。
+func registerSourceRoutes(group *gin.RouterGroup, svc *source.Service, jobs *syncjob.Service) {
 	if svc == nil {
 		return
 	}
 	h := &sourceHandlers{svc: svc}
+	if jobs != nil {
+		h.deleteGuard = func(ctx context.Context, sourceID string) error {
+			count, err := jobs.CountBySource(ctx, sourceID)
+			if err != nil {
+				return err
+			}
+			if count > 0 {
+				return fmt.Errorf("%w: %d job(s) reference %s", syncjob.ErrSourceInUse, count, sourceID)
+			}
+			return nil
+		}
+	}
 	group.GET("/sources", h.list)
 	group.POST("/sources", h.create)
 	group.GET("/sources/:id", h.get)
@@ -28,6 +45,8 @@ func registerSourceRoutes(group *gin.RouterGroup, svc *source.Service) {
 // sourceHandlers 是 Source 端点的 handler 集合。
 type sourceHandlers struct {
 	svc *source.Service
+	// deleteGuard 在真正删除前校验 Job 引用；nil 表示不启用保护。
+	deleteGuard func(ctx context.Context, sourceID string) error
 }
 
 // sourceDTO 是 Source 的 API 表示。刻意不含 password 字段：
@@ -159,8 +178,14 @@ func (h *sourceHandlers) update(c *gin.Context) {
 }
 
 // delete DELETE /api/v1/sources/:id。仅删除本地 Source 配置，
-// 不触及远端文件。
+// 不触及远端文件；被 Sync Job 引用时以 409 拒绝。
 func (h *sourceHandlers) delete(c *gin.Context) {
+	if h.deleteGuard != nil {
+		if err := h.deleteGuard(c.Request.Context(), c.Param("id")); err != nil {
+			handleSourceError(c, err)
+			return
+		}
+	}
 	if err := h.svc.Delete(c.Request.Context(), c.Param("id")); err != nil {
 		handleSourceError(c, err)
 		return
@@ -189,6 +214,8 @@ func handleSourceError(c *gin.Context, err error) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "source not found"})
 	case errors.Is(err, source.ErrConflict):
 		c.JSON(http.StatusConflict, gin.H{"error": "source name already exists"})
+	case errors.Is(err, syncjob.ErrSourceInUse):
+		c.JSON(http.StatusConflict, gin.H{"error": "source is referenced by sync jobs"})
 	case errors.Is(err, source.ErrInvalid):
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 	default:

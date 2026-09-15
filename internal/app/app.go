@@ -16,6 +16,8 @@ import (
 	"tinysync/internal/source/sqlite"
 	"tinysync/internal/source/webdav"
 	"tinysync/internal/storage"
+	"tinysync/internal/syncjob"
+	jobsqlite "tinysync/internal/syncjob/sqlite"
 )
 
 // Run 建立持久化并启动 HTTP 服务，阻塞直至 ctx 取消（SIGINT/SIGTERM）。
@@ -41,7 +43,19 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 	// 装配 Source 领域：SQLite 仓库 + WebDAV factory + 应用服务。
 	// REST / Web UI / MCP 共用该服务层。
 	sources := source.NewService(sqlite.New(db), webdav.NewFactory())
-	server := api.NewServer(cfg, webFS, api.Dependencies{Sources: sources})
+
+	// 装配 Sync Job 领域：仓库共享同一 DB（FK RESTRICT / CASCADE 生效），
+	// 应用服务带 LocalRoot 归属保护，Runner 提供手动运行与内存状态。
+	jobRepo := jobsqlite.NewRepository(db)
+	managedRepo := jobsqlite.NewManagedRepository(db)
+	jobs := syncjob.NewService(jobRepo, managedRepo, sources, cfg.DataDir)
+	runner := syncjob.NewRunner(jobRepo, managedRepo, sources, webdav.NewFactory())
+
+	server := api.NewServer(cfg, webFS, api.Dependencies{
+		Sources: sources,
+		Jobs:    jobs,
+		Runner:  runner,
+	})
 
 	serveErr := make(chan error, 1)
 	go func() {
@@ -60,6 +74,11 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 	logging.Infof("shutting down")
 	if err := server.Shutdown(context.Background()); err != nil {
 		return err
+	}
+	// 存量请求结束后取消仍在进行的同步运行并等待退出，
+	// 保证退出时没有遗留的传输 goroutine。
+	if err := runner.Shutdown(context.Background()); err != nil {
+		return fmt.Errorf("shutdown sync runner: %w", err)
 	}
 	logging.Infof("bye")
 	return nil

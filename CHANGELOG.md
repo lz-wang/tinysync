@@ -23,6 +23,9 @@ GitHub Release 摘要一致。
 
 ### 新增
 
+- 提供 Sync Job 的 REST API：创建、查询、更新、删除及手动运行与状态查询。
+- 被 Sync Job 引用的 Source 现以 `409` 拒绝删除，不再依赖数据库错误。
+
 ### 修复
 
 ### 移除

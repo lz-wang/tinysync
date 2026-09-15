@@ -12,6 +12,7 @@ import (
 
 	"tinysync/internal/buildinfo"
 	"tinysync/internal/source"
+	"tinysync/internal/syncjob"
 )
 
 // NewRouter 构建全部路由：
@@ -32,7 +33,8 @@ func NewRouter(webFS fs.FS, deps Dependencies) *gin.Engine {
 	{
 		api.GET("/health", handleHealth)
 		api.GET("/version", handleVersion)
-		registerSourceRoutes(api, deps.Sources)
+		registerSourceRoutes(api, deps.Sources, deps.Jobs)
+		registerJobRoutes(api, deps.Jobs, deps.Runner)
 	}
 	router.NoRoute(handleWeb(webFS))
 	return router
@@ -42,6 +44,11 @@ func NewRouter(webFS fs.FS, deps Dependencies) *gin.Engine {
 type Dependencies struct {
 	// Sources 是 Source 应用服务（REST / Web UI / MCP 共用）。
 	Sources *source.Service
+	// Jobs 是 Sync Job 应用服务；为 nil 时不注册 Job 端点，
+	// 也不启用 Source 的 Job 引用删除保护。
+	Jobs *syncjob.Service
+	// Runner 是手动运行的运行时状态；为 nil 时 run / status 端点不注册。
+	Runner *syncjob.Runner
 }
 
 // handleHealth 报告服务健康状态。

@@ -177,6 +177,11 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	return s.repo.Delete(ctx, id)
 }
 
+// CountBySource 统计引用给定 Source 的 Job 数，供 Source 删除保护使用。
+func (s *Service) CountBySource(ctx context.Context, sourceID string) (int, error) {
+	return s.repo.CountBySource(ctx, sourceID)
+}
+
 // normalizeRemoteRoot 把 RemoteRoot 归一为 canonical logical path：
 // "/" 或空串为 root，其余必须落在 root 之下且不带尾斜杠。
 // 归一化规则与 WebDAV adapter 的 logicalPath 一致（path.Clean、消除 ..）。
