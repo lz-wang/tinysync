@@ -6,15 +6,25 @@ import (
 	"time"
 )
 
+// Fingerprint 是协议无关的远端文件指纹，供同步引擎判定内容是否变化。
+// 各协议只填充自己能提供的字段，其余保持零值。
+type Fingerprint struct {
+	Size       int64
+	ModifiedAt time.Time
+	// ETag 是 opaque token，绝不假定其格式（如 MD5）。
+	ETag string
+	// Checksum 与 Version 为未来协议预留（如 S3 的版本 ID）。
+	Checksum string
+	Version  string
+}
+
 // FileInfo 是远端文件 / 目录的协议无关描述。
 type FileInfo struct {
-	// Path 是以 / 分隔的绝对逻辑路径。
-	Path string
-	Size int64
-	// IsDir 表示是否为目录。
-	IsDir bool
-	// ModTime 是修改时间；协议不提供时为零值。
-	ModTime time.Time
+	// Path 是以 / 分隔的 Source-relative 绝对逻辑路径，
+	// "/" 表示 Source root 而不是服务器 root；目录不带尾斜杠。
+	Path        string
+	IsDir       bool
+	Fingerprint Fingerprint
 }
 
 // Remote 是 Source 的只读远端访问接口，协议无关：

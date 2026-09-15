@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"path"
 	"strings"
 	"time"
@@ -39,6 +40,10 @@ func (f *Factory) Create(s source.Source, password string) (source.Remote, error
 	if s.Type != source.TypeWebDAV {
 		return nil, fmt.Errorf("%w: %q", source.ErrUnsupportedType, s.Type)
 	}
+	endpoint, err := url.Parse(s.Endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("parse webdav endpoint %s: %w", s.Endpoint, err)
+	}
 	httpClient := newHTTPClient()
 	var auth webdav.HTTPClient = httpClient
 	if s.Username != "" || password != "" {
@@ -48,7 +53,13 @@ func (f *Factory) Create(s source.Source, password string) (source.Remote, error
 	if err != nil {
 		return nil, fmt.Errorf("create webdav client for %s: %w", s.Endpoint, err)
 	}
-	return &remote{client: client}, nil
+	return &remote{client: client, hrefPrefix: normalizeHrefPrefix(endpoint.Path)}, nil
+}
+
+// normalizeHrefPrefix 把 endpoint 路径归一为 href 前缀匹配形式：
+// 去掉尾斜杠（root 为空串），供 hrefToLogical 按 path segment 对齐。
+func normalizeHrefPrefix(endpointPath string) string {
+	return strings.TrimSuffix(path.Clean("/"+endpointPath), "/")
 }
 
 // newHTTPClient 构造带安全边界的 HTTP 客户端：
@@ -78,6 +89,9 @@ func redirectPolicy(req *http.Request, via []*http.Request) error {
 // remote 是 source.Remote 的 WebDAV 实现。
 type remote struct {
 	client *webdav.Client
+	// hrefPrefix 是 endpoint 路径的归一化前缀（无尾斜杠，root 为空串），
+	// 用于把服务器 href 转换回 Source-relative logical path。
+	hrefPrefix string
 }
 
 // resolveRelative 把 Source-relative logical path（统一以 / 开头）转换为
@@ -90,24 +104,43 @@ func resolveRelative(logicalPath string) string {
 	return strings.TrimPrefix(cleaned, "/")
 }
 
+// logicalPath 把请求路径归一为 logical path 形式（/ 开头、无尾斜杠、
+// root 为 "/"），与 resolveRelative 的归一化规则一致。
+func logicalPath(p string) string {
+	return path.Clean("/" + p)
+}
+
 // Stat 实现 source.Remote。
 func (r *remote) Stat(ctx context.Context, path string) (source.FileInfo, error) {
 	info, err := r.client.Stat(ctx, resolveRelative(path))
 	if err != nil {
 		return source.FileInfo{}, wrapOp("stat", path, err)
 	}
-	return toFileInfo(*info), nil
+	fi, err := r.toFileInfo(*info)
+	if err != nil {
+		return source.FileInfo{}, wrapOp("stat", path, err)
+	}
+	return fi, nil
 }
 
-// List 实现 source.Remote（非递归列目录）。
+// List 实现 source.Remote（非递归列目录，不包含目录自身条目）。
 func (r *remote) List(ctx context.Context, path string) ([]source.FileInfo, error) {
+	logical := logicalPath(path)
 	entries, err := r.client.ReadDir(ctx, resolveRelative(path), false)
 	if err != nil {
 		return nil, wrapOp("list", path, err)
 	}
 	list := make([]source.FileInfo, 0, len(entries))
 	for _, entry := range entries {
-		list = append(list, toFileInfo(entry))
+		fi, err := r.toFileInfo(entry)
+		if err != nil {
+			return nil, wrapOp("list", path, err)
+		}
+		// Depth:1 PROPFIND 的响应包含目录自身，对调用方不可见。
+		if fi.Path == logical {
+			continue
+		}
+		list = append(list, fi)
 	}
 	return list, nil
 }
@@ -121,14 +154,42 @@ func (r *remote) Open(ctx context.Context, path string) (io.ReadCloser, error) {
 	return rc, nil
 }
 
-// toFileInfo 转换为协议无关的 FileInfo。
-func toFileInfo(info webdav.FileInfo) source.FileInfo {
-	return source.FileInfo{
-		Path:    info.Path,
-		Size:    info.Size,
-		IsDir:   info.IsDir,
-		ModTime: info.ModTime,
+// hrefToLogical 把服务器 href 的 decoded path 转换为 Source-relative
+// logical path。href 必须落在 endpoint 前缀之内（按 path segment 对齐，
+// 拒绝 /dav/users 之类的前缀歧义），目录尾斜杠被归一去除。
+func hrefToLogical(prefix, href string) (string, error) {
+	if !strings.HasPrefix(href, "/") {
+		return "", fmt.Errorf("webdav href %q is not an absolute path", href)
 	}
+	if prefix != "" {
+		if href != prefix && !strings.HasPrefix(href, prefix+"/") {
+			return "", fmt.Errorf("webdav href %q escapes endpoint root %q", href, prefix)
+		}
+		href = strings.TrimPrefix(href, prefix)
+	}
+	logical := strings.TrimSuffix(href, "/")
+	if logical == "" {
+		logical = "/"
+	}
+	return logical, nil
+}
+
+// toFileInfo 转换为协议无关的 FileInfo：href 剥离 endpoint 前缀得到
+// logical path，指纹填充 Size / ModifiedAt / ETag（Checksum 与 Version 留空）。
+func (r *remote) toFileInfo(info webdav.FileInfo) (source.FileInfo, error) {
+	logical, err := hrefToLogical(r.hrefPrefix, info.Path)
+	if err != nil {
+		return source.FileInfo{}, err
+	}
+	return source.FileInfo{
+		Path:  logical,
+		IsDir: info.IsDir,
+		Fingerprint: source.Fingerprint{
+			Size:       info.Size,
+			ModifiedAt: info.ModTime,
+			ETag:       info.ETag,
+		},
+	}, nil
 }
 
 // wrapOp 为底层错误补充操作与路径上下文；ctx 超时/取消经 %w 保持可判定。

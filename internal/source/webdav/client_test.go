@@ -141,12 +141,12 @@ func TestList(t *testing.T) {
 	}
 	found := false
 	for _, e := range entries {
-		if strings.HasSuffix(e.Path, "report.txt") && !e.IsDir && e.Size > 0 {
+		if e.Path == "/docs/report.txt" && !e.IsDir && e.Fingerprint.Size > 0 {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("entries = %+v, want report.txt", entries)
+		t.Errorf("entries = %+v, want /docs/report.txt", entries)
 	}
 }
 
