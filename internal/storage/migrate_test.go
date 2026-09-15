@@ -258,9 +258,9 @@ func TestMigrateRollsBackFirstBrokenMigration(t *testing.T) {
 	}
 }
 
-// 真实 v1→v2 升级回归：v0.2.0 数据库（含 Source 与密码）迁移后数据完整
-// 保留、被引用 Source 禁删、备份可重开且停留在 v1、sync_jobs 可用。
-func TestMigrateV1ToV2PreservesSources(t *testing.T) {
+// 真实 v1 起步升级回归：v0.2.0 数据库（含 Source 与密码）迁移到最新版本后
+// 数据完整保留、被引用 Source 禁删、备份可重开且停留在 v1、sync_jobs 可用。
+func TestMigrateFromV1PreservesSources(t *testing.T) {
 	dataDir := t.TempDir()
 	db, err := Open(dataDir)
 	if err != nil {
@@ -289,9 +289,9 @@ func TestMigrateV1ToV2PreservesSources(t *testing.T) {
 
 	// 真实迁移到最新版本。
 	if err := Migrate(ctx, db, dataDir); err != nil {
-		t.Fatalf("Migrate v1->v2: %v", err)
+		t.Fatalf("Migrate from v1: %v", err)
 	}
-	assertVersion(t, db, 2)
+	assertVersion(t, db, embeddedLatestVersion(t))
 
 	// Source 完整保留（含密码明文）。
 	var name, password string
@@ -365,6 +365,136 @@ func TestMigrateV1ToV2PreservesSources(t *testing.T) {
 	}
 	if _, err := backupDB.Query("SELECT count(*) FROM sync_jobs"); err == nil {
 		t.Error("backup should not contain sync_jobs table")
+	}
+}
+
+// 真实 v2→v3 升级回归：v0.3.0 数据库（Source + Job + managed）迁移后数据
+// 完整保留、既有 Job 自动 manual、备份可重开且停留在 v2；sync_runs /
+// sync_run_items 可用，CHECK 约束生效，删除 Job 级联清理运行历史。
+func TestMigrateV2ToV3AddsScheduleAndRuns(t *testing.T) {
+	dataDir := t.TempDir()
+	db, err := Open(dataDir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	// 用真实的 0001 + 0002 schema 构造 v0.3.0 形态的库。
+	v1SQL, err := fs.ReadFile(migrationFS, "migrations/0001_sources.sql")
+	if err != nil {
+		t.Fatalf("read embedded v1 schema: %v", err)
+	}
+	v2SQL, err := fs.ReadFile(migrationFS, "migrations/0002_sync_jobs.sql")
+	if err != nil {
+		t.Fatalf("read embedded v2 schema: %v", err)
+	}
+	v2FS := fstest.MapFS{
+		"migrations/0001_sources.sql":   &fstest.MapFile{Data: v1SQL},
+		"migrations/0002_sync_jobs.sql": &fstest.MapFile{Data: v2SQL},
+	}
+	if err := migrate(ctx, db, dataDir, v2FS); err != nil {
+		t.Fatalf("build v2 database: %v", err)
+	}
+	assertVersion(t, db, 2)
+	if _, err := db.Exec(`INSERT INTO sources
+		(id, name, type, endpoint, username, password, enabled, created_at, updated_at)
+		VALUES ('src_a', 'nas', 'webdav', 'https://example.com/dav/', 'user', 'secret', 1, 1, 1)`); err != nil {
+		t.Fatalf("insert source: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO sync_jobs
+		(id, name, source_id, remote_root, local_root, mode,
+		 include_patterns, exclude_patterns, enabled, created_at, updated_at)
+		VALUES ('job_a', 'photos', 'src_a', '/photos', '/tmp/backup', 'mirror',
+		 '[]', '[]', 1, 1, 1)`); err != nil {
+		t.Fatalf("insert sync job: %v", err)
+	}
+
+	if err := Migrate(ctx, db, dataDir); err != nil {
+		t.Fatalf("Migrate v2->v3: %v", err)
+	}
+	assertVersion(t, db, embeddedLatestVersion(t))
+
+	// 既有 Job 数据完整保留，schedule 列为 manual 缺省，无自动调度行为。
+	var scheduleType, scheduleValue, scheduleTimezone string
+	var anchor sql.NullInt64
+	if err := db.QueryRow(`SELECT schedule_type, schedule_value, schedule_timezone,
+		schedule_anchor_at FROM sync_jobs WHERE id = 'job_a'`,
+	).Scan(&scheduleType, &scheduleValue, &scheduleTimezone, &anchor); err != nil {
+		t.Fatalf("query job schedule columns: %v", err)
+	}
+	if scheduleType != "manual" || scheduleValue != "" || scheduleTimezone != "" || anchor.Valid {
+		t.Errorf("upgraded schedule = (%q, %q, %q, %v), want (manual, '', '', NULL)",
+			scheduleType, scheduleValue, scheduleTimezone, anchor)
+	}
+
+	// sync_runs 可用：CHECK 约束拒绝非法枚举。
+	insertRun := func(id, trigger, status string) error {
+		_, err := db.Exec(`INSERT INTO sync_runs
+			(id, job_id, trigger_type, scheduled_for, status, started_at)
+			VALUES (?, 'job_a', ?, NULL, ?, 1)`, id, trigger, status)
+		return err
+	}
+	if err := insertRun("run_a", "manual", "succeeded"); err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	if err := insertRun("run_bad", "hourly", "succeeded"); err == nil {
+		t.Fatal("insert trigger=hourly = nil, want CHECK violation")
+	}
+	if err := insertRun("run_bad", "manual", "queued"); err == nil {
+		t.Fatal("insert status=queued = nil, want CHECK violation")
+	}
+	// schedule_type CHECK 生效。
+	if _, err := db.Exec(`UPDATE sync_jobs SET schedule_type = 'yearly' WHERE id = 'job_a'`); err == nil {
+		t.Fatal("update schedule_type=yearly = nil, want CHECK violation")
+	}
+
+	// sync_run_items 可用且随 run 级联。
+	if _, err := db.Exec(`INSERT INTO sync_run_items
+		(run_id, path, action, status, bytes, error)
+		VALUES ('run_a', 'a.jpg', 'create', 'succeeded', 10, '')`); err != nil {
+		t.Fatalf("insert run item: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO sync_run_items
+		(run_id, path, action, status, bytes, error)
+		VALUES ('run_a', 'a.jpg', 'purge', 'succeeded', 0, '')`); err == nil {
+		t.Fatal("insert action=purge = nil, want CHECK violation")
+	}
+
+	// 删除 Job 级联清理 runs 与 items（真实本地文件由调用方负责，本层无感知）。
+	if _, err := db.Exec("DELETE FROM sync_jobs WHERE id = 'job_a'"); err != nil {
+		t.Fatalf("delete sync job: %v", err)
+	}
+	var runs, items int
+	if err := db.QueryRow("SELECT count(*) FROM sync_runs").Scan(&runs); err != nil {
+		t.Fatalf("count runs: %v", err)
+	}
+	if err := db.QueryRow("SELECT count(*) FROM sync_run_items").Scan(&items); err != nil {
+		t.Fatalf("count run items: %v", err)
+	}
+	if runs != 0 || items != 0 {
+		t.Errorf("rows after job delete = (runs %d, items %d), want (0, 0)", runs, items)
+	}
+
+	// 升级备份存在、可重开、停留在 v2 且无 v3 表。
+	entries, err := os.ReadDir(filepath.Join(dataDir, backupsDirName))
+	if err != nil {
+		t.Fatalf("read backups dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("backup files = %d, want 1", len(entries))
+	}
+	if !strings.HasPrefix(entries[0].Name(), "tinysync-v2-") {
+		t.Errorf("backup name = %q, want tinysync-v2- prefix", entries[0].Name())
+	}
+	backupDB, err := sql.Open("sqlite", filepath.Join(dataDir, backupsDirName, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("open backup: %v", err)
+	}
+	defer backupDB.Close()
+	assertVersion(t, backupDB, 2)
+	if _, err := backupDB.Query("SELECT count(*) FROM sync_runs"); err == nil {
+		t.Error("backup should not contain sync_runs table")
 	}
 }
 
