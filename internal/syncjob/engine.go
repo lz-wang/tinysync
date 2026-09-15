@@ -165,6 +165,9 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 
 	// 8. Mirror remote-delete：先删本地 managed 文件（缺失视为已完成），
 	//    全部成功后清理 metadata；任一失败保留 metadata 供下轮重试。
+	//    删除与下载同等对待：执行前校验既有路径组件，父目录出现
+	//    symlink 一律拒绝——lexical 路径落在 LocalRoot 之内不代表
+	//    解析后的真实目标也在之内。
 	if len(plan.Deletes) > 0 {
 		for _, remotePath := range plan.Deletes {
 			rel, err := remoteRelPath(job.RemoteRoot, remotePath)
@@ -174,6 +177,9 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 			target, err := resolveLocalTarget(job.LocalRoot, rel)
 			if err != nil {
 				return stats, err
+			}
+			if err := rejectSymlinkComponents(job.LocalRoot, target); err != nil {
+				return stats, fmt.Errorf("mirror delete %s: %w", target, err)
 			}
 			if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
 				return stats, fmt.Errorf("mirror delete %s: %w", target, err)

@@ -26,6 +26,10 @@ func TestRemoteRelPath(t *testing.T) {
 		{name: "direct child", remoteRoot: "/photos", logical: "/photos/a.jpg", want: "a.jpg"},
 		{name: "bare root", remoteRoot: "/", logical: "/docs/report.pdf", want: "docs/report.pdf"},
 		{name: "root itself", remoteRoot: "/", logical: "/", want: "."},
+		// 非根 RemoteRoot 之下的 Source 根一律越界：防御异常服务器把
+		// "/"（或空串）混入子树列表，导致扫描越出 Job 边界。
+		{name: "source root under non-root", remoteRoot: "/photos", logical: "/", wantErr: true},
+		{name: "empty under non-root", remoteRoot: "/photos", logical: "", wantErr: true},
 		{name: "escape parent", remoteRoot: "/photos", logical: "/etc/passwd", wantErr: true},
 		{name: "prefix ambiguity", remoteRoot: "/photos", logical: "/photosmith/a.jpg", wantErr: true},
 	}
@@ -48,6 +52,27 @@ func TestRemoteRelPath(t *testing.T) {
 				t.Errorf("remoteRelPath(%q, %q) = %q, want %q", tc.remoteRoot, tc.logical, got, tc.want)
 			}
 		})
+	}
+}
+
+// containment 判定对根路径同样正确："/" 包含一切绝对路径，
+// 不因前缀拼接产生 "//" 而漏判；兄弟目录前缀歧义不误判。
+// Windows 卷根（自带 trailing separator）走同一 filepath.Rel 路径。
+func TestSameOrUnderRootContainment(t *testing.T) {
+	if !sameOrUnder("/", "/") {
+		t.Error(`sameOrUnder("/", "/") = false, want true`)
+	}
+	if !sameOrUnder("/", "/home/user/tinysync") {
+		t.Error(`sameOrUnder("/", "/home/user/tinysync") = false, want true`)
+	}
+	if !sameOrUnder("/home/user", "/home/user/tinysync") {
+		t.Error("direct child should be contained")
+	}
+	if sameOrUnder("/home/user", "/homeusers") {
+		t.Error("prefix ambiguity must not count as containment")
+	}
+	if sameOrUnder("/a/b", "/a/c") {
+		t.Error("sibling directory must not count as containment")
 	}
 }
 

@@ -17,15 +17,20 @@ import (
 const maxScanDepth = 64
 
 // remoteRelPath 计算 logical path 相对 RemoteRoot 的相对路径：
-// / 分隔、无前导 /；root 上的路径自身为 "."。路径不落在 RemoteRoot
-// 之下时返回 ErrInvalid（含 /photosmith 对 /photos 的前缀歧义）。
+// / 分隔、无前导 /；仅当 RemoteRoot 本身是 Source 根（"/"）时，
+// logical path "/" 才映射为 "."。非根 RemoteRoot 之下的 "/" 表示
+// Source 根，落在边界之外，返回 ErrInvalid（防御异常服务器把
+// Source 根混入子树列表，导致扫描越出 Job 边界）。
 func remoteRelPath(remoteRoot, logicalPath string) (string, error) {
 	root := path.Clean("/" + remoteRoot)
 	if root == "/" {
 		root = ""
 	}
 	if logicalPath == "/" || logicalPath == "" {
-		return ".", nil
+		if root == "" {
+			return ".", nil
+		}
+		return "", fmt.Errorf("%w: remote path %q escapes remote root %q", ErrInvalid, logicalPath, remoteRoot)
 	}
 	if !strings.HasPrefix(logicalPath, "/") {
 		return "", fmt.Errorf("%w: remote path %q is not absolute", ErrInvalid, logicalPath)

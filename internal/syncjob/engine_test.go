@@ -434,6 +434,45 @@ func TestRunRecoversAfterInterruptedUpdate(t *testing.T) {
 	}
 }
 
+// Mirror 删除前校验既有路径组件：managed 文件的父目录被替换为
+// symlink 时必须拒绝执行——lexical 路径落在 LocalRoot 内不代表
+// 解析后的真实目标也在内；失败保留 metadata，LocalRoot 外文件完好。
+func TestRunMirrorDeleteRejectsParentSymlink(t *testing.T) {
+	f := newEngineFixture(t, ModeMirror)
+	// 预置 managed：/link/a.txt → 本地 link/a.txt（synced）。
+	f.managed.files["/link/a.txt"] = ManagedFile{
+		JobID:        f.job.ID,
+		RemotePath:   "/link/a.txt",
+		LocalRelPath: "link/a.txt",
+		State:        StateSynced,
+		Remote:       source.Fingerprint{Size: 8, ETag: `"seeded"`},
+	}
+
+	// 本地：root/link 指向 root 之外的目录，真实文件在那里。
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatalf("mkdir outside: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "a.txt"), []byte("precious"), 0o644); err != nil {
+		t.Fatalf("seed outside file: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(f.root, "link")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	// 远端已无 /link/a.txt：Mirror 计划删除，但父目录是 symlink → 拒绝。
+	if _, err := f.run(buildRemote(nil, nil)); err == nil {
+		t.Fatal("Run with parent symlink on delete path = nil, want error")
+	}
+	data, err := os.ReadFile(filepath.Join(outside, "a.txt"))
+	if err != nil || string(data) != "precious" {
+		t.Fatalf("outside file = %q (%v), want untouched precious", data, err)
+	}
+	if _, ok := f.managed.files["/link/a.txt"]; !ok {
+		t.Error("managed metadata removed despite rejected delete, want preserved")
+	}
+}
+
 // hangingReader 阻塞读取直到 Close，用于模拟慢传输。
 type hangingReader struct{}
 

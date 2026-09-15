@@ -265,10 +265,14 @@ func rootsOverlap(a, b string) bool {
 	return sameOrUnder(a, b) || sameOrUnder(b, a)
 }
 
-// sameOrUnder 判断 child 是否等于 parent 或位于 parent 之下（按分隔符对齐）。
+// sameOrUnder 判断 child 是否等于 parent 或位于 parent 之下。
+// 用 filepath.Rel 做 containment 判定，对 "/" 与 Windows 卷根等
+// 自带 trailing separator 的根路径同样正确（前缀拼接会把 parent+"/"
+// 变成 "//" 而漏判）。
 func sameOrUnder(parent, child string) bool {
-	if parent == child {
-		return true
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
 	}
-	return strings.HasPrefix(child, parent+string(filepath.Separator))
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
