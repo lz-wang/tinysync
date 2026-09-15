@@ -23,6 +23,10 @@ GitHub Release 摘要一致。
 
 ### 新增
 
+- 支持 WebDAV 单向同步 Job：手动触发 Copy / Mirror 同步，include / exclude
+  过滤（doublestar 语法），原子下载（临时文件 + 替换，失败不破坏原文件），
+  本地文件归属保护——Mirror 只删除远端已消失且归本 Job 管理的本地文件，
+  Copy 则始终保留。
 - 提供 Sync Job 的 REST API：创建、查询、更新、删除及手动运行与状态查询。
 - Web 界面新增 Jobs 管理页面，支持配置同步方向、模式与过滤规则，并可
   一键手动运行、轮询查看运行进度、统计与失败原因；运行期间全局运行按钮禁用。

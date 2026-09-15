@@ -13,23 +13,26 @@ Pull 表示同步方向；Copy / Mirror 表示远端删除后的本地保留策�
 **Remote Source → Sync Job → Selector → Sync Engine → Local Files → Publish Policy / HTTP**。
 
 Web UI、REST API、MCP 复用应用服务层；Source、Job 与 Publish Policy 分别建模。
-其中 Remote Source 管理链路（持久化、WebDAV 只读访问与连接测试）已实现；
-Sync Job → Selector → Sync Engine → Local Files 尚未实现。
+其中 Remote Source 管理链路（持久化、WebDAV 只读访问与连接测试）与
+WebDAV Pull Sync 手动同步链路（Sync Job → Selector → Sync Engine →
+Local Files）已实现；调度、持久化历史、发布、认证与 MCP 尚未实现。
 
 ## 当前状态与优先级
 
 本地核对日期：2026-09-15。当前实现、测试和 workflow 支持以下判断。
 
-- **已实现**：`serve`、`version` / `--version`、数据目录与端口配置、日志、HTTP 生命周期、health/version API、内嵌状态页及 fallback 构建；SQLite 持久化与 migration、Source 领域（模型、SQLite Repository、WebDAV 只读 adapter、应用服务）、Source CRUD 与连接测试 REST API、Sources Web 管理界面。
+- **已实现**：`serve`、`version` / `--version`、数据目录与端口配置、日志、HTTP 生命周期、health/version API、内嵌状态页及 fallback 构建；SQLite 持久化与 migration、Source 领域（模型、SQLite Repository、WebDAV 只读 adapter、应用服务）、Source CRUD 与连接测试 REST API、Sources Web 管理界面；Sync Job 领域（模型、Selector、remote scanner、planner、原子下载、Copy/Mirror engine、手动运行 Runner、SQLite Repository）、Jobs REST API 与 Web 管理界面、端到端与跨重启持久化测试。
 - **已有工程配置**：Git 版本注入、Go 测试、前端静态检查、Codecov、六平台构建、三平台原生 Smoke、Build/Release 分离及 WebDAV 镜像。
 - **v0.1.0 已发布**：远端 `v0.1.0` Release workflow 成功（2026-09-14），六平台发行档案与 `checksums.txt` 已核对到位；WebDAV 镜像按发布规范需独立验收，不能由 GitHub Release 成功推导。
-- **尚未实现**：Sync Job、同步引擎、调度与历史、文件浏览/发布、认证与 Token、MCP。
+- **尚未实现**：调度与历史、文件浏览/发布、认证与 Token、MCP。
 
 v0.2.0 持久化与 Source 管理已发布：远端 Release workflow 成功（2026-09-15），
 六平台发行档与 `checksums.txt` 核对到位，WebDAV 镜像与通知独立验收通过。
-主线进入 v0.3.0 WebDAV Pull Sync。
-只创建 Source 所需的表，不预建全部领域；v0.3.0 再交付第一个手动同步 Job。
-工程基线已有实现，下一阶段重心转向领域能力。
+v0.3.0 WebDAV Pull Sync 已完成实现并通过本地与浏览器验收：
+第一条手动触发的 WebDAV → Local 单向同步链路可用（Copy / Mirror、
+doublestar 选择器、原子下载、managed_files 删除授权、手动 Run 与实时状态）。
+当前状态为**实现完成，发布待验收**：待 `make ci`、远端三平台 smoke 与
+六平台构建通过后打 `v0.3.0` tag 进入发布验收。
 
 ## 架构与边界
 
@@ -53,7 +56,7 @@ v0.2.0 持久化与 Source 管理已发布：远端 Release workflow 成功（20
 | --- | --- | --- | --- |
 | v0.1.0 | [工程与发布基线](docs/roadmap/01-engineering-baseline.md) | 已发布，镜像待独立验收 | 验证 tag、检查、三平台 Smoke、六平台发行档及 GitHub Release；记录镜像结果 |
 | v0.2.0 | [持久化与 Source](docs/roadmap/02-persistence-and-sources.md) | 已完成 | Web UI / REST 创建 WebDAV Source，持久化并验证连接，尚不执行同步 |
-| v0.3.0 | [WebDAV Pull Sync](docs/roadmap/03-webdav-pull-sync.md) | 当前阶段 | 手动执行 Copy / Mirror，支持选择器、原子下载与本地文件归属保护 |
+| v0.3.0 | [WebDAV Pull Sync](docs/roadmap/03-webdav-pull-sync.md) | 实现完成，发布待验收 | 手动执行 Copy / Mirror，支持选择器、原子下载与本地文件归属保护 |
 | v0.4.0 | [调度与同步历史](docs/roadmap/04-scheduler-and-history.md) | 规划 | 自动调度、重叠跳过、并发控制及运行/文件明细可追踪 |
 | v0.5.0 | [S3 与 SFTP](docs/roadmap/05-s3-and-sftp.md) | 规划 | 同一同步引擎支持三种协议，上层不依赖协议分支 |
 | v0.6.0 | [文件浏览与发布](docs/roadmap/06-file-browser-and-publishing.md) | 规划 | 只读远端浏览、本地下载与选择性 HTTP 发布，限制访问根目录 |

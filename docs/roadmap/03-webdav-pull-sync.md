@@ -367,6 +367,56 @@ Release 验收 → `docs: 记录 v0.3.0 发布验收并推进 v0.4.0`）。
 | local-root escape | reject | reject |
 | symlink escape | reject | reject |
 
+## 实现记录
+
+实现路径：
+
+- 领域与引擎：`internal/syncjob`（`model.go`、`selector.go`、`scanner.go`、
+  `planner.go`、`downloader.go`、`engine.go`、`runner.go`、`service.go`）。
+- 持久化：`internal/storage/migrations/0002_sync_jobs.sql`、
+  `internal/syncjob/sqlite/repository.go`。
+- REST API：`internal/api/job.go`（CRUD + run + status）、`internal/api/source.go`
+  （Source 删除保护）；装配与优雅关闭见 `internal/app/app.go`。
+- Web UI：`web/src/pages/JobsPage.tsx`、`web/src/features/jobs/JobDialog.tsx`、
+  `web/src/features/jobs/DeleteJobDialog.tsx`。
+- 端到端与 smoke：`internal/e2e/webdav_pull_test.go`（真实 x/net/webdav
+  服务端 + SQLite + 临时本地目录）、`scripts/smoke.sh`（Job binary smoke）。
+
+交付清单：
+
+- [x] Source logical path 统一路径空间（href 双向转换、拒绝越界、List 去自）。
+- [x] Fingerprint 协议无关模型（WebDAV 填 Size / ModifiedAt / ETag）。
+- [x] `0002_sync_jobs.sql`：`sync_jobs` + `managed_files`，真实 v1→v2 迁移与备份测试。
+- [x] Sync Job 领域模型、SQLite Repository（FK RESTRICT / CASCADE、name NOCASE UNIQUE）。
+- [x] Job 应用服务：LocalRoot 归一与归属保护（Job 间、DataDir 重叠拒绝）、
+      mapping 变更安全释放 metadata。
+- [x] Selector：doublestar v4、include all 缺省、exclude 优先、不做目录剪枝。
+- [x] Remote scanner：递归完整快照、RemoteRoot-relative 映射、symlink/escape 防护。
+- [x] Planner 与 preflight：未知本地文件冲突记为跳过，永不覆盖；确定性排序。
+- [x] 原子下载：同目录临时文件、大小校验、Sync/Close/Rename、瞬时错误退避重试、取消清理。
+- [x] Sync Engine：核心同步矩阵全覆盖（含扫描失败零删除、传输失败禁删、
+      Copy 保留 / Mirror managed-only 删除、relinquish 语义）。
+- [x] 手动运行：异步 Run、全局单运行（409）、run ID 与内存状态机、
+      root context、Shutdown 取消并等待退出。
+- [x] REST API：CRUD + run（202/404/409）+ status；Source 被 Job 引用时删除 409。
+- [x] Web UI：`/jobs` 列表与编辑器（Source 选择、模式、multiline patterns）、
+      Run Now、1.5s 轮询实时状态、统计与错误展示。
+- [x] 端到端与持久化 smoke：跨重启 Job / managed 保留、状态回 idle、
+      重启后继续收敛；smoke.sh 覆盖 Job binary 链路。
+
+## 完成标准
+
+> 完成第一条真正可使用的、安全的、手动触发的 WebDAV → Local 单向同步链路：
+> 手动执行 Copy / Mirror，支持选择器、原子下载与本地文件归属保护。
+
+本地验收已完成：`make check` 全绿（Go 全量测试、vet、Biome、TypeScript）；
+`make build` 通过；核心同步矩阵 engine tests、真实 WebDAV + SQLite 端到端、
+跨重启持久化、原生 smoke（含 Job binary 链路）全部通过；浏览器人工验收
+（创建 Job、Run Now、Succeeded 统计、Failed 错误展示、运行状态跨刷新保持）。
+
+发布验收待执行：`make ci` / 远端三平台 smoke / 六平台构建 / `v0.3.0` tag /
+Release 资产核对。当前状态：**实现完成，发布待验收**。
+
 ## 端到端验收
 
 不依赖 mock：`httptest` WebDAV server + real SQLite + `t.TempDir` local root +
