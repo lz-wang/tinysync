@@ -246,6 +246,39 @@ func TestMigrateRollsBackFirstBrokenMigration(t *testing.T) {
 	}
 }
 
+// 同一秒内连续两次迁移备份必须生成不同文件，避免失败重试时
+// VACUUM INTO 因目标已存在而冲突。
+func TestBackupDatabaseUniqueNamesSameSecond(t *testing.T) {
+	dataDir := t.TempDir()
+	db, err := Open(dataDir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec("CREATE TABLE legacy_data (value TEXT NOT NULL)"); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+
+	if err := backupDatabase(context.Background(), db, dataDir, 1); err != nil {
+		t.Fatalf("first backup: %v", err)
+	}
+	if err := backupDatabase(context.Background(), db, dataDir, 1); err != nil {
+		t.Fatalf("second backup (same second): %v", err)
+	}
+
+	entries, err := os.ReadDir(filepath.Join(dataDir, backupsDirName))
+	if err != nil {
+		t.Fatalf("read backups dir: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("backup files = %d, want 2", len(entries))
+	}
+	if entries[0].Name() == entries[1].Name() {
+		t.Errorf("backup names collide: %q", entries[0].Name())
+	}
+}
+
 // 文件名不符合 NNNN_<desc>.sql 约定时直接报错，不猜测执行顺序。
 func TestLoadMigrationsRejectsBadNames(t *testing.T) {
 	fsys := fstest.MapFS{

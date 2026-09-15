@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -40,10 +41,30 @@ const pragmaQuery = "_pragma=foreign_keys(1)" +
 	"&_pragma=journal_mode(WAL)" +
 	"&_pragma=synchronous(NORMAL)"
 
-// BuildDSN 返回指向 dbPath 的 SQLite DSN，附 per-connection PRAGMA 基线。
-// 路径统一为 / 分隔；查询串与路径以 ? 分隔，数据目录不应包含 ? 字符。
+// dsnPathEscaper 转义 SQLite URI 路径中的保留字符：
+// % 是转义前缀，? 与 # 分别终止 path 进入 query / fragment，空格规范要求转义；
+// 其余字符（含中文等 UTF-8 字节）SQLite 按原样处理，无需转义。
+var dsnPathEscaper = strings.NewReplacer(
+	"%", "%25",
+	"?", "%3F",
+	"#", "%23",
+	" ", "%20",
+)
+
+// BuildDSN 返回指向 dbPath 的 SQLite file: URI，附 per-connection PRAGMA 基线。
+// 路径经保留字符转义，数据目录可包含 ?、#、%、空格等特殊字符；
+// Windows 盘符路径归一为 /C:/... 形式，避免盘符被 URI 解析为 authority，
+// POSIX 绝对路径输出为 file:/// 前缀，相对路径保持相对语义。
 func BuildDSN(dbPath string) string {
-	return filepath.ToSlash(dbPath) + "?" + pragmaQuery
+	p := filepath.ToSlash(dbPath)
+	if vol := filepath.VolumeName(p); vol != "" && !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	scheme := "file:"
+	if strings.HasPrefix(p, "/") {
+		scheme = "file://"
+	}
+	return scheme + dsnPathEscaper.Replace(p) + "?" + pragmaQuery
 }
 
 // Open 打开（必要时创建）数据目录下的 SQLite 数据库并验证连接可用。

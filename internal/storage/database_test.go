@@ -113,11 +113,43 @@ func TestOpenReusesExistingDatabase(t *testing.T) {
 	}
 }
 
-// BuildDSN 输出 / 分隔路径并附带完整 PRAGMA 基线。
+// BuildDSN 输出 file: URI 并附带完整 PRAGMA 基线。
 func TestBuildDSNAppendsPragmas(t *testing.T) {
 	dsn := BuildDSN(filepath.Join("data", DatabaseFileName))
-	want := "data/" + DatabaseFileName + "?" + pragmaQuery
+	want := "file:data/" + DatabaseFileName + "?" + pragmaQuery
 	if dsn != want {
 		t.Errorf("BuildDSN = %q, want %q", dsn, want)
+	}
+	abs := BuildDSN(filepath.Join(string(filepath.Separator), "tmp", "data", DatabaseFileName))
+	if abs != "file:///tmp/data/"+DatabaseFileName+"?"+pragmaQuery {
+		t.Errorf("BuildDSN absolute = %q, want file:/// URI", abs)
+	}
+}
+
+// 数据目录包含 ?、#、% 与空格等特殊字符时，DSN 必须仍能打开并读写。
+// ? 在 Windows 文件名中非法，该平台跳过。
+func TestOpenHandlesSpecialCharacterDataDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("? is not a legal filename character on windows")
+	}
+	dataDir := filepath.Join(t.TempDir(), "weird ?#% dir")
+	db, err := Open(dataDir)
+	if err != nil {
+		t.Fatalf("Open special-char datadir: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec("CREATE TABLE marker (value TEXT NOT NULL)"); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	if _, err := db.Exec("INSERT INTO marker (value) VALUES ('ok')"); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	var value string
+	if err := db.QueryRow("SELECT value FROM marker").Scan(&value); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if value != "ok" {
+		t.Errorf("value = %q, want ok", value)
 	}
 }

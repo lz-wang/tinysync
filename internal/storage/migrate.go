@@ -2,8 +2,10 @@ package storage
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -15,6 +17,16 @@ import (
 	"strings"
 	"time"
 )
+
+// randomHex 返回 n 字节 cryptographically 随机数据的 hex 编码，
+// 用于构造不冲突的备份文件名后缀。
+func randomHex(n int) (string, error) {
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
+}
 
 //go:embed migrations/*.sql
 var migrationFS embed.FS
@@ -154,14 +166,19 @@ func hasUserTables(ctx context.Context, db *sql.DB) (bool, error) {
 }
 
 // backupDatabase 用 VACUUM INTO 生成迁移前的一致性备份：
-// <dataDir>/backups/tinysync-v<fromVersion>-<时间戳>.db。
-// 目标文件已存在视为错误（VACUUM INTO 要求目标不存在）。
+// <dataDir>/backups/tinysync-v<fromVersion>-<时间戳>-<随机后缀>.db。
+// 时间戳仅秒级精度，随机后缀保证同秒内的失败重试不会因目标已存在而冲突。
 func backupDatabase(ctx context.Context, db *sql.DB, dataDir string, fromVersion int) error {
 	backupDir := filepath.Join(dataDir, backupsDirName)
 	if err := os.MkdirAll(backupDir, 0o700); err != nil {
 		return fmt.Errorf("create backup dir %s: %w", backupDir, err)
 	}
-	name := fmt.Sprintf("tinysync-v%d-%s.db", fromVersion, time.Now().Format("20060102T150405"))
+	suffix, err := randomHex(4)
+	if err != nil {
+		return fmt.Errorf("generate backup suffix: %w", err)
+	}
+	name := fmt.Sprintf("tinysync-v%d-%s-%s.db",
+		fromVersion, time.Now().Format("20060102T150405"), suffix)
 	target := filepath.Join(backupDir, name)
 	// 路径中的单引号按 SQL 字符串规则转义；斜杠统一为 /（Windows 可接受）。
 	quoted := strings.ReplaceAll(filepath.ToSlash(target), "'", "''")
