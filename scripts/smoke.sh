@@ -10,9 +10,12 @@
 #	5. GET / 返回 WebUI（<title>TinySync</title>）
 #	6. POST /api/v1/sources 创建 WebDAV Source，响应不含密码明文
 #	7. GET /api/v1/sources 列表可见且同样不含密码，tinysync.db 已创建
-#	8. 关闭进程并以同一 datadir 重启
-#	9. GET /api/v1/sources/:id 确认 Source（含密码标志）跨重启持久化
-#	10. SIGTERM 优雅退出（Windows 为强制清理）
+#	8. POST /api/v1/jobs 创建引用该 Source 的 Copy Job
+#	9. POST /api/v1/jobs/:id/run 异步启动（202），对不可达远端收敛为 failed
+#	10. 关闭进程并以同一 datadir 重启
+#	11. GET /api/v1/sources/:id 确认 Source（含密码标志）跨重启持久化
+#	12. Job 配置跨重启持久化，运行状态回到 idle（运行记录只存内存）
+#	13. SIGTERM 优雅退出（Windows 为强制清理）
 #
 # 接口：scripts/smoke.sh <binary> <expected-version>
 
@@ -162,13 +165,57 @@ if [[ ! -f "${datadir}/tinysync.db" ]]; then
 fi
 echo "[smoke] sources list ok, database file ok"
 
-# 8. 关闭进程并以同一 datadir 重启。
+# 8. POST /api/v1/jobs：创建引用该 Source 的 Copy Job。
+#    local_root 用相对路径（cwd 已是 smoke_root），由服务端归一为绝对路径，
+#    避免 Windows 下 JSON 内嵌 MSYS 路径的转歧义。
+mkdir -p local
+curl --fail --silent \
+	-H 'Content-Type: application/json' \
+	--data "{\"name\":\"Smoke Job\",\"source_id\":\"${source_id}\",\"remote_root\":\"/\",\"local_root\":\"local\",\"mode\":\"copy\",\"enabled\":true}" \
+	"${base_url}/api/v1/jobs" >job.json
+grep -F '"mode":"copy"' job.json >/dev/null || {
+	echo "Error: job creation failed" >&2
+	cat job.json >&2
+	exit 1
+}
+job_id=$(grep -o '"id":"job_[a-f0-9]*"' job.json | head -1 | cut -d '"' -f4)
+if [[ -z "${job_id}" ]]; then
+	echo "Error: no job id in response: $(cat job.json)" >&2
+	exit 1
+fi
+echo "[smoke] job created: ${job_id}"
+
+# 9. POST run：远端不可达（127.0.0.1:1），运行应异步启动并收敛为 failed。
+run_code=$(curl --fail --silent -o run.json -w '%{http_code}' -X POST \
+	"${base_url}/api/v1/jobs/${job_id}/run")
+if [[ "${run_code}" != "202" ]]; then
+	echo "Error: run status ${run_code}, want 202" >&2
+	cat run.json >&2
+	exit 1
+fi
+job_failed=0
+for _ in {1..30}; do
+	curl --fail --silent "${base_url}/api/v1/jobs/${job_id}/status" >status.json
+	if grep -F '"state":"failed"' status.json >/dev/null; then
+		job_failed=1
+		break
+	fi
+	sleep 1
+done
+if [[ "${job_failed}" != "1" ]]; then
+	echo "Error: job run did not converge to failed against unreachable remote" >&2
+	cat status.json >&2
+	exit 1
+fi
+echo "[smoke] job run started (202) and converged to failed"
+
+# 10. 关闭进程并以同一 datadir 重启。
 stop_server
 start_server serve2.log
 wait_ready serve2.log
 echo "[smoke] server restarted"
 
-# 9. Source 跨重启持久化：字段与密码标志保持。
+# 11. Source 跨重启持久化：字段与密码标志保持。
 curl --fail --silent "${base_url}/api/v1/sources/${source_id}" >source2.json
 grep -F '"name":"Smoke Source"' source2.json >/dev/null
 grep -F '"password_set":true' source2.json >/dev/null
@@ -178,7 +225,20 @@ if grep -F 'S3cret-Smoke' source2.json >/dev/null; then
 fi
 echo "[smoke] source persisted across restart"
 
-# 10. SIGTERM 优雅退出：POSIX 平台发 SIGTERM 并 wait 校验退出码（非 0 即失败）；
+# 12. Job 跨重启持久化：配置保留，运行状态回到 idle（运行记录只存内存）。
+curl --fail --silent "${base_url}/api/v1/jobs/${job_id}" >job2.json
+grep -F '"name":"Smoke Job"' job2.json >/dev/null
+grep -F '"mode":"copy"' job2.json >/dev/null
+grep -F "\"source_id\":\"${source_id}\"" job2.json >/dev/null
+curl --fail --silent "${base_url}/api/v1/jobs/${job_id}/status" >status2.json
+if ! grep -F '"state":"idle"' status2.json >/dev/null; then
+	echo "Error: job run state after restart should be idle" >&2
+	cat status2.json >&2
+	exit 1
+fi
+echo "[smoke] job persisted across restart, run state reset to idle"
+
+# 13. SIGTERM 优雅退出：POSIX 平台发 SIGTERM 并 wait 校验退出码（非 0 即失败）；
 # Windows 的 Git Bash kill 对原生进程不可靠，保留 server_pid 交给 cleanup
 # 的 taskkill 强制清理。
 if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
