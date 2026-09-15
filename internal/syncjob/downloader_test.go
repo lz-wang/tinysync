@@ -106,6 +106,44 @@ func TestDownloadVerifiesSize(t *testing.T) {
 	assertNoTempFiles(t, root)
 }
 
+// 零字节文件严格校验：声明 0 字节时 body 必须为空；声明 0 但收到
+// 内容视为传输损坏，不落地。
+func TestDownloadVerifiesZeroSize(t *testing.T) {
+	t.Run("empty body ok", func(t *testing.T) {
+		root := t.TempDir()
+		remote := &downloadRemote{contents: map[string]io.ReadCloser{
+			"/empty.txt": io.NopCloser(strings.NewReader("")),
+		}}
+		d := newTestDownloader(remote)
+
+		if err := d.Download(context.Background(), "/empty.txt", root, "empty.txt", source.Fingerprint{Size: 0}); err != nil {
+			t.Fatalf("Download zero-size: %v", err)
+		}
+		data, err := os.ReadFile(filepath.Join(root, "empty.txt"))
+		if err != nil || len(data) != 0 {
+			t.Errorf("zero-size file = %q (%v), want empty", data, err)
+		}
+		assertNoTempFiles(t, root)
+	})
+	t.Run("non-empty body rejected", func(t *testing.T) {
+		root := t.TempDir()
+		remote := &downloadRemote{contents: map[string]io.ReadCloser{
+			"/empty.txt": io.NopCloser(strings.NewReader("unexpected")),
+		}}
+		// 单次尝试：fake 的 reader 复用会在重试时耗尽内容，
+		// 干扰「声明 0 但 body 非空」的判定。
+		d := &Downloader{remote: remote, maxAttempts: 1, backoff: func(int) time.Duration { return 0 }}
+
+		if err := d.Download(context.Background(), "/empty.txt", root, "empty.txt", source.Fingerprint{Size: 0}); err == nil {
+			t.Fatal("Download with declared 0 but non-empty body = nil, want error")
+		}
+		if _, err := os.Stat(filepath.Join(root, "empty.txt")); !os.IsNotExist(err) {
+			t.Errorf("target exists after failed download, stat err = %v", err)
+		}
+		assertNoTempFiles(t, root)
+	})
+}
+
 // 传输中途失败：已存在的旧目标保持原内容，临时文件清理。
 func TestDownloadPreservesTargetOnMidTransferFailure(t *testing.T) {
 	root := t.TempDir()

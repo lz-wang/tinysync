@@ -15,11 +15,13 @@ import (
 
 // engineRemote 同时支持 List 与 Open 的测试 Remote。
 // contents 存原始内容，每次 Open 生成新 reader（模拟可重复读的远端）；
-// overrides 允许注入特殊 reader（如挂起、报错）。
+// overrides 允许注入特殊 reader（如挂起，一次性生效）；
+// openErrs 让 Open 持续报错（跨重试，模拟持续性传输故障）。
 type engineRemote struct {
 	entries   map[string][]source.FileInfo
 	contents  map[string]string
 	overrides map[string]io.ReadCloser
+	openErrs  map[string]error
 	listErr   error
 }
 
@@ -35,8 +37,13 @@ func (e *engineRemote) List(ctx context.Context, path string) ([]source.FileInfo
 }
 
 func (e *engineRemote) Open(ctx context.Context, path string) (io.ReadCloser, error) {
+	if err := e.openErrs[path]; err != nil {
+		return nil, err
+	}
+	// override 一次性生效：删除 key 而非置 nil，避免后续查到
+	// (nil, true) 返回空 reader。
 	if rc, ok := e.overrides[path]; ok {
-		e.overrides[path] = nil
+		delete(e.overrides, path)
 		return rc, nil
 	}
 	if content, ok := e.contents[path]; ok {
@@ -122,6 +129,7 @@ func buildRemote(files map[string]string, dirs []string) *engineRemote {
 		entries:   map[string][]source.FileInfo{"/": {}},
 		contents:  map[string]string{},
 		overrides: map[string]io.ReadCloser{},
+		openErrs:  map[string]error{},
 	}
 	for _, d := range dirs {
 		r.entries["/"] = append(r.entries["/"], source.FileInfo{Path: d, IsDir: true})
@@ -385,6 +393,45 @@ func TestRunContextCancel(t *testing.T) {
 		t.Fatal("Run with canceled ctx = nil, want error")
 	}
 	f.mustFile("a.txt", "v1")
+}
+
+// 传输中断后的下一轮必须继续收敛：失败那轮已把 managed 记为
+// pending(v2)，本地仍是 v1；恢复后 pending 绝不能被 skip，
+// 必须重新下载 v2 并推进 synced。
+func TestRunRecoversAfterInterruptedUpdate(t *testing.T) {
+	f := newEngineFixture(t, ModeMirror)
+	if _, err := f.run(buildRemote(map[string]string{"/a.txt": "v1"}, nil)); err != nil {
+		t.Fatalf("first Run: %v", err)
+	}
+
+	// remote → v2，Open 持续报错（跨重试）：下载失败。
+	remote := buildRemote(map[string]string{"/a.txt": "v2"}, nil)
+	remote.openErrs["/a.txt"] = errorsNew("read failed mid-transfer")
+	if _, err := f.run(remote); err == nil {
+		t.Fatal("Run with broken transfer = nil, want error")
+	}
+	f.mustFile("a.txt", "v1") // 原子下载保证旧内容完好
+	m, ok := f.managed.files["/a.txt"]
+	if !ok || m.State != StatePending {
+		t.Fatalf("managed after failure = %+v, want pending", m)
+	}
+	if m.Remote.ETag != etagOf("v2") {
+		t.Errorf("managed remote etag = %q, want v2 etag (pending 登记)", m.Remote.ETag)
+	}
+
+	// 恢复：远端可读。pending 强制重传，绝不能 skip。
+	stats, err := f.run(buildRemote(map[string]string{"/a.txt": "v2"}, nil))
+	if err != nil {
+		t.Fatalf("recovery Run: %v", err)
+	}
+	if stats.FilesUpdated != 1 || stats.FilesSkipped != 0 {
+		t.Errorf("recovery stats = %+v, want 1 updated / 0 skipped", stats)
+	}
+	f.mustFile("a.txt", "v2")
+	m = f.managed.files["/a.txt"]
+	if m.State != StateSynced {
+		t.Errorf("managed after recovery = %s, want synced", m.State)
+	}
 }
 
 // hangingReader 阻塞读取直到 Close，用于模拟慢传输。

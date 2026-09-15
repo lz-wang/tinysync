@@ -88,6 +88,11 @@ func BuildPlan(mode Mode, remoteRoot string, remoteFiles []source.FileInfo, sele
 			}
 		case !wasManaged:
 			plan.Downloads = append(plan.Downloads, planEntry{relPath: e.rel, remote: e.fi, action: ActionDownload})
+		case managedRec.State == StatePending:
+			// 上一轮传输中断（pending 先行登记后未推进 synced）：本地
+			// 内容不能被认为已对应 managed 的 Remote 指纹，即使指纹
+			// 相同也必须重新传输，保证失败后下一轮继续收敛，绝不能 skip。
+			plan.Updates = append(plan.Updates, planEntry{relPath: e.rel, remote: e.fi, action: ActionUpdate})
 		case fingerprintChanged(e.fi.Fingerprint, managedRec.Remote):
 			plan.Updates = append(plan.Updates, planEntry{relPath: e.rel, remote: e.fi, action: ActionUpdate})
 		default:
@@ -113,7 +118,8 @@ func BuildPlan(mode Mode, remoteRoot string, remoteFiles []source.FileInfo, sele
 
 // fingerprintChanged 按优先级判定远端指纹相对已知指纹是否变化：
 // Version → Checksum → ETag+Size → Size+ModifiedAt；无可判定信息时
-// 视为未变，不盲目重传。ETag 是 opaque token，只比较相等性。
+// 视为已变——同步工具宁可误传（false positive），不可留下永远过期
+// 的本地文件（false negative）。ETag 是 opaque token，只比较相等性。
 func fingerprintChanged(now, known source.Fingerprint) bool {
 	if now.Version != "" || known.Version != "" {
 		return now.Version != known.Version
@@ -130,7 +136,7 @@ func fingerprintChanged(now, known source.Fingerprint) bool {
 	if !now.ModifiedAt.IsZero() && !known.ModifiedAt.IsZero() {
 		return !now.ModifiedAt.Equal(known.ModifiedAt)
 	}
-	return false
+	return true
 }
 
 // PreflightLocal 对计划中的 download 条目做本地冲突预检：目标已被

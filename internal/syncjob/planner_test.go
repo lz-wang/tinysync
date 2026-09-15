@@ -102,6 +102,24 @@ func TestBuildPlanSelectorExcluded(t *testing.T) {
 	}
 }
 
+// pending 状态的 managed 记录即使指纹与远端一致也必须重新传输：
+// 上一轮传输中断后本地内容不可信，绝不能进入 skip（回归覆盖：
+// failed update → retry convergence）。
+func TestBuildPlanPendingForcesUpdate(t *testing.T) {
+	remoteFiles := []source.FileInfo{remoteFile("a.txt", 2, "\"v2\"")}
+	managed := []ManagedFile{managedEntry("/a.txt", 2, "\"v2\"")}
+	// 模拟中断现场：pending 已登记新指纹，本地还是旧内容。
+	managed[0].State = StatePending
+
+	plan := BuildPlan(ModeMirror, "/", remoteFiles, setOf("a.txt"), managed)
+	if got := rels(plan.Updates); len(got) != 1 || got[0] != "a.txt" {
+		t.Errorf("Updates = %v, want [a.txt] (pending must not skip)", got)
+	}
+	if len(plan.Skips) != 0 {
+		t.Errorf("Skips = %v, want empty", plan.Skips)
+	}
+}
+
 // 计划输出按 rel path 确定性排序，不依赖输入顺序。
 func TestBuildPlanDeterministicOrder(t *testing.T) {
 	remoteFiles := []source.FileInfo{
@@ -136,7 +154,9 @@ func TestFingerprintChanged(t *testing.T) {
 		{name: "size differs", now: fp(11, "\"a\""), known: base, want: true},
 		{name: "mtime differs no etag", now: source.Fingerprint{Size: 10, ModifiedAt: time.Unix(1, 0)}, known: source.Fingerprint{Size: 10, ModifiedAt: time.Unix(2, 0)}, want: true},
 		{name: "etag only on one side", now: fp(10, "\"a\""), known: source.Fingerprint{Size: 10}, want: true},
-		{name: "no comparable info", now: source.Fingerprint{}, known: source.Fingerprint{}, want: false},
+		// 冻结契约：无可判定信息时视为已变——宁可误传，不可留过期文件。
+		{name: "no comparable info", now: source.Fingerprint{}, known: source.Fingerprint{}, want: true},
+		{name: "same size zero mtime", now: source.Fingerprint{Size: 10}, known: source.Fingerprint{Size: 10}, want: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

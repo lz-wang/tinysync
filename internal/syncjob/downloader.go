@@ -49,7 +49,7 @@ func NewDownloader(remote source.Remote) *Downloader {
 
 // Download 执行一次带重试的原子下载。logicalPath 是远端 logical path，
 // relPath 是相对 LocalRoot 的本地路径（/ 分隔），expected 为下载前
-// 快照的指纹，其 Size 非零时校验落地字节数。
+// 快照的指纹，落地字节数必须与其 Size 严格一致（含零字节文件）。
 func (d *Downloader) Download(ctx context.Context, logicalPath, localRoot, relPath string, expected source.Fingerprint) error {
 	target, err := resolveLocalTarget(localRoot, relPath)
 	if err != nil {
@@ -127,7 +127,9 @@ func copyAndVerify(tempPath string, rc io.Reader, expected source.Fingerprint) e
 	if copyErr != nil {
 		return fmt.Errorf("transfer to %s: %w", tempPath, copyErr)
 	}
-	if expected.Size > 0 && written != expected.Size {
+	// 严格校验落地字节数：零字节声明同样适用——「声明 0 但 body 非空」
+	// 视为传输损坏，不落地。
+	if written != expected.Size {
 		return fmt.Errorf("size mismatch for %s: got %d bytes, want %d", tempPath, written, expected.Size)
 	}
 	return nil
