@@ -95,6 +95,10 @@ type RunItem struct {
 	Error  string
 }
 
+// RetentionRunsPerJob 是每 Job 保留的最近 run 数（超出由 PruneRetention
+// 连同 items 级联清理），避免长期运行的 SQLite 无限膨胀。
+const RetentionRunsPerJob = 500
+
 // RunFilter 是运行历史的查询过滤与分页参数。
 type RunFilter struct {
 	// JobID 为空表示全部 Job。

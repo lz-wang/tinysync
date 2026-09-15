@@ -94,7 +94,7 @@ func newEnv(t *testing.T) *env {
 	e.jobRepo = jobsqlite.NewRepository(e.db)
 	e.managedRepo = jobsqlite.NewManagedRepository(e.db)
 	e.jobs = syncjob.NewService(e.jobRepo, e.sources, e.dataDir)
-	e.runner = syncjob.NewRunner(e.jobRepo, e.managedRepo, e.sources, webdav.NewFactory())
+	e.runner = syncjob.NewRunner(e.jobRepo, e.managedRepo, e.sources, webdav.NewFactory(), jobsqlite.NewRunRepository(e.db))
 	t.Cleanup(func() { _ = e.db.Close() })
 	return e
 }
@@ -319,7 +319,7 @@ func TestJobPersistsAcrossRestart(t *testing.T) {
 	jobRepo2 := jobsqlite.NewRepository(db)
 	managedRepo2 := jobsqlite.NewManagedRepository(db)
 	jobs2 := syncjob.NewService(jobRepo2, sources2, e.dataDir)
-	runner2 := syncjob.NewRunner(jobRepo2, managedRepo2, sources2, webdav.NewFactory())
+	runner2 := syncjob.NewRunner(jobRepo2, managedRepo2, sources2, webdav.NewFactory(), jobsqlite.NewRunRepository(db))
 
 	// Source 完整保留。
 	src, err := sources2.Get(ctx, sourceID)
@@ -346,10 +346,10 @@ func TestJobPersistsAcrossRestart(t *testing.T) {
 		t.Fatalf("managed after restart = %d entries (%v), want 1 synced", len(managed), err)
 	}
 
-	// 运行状态是内存态：重启后回 idle。
+	// 运行状态持久化：重启后最近一次 completed run 仍可查询，不再回 idle。
 	st, err := runner2.GetStatus(ctx, job.ID)
-	if err != nil || st.State != syncjob.RunIdle {
-		t.Fatalf("status after restart = %s (%v), want idle", st.State, err)
+	if err != nil || st.State != syncjob.RunSucceeded {
+		t.Fatalf("status after restart = %s (%v), want persisted succeeded", st.State, err)
 	}
 
 	// 重启后的进程继续收敛：远端 v2 → 更新。
