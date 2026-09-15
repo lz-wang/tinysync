@@ -126,3 +126,73 @@ export async function deleteSource(id: string): Promise<void> {
 export function testSource(id: string): Promise<TestSourceResponse> {
     return requestJSON<TestSourceResponse>('POST', `/api/v1/sources/${id}/test`)
 }
+
+// JobMode 是同步模式：Copy 只增不改删本地既有文件；
+// Mirror 额外按 managed 授权删除远端已消失的本地文件。
+export type JobMode = 'copy' | 'mirror'
+
+// JobResponse 是 Sync Job 的 API 表示，与后端 jobDTO 一一对应。
+export interface JobResponse {
+    id: string
+    name: string
+    source_id: string
+    remote_root: string
+    local_root: string
+    mode: JobMode
+    include: string[]
+    exclude: string[]
+    enabled: boolean
+    created_at: string
+    updated_at: string
+}
+
+// JobsListResponse 对应 GET /api/v1/jobs 的包装对象。
+export interface JobsListResponse {
+    jobs: JobResponse[]
+}
+
+// CreateJobInput 对应 POST /api/v1/jobs 请求体；enabled 缺省为 true。
+export interface CreateJobInput {
+    name: string
+    source_id: string
+    remote_root: string
+    local_root: string
+    mode: JobMode
+    include: string[]
+    exclude: string[]
+    enabled: boolean
+}
+
+// UpdateJobInput 对应 PATCH 请求体：undefined 字段保留现有值；
+// include / exclude 提供数组时整体替换（空数组表示 include all / 无排除）。
+export interface UpdateJobInput {
+    name?: string
+    source_id?: string
+    remote_root?: string
+    local_root?: string
+    mode?: JobMode
+    include?: string[]
+    exclude?: string[]
+    enabled?: boolean
+}
+
+export async function listJobs(): Promise<JobResponse[]> {
+    const data = await getJSON<JobsListResponse>('/api/v1/jobs')
+    return data.jobs
+}
+
+export function createJob(input: CreateJobInput): Promise<JobResponse> {
+    return requestJSON<JobResponse>('POST', '/api/v1/jobs', input)
+}
+
+export function getJob(id: string): Promise<JobResponse> {
+    return requestJSON<JobResponse>('GET', `/api/v1/jobs/${id}`)
+}
+
+export function updateJob(id: string, input: UpdateJobInput): Promise<JobResponse> {
+    return requestJSON<JobResponse>('PATCH', `/api/v1/jobs/${id}`, input)
+}
+
+export async function deleteJob(id: string): Promise<void> {
+    await requestJSON<void>('DELETE', `/api/v1/jobs/${id}`)
+}

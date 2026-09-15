@@ -31,6 +31,7 @@ export default function AppShell() {
                     <Stack direction="row" spacing={1}>
                         <NavTab to="/" label="Overview" />
                         <NavTab to="/sources" label="Sources" />
+                        <NavTab to="/jobs" label="Jobs" />
                     </Stack>
                 </Toolbar>
             </AppBar>
