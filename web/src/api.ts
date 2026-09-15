@@ -253,3 +253,95 @@ export function runJob(id: string): Promise<RunJobResponse> {
 export function fetchJobStatus(id: string): Promise<RunStatusResponse> {
     return requestJSON<RunStatusResponse>('GET', `/api/v1/jobs/${id}/status`)
 }
+
+// RunTriggerType 是一轮运行的触发方式。
+export type RunTriggerType = 'manual' | 'once' | 'interval' | 'cron'
+
+// RunRecordResponse 对应 GET /api/v1/runs/:id 的运行摘要。
+export interface RunRecordResponse {
+    id: string
+    job_id: string
+    job_name: string
+    trigger: RunTriggerType
+    scheduled_for?: string
+    status: RunState
+    started_at: string
+    finished_at?: string
+    stats: RunStatsResponse
+    error?: string
+}
+
+// RunsListResponse 对应 GET /api/v1/runs 的包装对象。
+export interface RunsListResponse {
+    runs: RunRecordResponse[]
+    total: number
+}
+
+// RunItemAction 是文件级变更动作。
+export type RunItemAction = 'create' | 'update' | 'delete' | 'relinquish'
+
+// RunItemStatus 是文件级变更结果。
+export type RunItemStatus = 'succeeded' | 'failed' | 'skipped'
+
+// RunItemResponse 是文件级变更明细；unchanged 文件不产生明细。
+export interface RunItemResponse {
+    id: number
+    run_id: string
+    path: string
+    action: RunItemAction
+    status: RunItemStatus
+    bytes: number
+    error?: string
+}
+
+// RunItemsListResponse 对应 GET /api/v1/runs/:id/items 的包装对象。
+export interface RunItemsListResponse {
+    items: RunItemResponse[]
+    total: number
+}
+
+// RunRunsQuery 是 /runs 的过滤与分页参数。
+export interface RunRunsQuery {
+    job_id?: string
+    status?: RunState
+    limit?: number
+    offset?: number
+}
+
+export async function listRuns(query?: RunRunsQuery): Promise<RunsListResponse> {
+    const params = new URLSearchParams()
+    if (query?.job_id !== undefined) {
+        params.set('job_id', query.job_id)
+    }
+    if (query?.status !== undefined) {
+        params.set('status', query.status)
+    }
+    if (query?.limit !== undefined) {
+        params.set('limit', String(query.limit))
+    }
+    if (query?.offset !== undefined) {
+        params.set('offset', String(query.offset))
+    }
+    const qs = params.toString()
+    return getJSON<RunsListResponse>(`/api/v1/runs${qs === '' ? '' : `?${qs}`}`)
+}
+
+export function getRun(id: string): Promise<RunRecordResponse> {
+    return getJSON<RunRecordResponse>(`/api/v1/runs/${id}`)
+}
+
+export async function listRunItems(
+    id: string,
+    limit?: number,
+    offset?: number,
+): Promise<RunItemsListResponse> {
+    const params = new URLSearchParams()
+    if (limit !== undefined) {
+        params.set('limit', String(limit))
+    }
+    if (offset !== undefined) {
+        params.set('offset', String(offset))
+    }
+    const qs = params.toString()
+    return getJSON<RunItemsListResponse>(`/api/v1/runs/${id}/items${qs === '' ? '' : `?${qs}`}`)
+}
