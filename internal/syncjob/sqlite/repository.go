@@ -65,7 +65,7 @@ func (r *Repository) Create(ctx context.Context, job syncjob.Job) error {
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		job.ID, job.Name, job.SourceID, job.RemoteRoot, job.LocalRoot, string(job.Mode),
 		include, exclude, boolToInt(job.Enabled),
-		string(schedule.Type), schedule.Value, schedule.Timezone, anchorMillis(schedule.AnchorAt),
+		string(schedule.Type), schedule.Value, schedule.Timezone, nullMillis(schedule.AnchorAt),
 		job.CreatedAt.UnixMilli(), job.UpdatedAt.UnixMilli(),
 	)
 	return mapJobError("create job", job.ID, err)
@@ -152,7 +152,7 @@ func (r *Repository) updateExec(ctx context.Context, exec interface {
 		WHERE id = ?`,
 		job.Name, job.SourceID, job.RemoteRoot, job.LocalRoot, string(job.Mode),
 		include, exclude, boolToInt(job.Enabled),
-		string(schedule.Type), schedule.Value, schedule.Timezone, anchorMillis(schedule.AnchorAt),
+		string(schedule.Type), schedule.Value, schedule.Timezone, nullMillis(schedule.AnchorAt),
 		job.UpdatedAt.UnixMilli(), job.ID,
 	)
 	if err != nil {
@@ -308,7 +308,7 @@ func scanJob(row rowScanner) (syncjob.Job, error) {
 		Type:     syncjob.ScheduleType(scheduleType),
 		Value:    scheduleValue,
 		Timezone: scheduleTimezone,
-		AnchorAt: anchorFromMillis(scheduleAnchor),
+		AnchorAt: timeFromMillis(scheduleAnchor),
 	}
 	job.CreatedAt = time.UnixMilli(createdAtMillis).UTC()
 	job.UpdatedAt = time.UnixMilli(updatedAtMillis).UTC()
@@ -324,16 +324,17 @@ func persistedSchedule(s syncjob.Schedule) syncjob.Schedule {
 	return s
 }
 
-// anchorMillis 把 interval anchor 转为可空列：nil 存 NULL。
-func anchorMillis(t *time.Time) sql.NullInt64 {
+// nullMillis 把时间指针转为可空列：nil 存 NULL（interval anchor、
+// scheduled_for / finished_at 同构）。
+func nullMillis(t *time.Time) sql.NullInt64 {
 	if t == nil {
 		return sql.NullInt64{}
 	}
 	return sql.NullInt64{Int64: t.UnixMilli(), Valid: true}
 }
 
-// anchorFromMillis 把可空列读回 anchor 指针，时间为 UTC。
-func anchorFromMillis(n sql.NullInt64) *time.Time {
+// timeFromMillis 把可空毫秒列读回 UTC 时间指针。
+func timeFromMillis(n sql.NullInt64) *time.Time {
 	if !n.Valid {
 		return nil
 	}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"time"
 
 	"tinysync/internal/api"
 	"tinysync/internal/config"
@@ -38,6 +39,17 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 	// 取消信号中断，保证退出行为与数据库状态确定。
 	if err := storage.Migrate(context.Background(), db, cfg.DataDir); err != nil {
 		return fmt.Errorf("migrate database: %w", err)
+	}
+
+	// 启动恢复：进程异常退出遗留的 running 记录收敛为 failed，
+	// 保证持久化历史与「没有进程在运行」的现实一致。
+	runs := jobsqlite.NewRunRepository(db)
+	recovered, err := runs.FailStaleRunning(context.Background(), time.Now().UTC(), "previous process interrupted")
+	if err != nil {
+		return fmt.Errorf("recover stale sync runs: %w", err)
+	}
+	if recovered > 0 {
+		logging.Infof("recovered %d stale running sync run(s) as failed", recovered)
 	}
 
 	// 装配 Source 领域：SQLite 仓库 + WebDAV factory + 应用服务。

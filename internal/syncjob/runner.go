@@ -12,16 +12,18 @@ import (
 	"tinysync/internal/source"
 )
 
-// RunState 是手动运行的状态机取值。进程重启后回到 idle——运行记录
-// 只存内存，持久化历史明确属于 v0.4。
+// RunState 是运行的状态机取值。running → succeeded | failed；
+// skipped 是调度触发但未执行（overlap / 容量不足 / 禁用）的记录。
+// idle 不是持久化状态，仅表示「从未运行」的查询占位。
 type RunState string
 
-// 运行状态机：idle → running → succeeded | failed。
+// 运行状态机取值。v0.4 起运行记录持久化于 sync_runs。
 const (
 	RunIdle      RunState = "idle"
 	RunRunning   RunState = "running"
 	RunSucceeded RunState = "succeeded"
 	RunFailed    RunState = "failed"
+	RunSkipped   RunState = "skipped"
 )
 
 // 手动运行相关错误：API 层映射为 409 等状态码。
