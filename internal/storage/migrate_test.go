@@ -498,6 +498,112 @@ func TestMigrateV2ToV3AddsScheduleAndRuns(t *testing.T) {
 	}
 }
 
+// v3 → v4 升级：once_consumed_for 从存量 once run 回填（取最近一次
+// occurrence），interval / manual Job 不回填；升级备份停留在 v3。
+// migration 一旦发布即不可变接口，0004 的核心价值（backfill）必须
+// 有专项回归。
+func TestMigrateV3ToV4BackfillsOnceConsumption(t *testing.T) {
+	dataDir := t.TempDir()
+	db, err := Open(dataDir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	// 用真实的 0001-0003 schema 构造 v3 形态的库。
+	v3FS := fstest.MapFS{}
+	for _, name := range []string{"0001_sources.sql", "0002_sync_jobs.sql", "0003_scheduler_history.sql"} {
+		data, err := fs.ReadFile(migrationFS, "migrations/"+name)
+		if err != nil {
+			t.Fatalf("read embedded %s: %v", name, err)
+		}
+		v3FS["migrations/"+name] = &fstest.MapFile{Data: data}
+	}
+	if err := migrate(ctx, db, dataDir, v3FS); err != nil {
+		t.Fatalf("build v3 database: %v", err)
+	}
+	assertVersion(t, db, 3)
+
+	if _, err := db.Exec(`INSERT INTO sources
+		(id, name, type, endpoint, username, password, enabled, created_at, updated_at)
+		VALUES ('src_a', 'nas', 'webdav', 'https://example.com/dav/', 'user', 'secret', 1, 1, 1)`); err != nil {
+		t.Fatalf("insert source: %v", err)
+	}
+	insertJob := func(id, name, scheduleType, scheduleValue, anchor string) {
+		t.Helper()
+		if _, err := db.Exec(`INSERT INTO sync_jobs
+			(id, name, source_id, remote_root, local_root, mode,
+			 include_patterns, exclude_patterns, enabled,
+			 schedule_type, schedule_value, schedule_timezone, schedule_anchor_at,
+			 created_at, updated_at)
+			VALUES (?, ?, 'src_a', '/', '/tmp/x', 'copy', '[]', '[]', 1, ?, ?, '', `+anchor+`, 1, 1)`,
+			id, name, scheduleType, scheduleValue); err != nil {
+			t.Fatalf("insert job %s: %v", id, err)
+		}
+	}
+	// once（执行过）+ interval + manual（v0.3 遗留缺省）三类 Job。
+	insertJob("job_once", "once", "once", "2026-09-20T03:00:00Z", "NULL")
+	insertJob("job_iv", "interval", "interval", "30m", "1000")
+	insertJob("job_manual", "manual", "manual", "", "NULL")
+
+	// once Job 有两条历史 occurrence（10:00 失败、10:30 失败——失败
+	// 同样算消费）；interval run 不应参与回填。
+	if _, err := db.Exec(`INSERT INTO sync_runs
+		(id, job_id, trigger_type, scheduled_for, status, started_at)
+		VALUES
+		('run_old', 'job_once', 'once', 1000, 'failed', 1000),
+		('run_new', 'job_once', 'once', 2000, 'failed', 2000),
+		('run_iv', 'job_iv', 'interval', 1500, 'succeeded', 1500)`); err != nil {
+		t.Fatalf("insert runs: %v", err)
+	}
+
+	if err := Migrate(ctx, db, dataDir); err != nil {
+		t.Fatalf("Migrate v3->v4: %v", err)
+	}
+	assertVersion(t, db, embeddedLatestVersion(t))
+
+	consumedFor := func(jobID string) any {
+		t.Helper()
+		var got any
+		if err := db.QueryRow(
+			"SELECT once_consumed_for FROM sync_jobs WHERE id = ?", jobID,
+		).Scan(&got); err != nil {
+			t.Fatalf("query consumed_for of %s: %v", jobID, err)
+		}
+		return got
+	}
+	// once：回填为最近一次 occurrence（started_at 倒序取 run_new）。
+	if got := consumedFor("job_once"); got != int64(2000) {
+		t.Errorf("once job consumed_for = %v, want 2000 (latest occurrence)", got)
+	}
+	// interval / manual：保持 NULL。
+	if got := consumedFor("job_iv"); got != nil {
+		t.Errorf("interval job consumed_for = %v, want NULL", got)
+	}
+	if got := consumedFor("job_manual"); got != nil {
+		t.Errorf("manual job consumed_for = %v, want NULL", got)
+	}
+
+	// 升级备份存在且停留在 v3。
+	entries, err := os.ReadDir(filepath.Join(dataDir, backupsDirName))
+	if err != nil {
+		t.Fatalf("read backups dir: %v", err)
+	}
+	if len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), "tinysync-v3-") {
+		t.Fatalf("backup files = %v, want one tinysync-v3-* entry", entries)
+	}
+	backupDB, err := sql.Open("sqlite", filepath.Join(dataDir, backupsDirName, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("open backup: %v", err)
+	}
+	defer backupDB.Close()
+	assertVersion(t, backupDB, 3)
+	if _, err := backupDB.Query("SELECT once_consumed_for FROM sync_jobs"); err == nil {
+		t.Error("backup should not contain once_consumed_for column")
+	}
+}
+
 // 同一秒内连续两次迁移备份必须生成不同文件，避免失败重试时
 // VACUUM INTO 因目标已存在而冲突。
 func TestBackupDatabaseUniqueNamesSameSecond(t *testing.T) {
