@@ -8,12 +8,17 @@
 #	3. 启动 tinysync serve（临时 datadir、独立端口）
 #	4. GET /api/v1/health 轮询至就绪且 "status":"ok"
 #	5. GET / 返回 WebUI（<title>TinySync</title>）
-#	6. POST /api/v1/sources 创建 WebDAV Source，响应不含密码明文
-#	7. GET /api/v1/sources 列表可见且同样不含密码，tinysync.db 已创建
-#	8. POST /api/v1/jobs 创建引用该 Source 的 Copy Job
+#	6. POST /api/v1/sources 按 config/credentials 契约创建 WebDAV
+#	   Source，响应不含密码明文、credential_state 正确
+#	6b. 创建 S3 Source（config 单选组 + secret_key），secret 不回显
+#	6c. 创建 SFTP Source（含 auth_method 与 host key fingerprint）
+#	7. GET /api/v1/sources 列表可见三个 Source 且不含 secret，
+#	   tinysync.db 已创建
+#	8. POST /api/v1/jobs 创建引用 WebDAV Source 的 Copy Job
 #	9. POST /api/v1/jobs/:id/run 异步启动（202），对不可达远端收敛为 failed
 #	10. 关闭进程并以同一 datadir 重启
-#	11. GET /api/v1/sources/:id 确认 Source（含密码标志）跨重启持久化
+#	11. 三协议 Source 跨重启持久化：config / credential_state 保持，
+#	    secret 不回显
 #	12. Job 配置跨重启持久化，运行历史持久化：状态保持 failed，
 #	    run_id / finished_at / error 与重启前一致
 #	13. GET /api/v1/runs/:run_id 确认运行摘要 API 可查询该持久化运行
@@ -128,14 +133,14 @@ curl --fail --silent "${base_url}/" >index.html
 grep -F '<title>TinySync</title>' index.html >/dev/null
 echo "[smoke] web"
 
-# 6. POST /api/v1/sources：创建带密码的 WebDAV Source。
-#    不做真实连接测试（协议行为由 Go httptest 覆盖）；endpoint 仅需合法。
+# 6. POST /api/v1/sources：按 config / credentials 契约创建带密码的
+#    WebDAV Source。不做真实连接测试（协议行为由 Go httptest 覆盖）。
 curl --fail --silent \
 	-H 'Content-Type: application/json' \
-	--data '{"name":"Smoke Source","type":"webdav","endpoint":"http://127.0.0.1:1/dav","username":"smoke","password":"S3cret-Smoke"}' \
+	--data '{"name":"Smoke WebDAV","type":"webdav","config":{"endpoint":"http://127.0.0.1:1/dav","username":"smoke"},"credentials":{"password":"S3cret-Smoke"}}' \
 	"${base_url}/api/v1/sources" >source.json
-grep -F '"password_set":true' source.json >/dev/null || {
-	echo "Error: source creation failed" >&2
+grep -F '"webdav":{"password_set":true}' source.json >/dev/null || {
+	echo "Error: webdav source creation failed" >&2
 	cat source.json >&2
 	exit 1
 }
@@ -143,8 +148,8 @@ if grep -F 'S3cret-Smoke' source.json >/dev/null; then
 	echo "Error: create response leaks password" >&2
 	exit 1
 fi
-if grep -F '"password"' source.json >/dev/null; then
-	echo "Error: create response contains password field" >&2
+if grep -F '"credentials"' source.json >/dev/null; then
+	echo "Error: create response contains credentials field" >&2
 	exit 1
 fi
 source_id=$(grep -o '"id":"src_[a-f0-9]*"' source.json | head -1 | cut -d '"' -f4)
@@ -152,20 +157,58 @@ if [[ -z "${source_id}" ]]; then
 	echo "Error: no source id in response: $(cat source.json)" >&2
 	exit 1
 fi
-echo "[smoke] source created: ${source_id}"
+echo "[smoke] webdav source created: ${source_id}"
 
-# 7. GET 列表可见该 Source 且不含密码；数据库文件已创建。
-curl --fail --silent "${base_url}/api/v1/sources" >sources.json
-grep -F "${source_id}" sources.json >/dev/null
-if grep -F 'S3cret-Smoke' sources.json >/dev/null; then
-	echo "Error: list response leaks password" >&2
+# 6b. S3 Source：config 单选组 + secret_key；secret 不回显。
+curl --fail --silent \
+	-H 'Content-Type: application/json' \
+	--data '{"name":"Smoke S3","type":"s3","config":{"region":"us-east-1","bucket":"smoke-bucket","path_style":true,"access_key":"AKID-SMOKE"},"credentials":{"secret_key":"S3cret-Key"}}' \
+	"${base_url}/api/v1/sources" >source_s3.json
+grep -F '"s3":{"secret_key_set":true}' source_s3.json >/dev/null || {
+	echo "Error: s3 source creation failed" >&2
+	cat source_s3.json >&2
+	exit 1
+}
+if grep -F 'S3cret-Key' source_s3.json >/dev/null; then
+	echo "Error: s3 create response leaks secret key" >&2
 	exit 1
 fi
+s3_id=$(grep -o '"id":"src_[a-f0-9]*"' source_s3.json | head -1 | cut -d '"' -f4)
+echo "[smoke] s3 source created: ${s3_id}"
+
+# 6c. SFTP Source：显式 auth_method + SHA256 host key fingerprint。
+curl --fail --silent \
+	-H 'Content-Type: application/json' \
+	--data '{"name":"Smoke SFTP","type":"sftp","config":{"host":"127.0.0.1","port":22,"username":"smoke","remote_root":"/srv/smoke","auth_method":"password","host_key_fingerprint":"SHA256:UC1Dk4I9LLQOV3B8eZ5FlrUUcbbNie4INffe2TDTz3k"},"credentials":{"password":"S3cret-FTP"}}' \
+	"${base_url}/api/v1/sources" >source_sftp.json
+grep -F '"sftp":{"password_set":true,"private_key_set":false,"private_key_passphrase_set":false}' source_sftp.json >/dev/null || {
+	echo "Error: sftp source creation failed" >&2
+	cat source_sftp.json >&2
+	exit 1
+}
+if grep -F 'S3cret-FTP' source_sftp.json >/dev/null; then
+	echo "Error: sftp create response leaks password" >&2
+	exit 1
+fi
+sftp_id=$(grep -o '"id":"src_[a-f0-9]*"' source_sftp.json | head -1 | cut -d '"' -f4)
+echo "[smoke] sftp source created: ${sftp_id}"
+
+# 7. GET 列表可见三个 Source 且不含 secret；数据库文件已创建。
+curl --fail --silent "${base_url}/api/v1/sources" >sources.json
+grep -F "${source_id}" sources.json >/dev/null
+grep -F "${s3_id}" sources.json >/dev/null
+grep -F "${sftp_id}" sources.json >/dev/null
+for secret in 'S3cret-Smoke' 'S3cret-Key' 'S3cret-FTP'; do
+	if grep -F "${secret}" sources.json >/dev/null; then
+		echo "Error: list response leaks secret ${secret}" >&2
+		exit 1
+	fi
+done
 if [[ ! -f "${datadir}/tinysync.db" ]]; then
 	echo "Error: ${datadir}/tinysync.db was not created" >&2
 	exit 1
 fi
-echo "[smoke] sources list ok, database file ok"
+echo "[smoke] sources list ok (3 protocols), database file ok"
 
 # 8. POST /api/v1/jobs：创建引用该 Source 的 Copy Job。
 #    local_root 用相对路径（cwd 已是 smoke_root），由服务端归一为绝对路径，
@@ -222,15 +265,27 @@ start_server serve2.log
 wait_ready serve2.log
 echo "[smoke] server restarted"
 
-# 11. Source 跨重启持久化：字段与密码标志保持。
+# 11. 三协议 Source 跨重启持久化：config 与 credential_state 保持，
+#     secret 不回显。
 curl --fail --silent "${base_url}/api/v1/sources/${source_id}" >source2.json
-grep -F '"name":"Smoke Source"' source2.json >/dev/null
-grep -F '"password_set":true' source2.json >/dev/null
-if grep -F 'S3cret-Smoke' source2.json >/dev/null; then
-	echo "Error: restarted response leaks password" >&2
-	exit 1
-fi
-echo "[smoke] source persisted across restart"
+grep -F '"name":"Smoke WebDAV"' source2.json >/dev/null
+grep -F '"webdav":{"password_set":true}' source2.json >/dev/null
+grep -F '"endpoint":"http://127.0.0.1:1/dav"' source2.json >/dev/null
+curl --fail --silent "${base_url}/api/v1/sources/${s3_id}" >source2_s3.json
+grep -F '"s3":{"secret_key_set":true}' source2_s3.json >/dev/null
+grep -F '"bucket":"smoke-bucket"' source2_s3.json >/dev/null
+curl --fail --silent "${base_url}/api/v1/sources/${sftp_id}" >source2_sftp.json
+grep -F '"sftp":{"password_set":true,"private_key_set":false,"private_key_passphrase_set":false}' source2_sftp.json >/dev/null
+grep -F '"remote_root":"/srv/smoke"' source2_sftp.json >/dev/null
+for secret in 'S3cret-Smoke' 'S3cret-Key' 'S3cret-FTP'; do
+	for f in source2.json source2_s3.json source2_sftp.json; do
+		if grep -F "${secret}" "${f}" >/dev/null; then
+			echo "Error: restarted response ${f} leaks secret ${secret}" >&2
+			exit 1
+		fi
+	done
+done
+echo "[smoke] three-protocol sources persisted across restart"
 
 # 12. Job 跨重启持久化：配置保留；运行历史持久化——状态保持 failed，
 #     run_id / finished_at / error 与重启前一致（历史不再只存内存）。
