@@ -81,14 +81,28 @@ missed cron / interval   → 不补跑服务离线期间错过的周期
 missed once              → 服务恢复后仍未消费的 once 立即执行一次
 ```
 
-调度器以内存游标（每次 tick 后推进到当前时间，进程启动时初始化为启动
-时刻）划定处理窗口，天然不回看离线期间的历史周期。interval 的相位由
-持久化 anchor 推导（`anchor + n*interval`），重启只影响「从哪个时刻继续」，
-不改变边界相位。
+调度器以内存游标划定处理窗口，天然不回看离线期间的历史周期。interval
+的相位由持久化 anchor 推导（`anchor + n*interval`），重启只影响「从哪个
+时刻继续」，不改变边界相位。游标只在成功读取并处理完全部 Job 后推进：
+`repo.List` 失败、任一 occurrence 的消费检查或 run 落库失败时游标保持
+不动，下一 tick 重扫同一窗口——内部瞬时失败不会吞掉 occurrence；已
+成功持久化的 occurrence 由消费记录去重，重扫不会重复执行。确定性校验
+失败（Job / Source 禁用、Job 已删除）按消费丢弃，避免游标被永久卡住。
 
-once 的「已消费」判定与所有 occurrence 的幂等判定统一依赖
-`sync_runs(job_id, trigger, scheduled_for)`：该 occurrence 已存在对应
-run 记录（无论 succeeded / failed / skipped）即已消费。
+once 的「已消费」判定不依赖可裁剪的运行历史：消费状态持久化在
+`sync_jobs.once_consumed_for`（occurrence 的 Unix ms 时间戳；migration
+`0004_once_consumption.sql`，升级时从存量 once run 回填）。调度触发
+的 run 落库与 once 消费写入在同一个事务（`RunRepository.
+PersistScheduledRun`），「run 存在 ⇔ occurrence 已消费」原子成立，
+两次独立写之间的失败不会再造成 once 重放。interval / cron 的
+occurrence 幂等（游标回退重扫去重）仍以
+`sync_runs(job_id, trigger, scheduled_for)` 判定——它们的重复触发只是
+幂等的多跑一轮，无 once 的单次语义约束。
+
+Job 配置变更（PATCH / DELETE）与执行链经 per-Job 协调位原子互斥；
+变更占用是毫秒级的瞬时状态，期间到期的调度触发不消费 occurrence
+（返回瞬时错误，游标保持重试），变更完成后按新配置执行——一次顺手
+改名不该永久吞掉一次 once。
 
 ## Overlap Policy
 
@@ -99,6 +113,8 @@ v1 默认 `skip`，不排队：
 同 Job overlap，手动触发    → HTTP 409（保持 v0.3 行为）
 全局并发满，自动调度        → 记录 skipped，reason=concurrency_limit
 全局并发满，手动触发        → HTTP 409
+配置变更占用中，自动调度    → 不消费：瞬时错误，稍后重试
+配置变更占用中，手动触发    → HTTP 409（sync job is being modified）
 ```
 
 ## 并发模型
@@ -143,7 +159,7 @@ Mirror 删除，下一轮继续收敛。
 
 ## 数据库设计
 
-migration `0003_scheduler_history.sql`：
+migration `0003_scheduler_history.sql` 与 `0004_once_consumption.sql`：
 
 `sync_jobs` 增加四列（全部带默认值，既有 Job 升级后即为 `manual`）：
 
@@ -153,6 +169,15 @@ schedule_type       TEXT NOT NULL DEFAULT 'manual'
 schedule_value      TEXT NOT NULL DEFAULT ''
 schedule_timezone   TEXT NOT NULL DEFAULT ''
 schedule_anchor_at  INTEGER NULL          -- interval 相位基准，Unix ms
+```
+
+`0004` 增加 once 消费状态（调度器 correctness state，与可裁剪的
+审计历史分离；升级时从存量 once run 回填最近一次 occurrence）：
+
+```text
+once_consumed_for   INTEGER NULL          -- once occurrence，Unix ms
+                                          -- 非 once 调度 / 未执行的 once 为 NULL
+                                          -- once 语义变更时由服务层清空
 ```
 
 ```text
@@ -174,7 +199,9 @@ sync_runs
 ```
 
 `scheduled_for` 区分「计划在 03:00 执行、实际 03:00:02 开始」，并作为
-occurrence 消费判定依据。`next run` 运行时计算，不持久化为事实来源。
+interval / cron occurrence 的幂等判定依据；once 的消费判定在
+`sync_jobs.once_consumed_for`（见上）。`next run` 运行时计算，不持久化
+为事实来源。
 
 ```text
 sync_run_items
@@ -188,8 +215,8 @@ sync_run_items
 ```
 
 索引：`sync_runs(job_id, started_at)`（per-Job 历史 / retention）、
-`sync_runs(job_id, trigger_type, scheduled_for)`（occurrence 消费判定）、
-`sync_run_items(run_id)`（明细读取 / 级联删除）。
+`sync_runs(job_id, trigger_type, scheduled_for)`（interval / cron
+occurrence 幂等去重）、`sync_run_items(run_id)`（明细读取 / 级联删除）。
 
 **普通 unchanged 文件不创建 `sync_run_items`**，只累计 summary，
 避免 SQLite 快速膨胀。以下情况才写 item：
@@ -384,6 +411,7 @@ schedule editor 直接加入既有对话框，不另建 Scheduler 管理页面�
 ## 交付清单
 
 - [x] `0003_scheduler_history.sql`：`sync_jobs` schedule 列、`sync_runs`、`sync_run_items`、索引与 FK，真实 v2→v3 迁移与备份测试。
+- [x] `0004_once_consumption.sql`：`sync_jobs.once_consumed_for` once 消费状态（含存量回填），真实 v3→v4 迁移专项测试。
 - [x] Schedule 模型与校验：manual / once / interval / cron、IANA timezone、interval anchor、Next 计算、非法输入拒绝。
 - [x] SQLite Job repository 读写 schedule 字段；既有 Job 升级后自动 manual。
 - [x] Run / RunItem 模型与 RunRepository（SQLite 实现）；启动时 stale-running recovery。
@@ -402,9 +430,10 @@ schedule editor 直接加入既有对话框，不另建 Scheduler 管理页面�
 
 - 领域与调度：`internal/syncjob`（`schedule.go`、`run.go`、`scheduler.go`、
   重构后的 `runner.go` / `engine.go`）。
-- 持久化：`internal/storage/migrations/0003_scheduler_history.sql`、
-  `internal/syncjob/sqlite/run_repository.go`、既有 `repository.go`
-  扩展 schedule 四列。
+- 持久化：`internal/storage/migrations/0003_scheduler_history.sql` 与
+  `0004_once_consumption.sql`、`internal/syncjob/sqlite/run_repository.go`
+  （含 `PersistScheduledRun` 事务路径）、既有 `repository.go` 扩展
+  schedule 四列与 once 消费列。
 - 装配与配置：`internal/app/app.go`（stale 恢复、调度器生命周期、
   并发注入）、`internal/config` / `internal/cmd`（两个并发 flag 与 env）。
 - REST API：`internal/api/job.go`（schedule DTO、next_run_at、
