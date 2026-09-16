@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -390,12 +389,18 @@ func (h *sourceHandlers) update(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		if h.refGuard != nil && identityChanged(current, config) {
-			if err := h.refGuard(c.Request.Context(), id); err != nil {
-				c.JSON(http.StatusConflict, gin.H{
-					"error": "source remote identity cannot be changed while referenced by sync jobs",
-				})
-				return
+		// Remote identity 保护：身份字段按协议判定
+		// （source.RemoteIdentityEqual），被 Job 引用时拒绝。
+		if h.refGuard != nil {
+			next := current
+			next.Config = config
+			if !source.RemoteIdentityEqual(current, next) {
+				if err := h.refGuard(c.Request.Context(), id); err != nil {
+					c.JSON(http.StatusConflict, gin.H{
+						"error": "source remote identity cannot be changed while referenced by sync jobs",
+					})
+					return
+				}
 			}
 		}
 		input.Config = &config
@@ -465,14 +470,4 @@ func handleSourceError(c *gin.Context, err error) {
 	default:
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 	}
-}
-
-// identityChanged 判断 config 更新是否改变了 remote identity。
-// 当前保持既有安全语义（WebDAV endpoint）；S3 / SFTP identity 字段与
-// WebDAV username 的泛化由 RemoteIdentityEqual 统一承担。
-func identityChanged(current source.Source, next source.Config) bool {
-	if current.Type != source.TypeWebDAV || current.Config.WebDAV == nil || next.WebDAV == nil {
-		return false
-	}
-	return strings.TrimSpace(next.WebDAV.Endpoint) != current.Config.WebDAV.Endpoint
 }

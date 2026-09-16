@@ -473,6 +473,16 @@ func TestSourceEndpointChangeGuardAPI(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("same-endpoint PATCH = %d %s, want 200", rec.Code, rec.Body.String())
 	}
+	// username 同属 WebDAV remote identity：变更同样 409。
+	rec = doJSON(t, router, "PATCH", "/api/v1/sources/"+sourceID, `{"config": {"endpoint": "https://dav.example.com", "username": "other"}}`)
+	if rec.Code != http.StatusConflict {
+		t.Errorf("username change on referenced source = %d %s, want 409", rec.Code, rec.Body.String())
+	}
+	// secret rotation 始终允许。
+	rec = doJSON(t, router, "PATCH", "/api/v1/sources/"+sourceID, `{"credentials": {"password": "ROTATED_SECRET"}}`)
+	if rec.Code != http.StatusOK {
+		t.Errorf("secret rotation on referenced source = %d %s, want 200", rec.Code, rec.Body.String())
+	}
 	// 改名允许。
 	rec = doJSON(t, router, "PATCH", "/api/v1/sources/"+sourceID, `{"name": "Renamed"}`)
 	if rec.Code != http.StatusOK {
