@@ -94,7 +94,7 @@ func newEnv(t *testing.T) *env {
 	e.jobRepo = jobsqlite.NewRepository(e.db)
 	e.managedRepo = jobsqlite.NewManagedRepository(e.db)
 	e.jobs = syncjob.NewService(e.jobRepo, e.sources, e.dataDir)
-	e.runner = syncjob.NewRunner(e.jobRepo, e.managedRepo, e.sources, webdav.NewFactory(), jobsqlite.NewRunRepository(e.db))
+	e.runner = syncjob.NewRunner(e.jobRepo, e.managedRepo, e.sources, jobsqlite.NewRunRepository(e.db))
 	t.Cleanup(func() { _ = e.db.Close() })
 	return e
 }
@@ -319,7 +319,7 @@ func TestJobPersistsAcrossRestart(t *testing.T) {
 	jobRepo2 := jobsqlite.NewRepository(db)
 	managedRepo2 := jobsqlite.NewManagedRepository(db)
 	jobs2 := syncjob.NewService(jobRepo2, sources2, e.dataDir)
-	runner2 := syncjob.NewRunner(jobRepo2, managedRepo2, sources2, webdav.NewFactory(), jobsqlite.NewRunRepository(db))
+	runner2 := syncjob.NewRunner(jobRepo2, managedRepo2, sources2, jobsqlite.NewRunRepository(db))
 
 	// Source 完整保留。
 	src, err := sources2.Get(ctx, sourceID)

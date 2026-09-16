@@ -132,30 +132,36 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	return s.repo.Delete(ctx, id)
 }
 
-// GetPassword 返回密码明文；仅用于构造远端客户端的内部链路
-// （如 Sync Job 运行时），不进入任何 API 响应。
-func (s *Service) GetPassword(ctx context.Context, id string) (string, error) {
-	return s.repo.GetPassword(ctx, id)
+// OpenRemote 按 ID 读取 Source 并构造其远端客户端：凭据查询与协议
+// dispatch 集中在此一条链路，Runner、Connection Test 与未来 MCP /
+// browser 复用同一入口，不各自接触凭据或 factory。调用方负责在用毕
+// 后 Close 返回的 Remote。返回 Source 供调用方执行 Enabled 等策略
+// 检查；凭据明文不经过该入口以外的任何路径。
+func (s *Service) OpenRemote(ctx context.Context, id string) (Source, Remote, error) {
+	src, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return Source{}, nil, err
+	}
+	password, err := s.repo.GetPassword(ctx, id)
+	if err != nil {
+		return Source{}, nil, err
+	}
+	remote, err := s.factory.Create(ctx, src, password)
+	if err != nil {
+		return Source{}, nil, err
+	}
+	return src, remote, nil
 }
 
 // TestConnection 真正连接远端验证配置：对根路径执行 Stat（WebDAV 为
 // PROPFIND）。连接失败返回 OK=false 的结果与 nil 错误；Source 不存在
-// 或存储故障才返回错误。Remote 的创建与探测共用同一超时窗口，结束后
-// 始终释放连接（有连接生命周期的协议不遗留会话）。
+// 或存储故障才返回错误。Remote 的创建纳入同一超时窗口，结束后始终
+// 释放连接（有连接生命周期的协议不遗留会话）。
 func (s *Service) TestConnection(ctx context.Context, id string) (TestResult, error) {
-	src, err := s.repo.Get(ctx, id)
-	if err != nil {
-		return TestResult{}, err
-	}
-	password, err := s.repo.GetPassword(ctx, id)
-	if err != nil {
-		return TestResult{}, err
-	}
-
 	start := s.Now()
 	testCtx, cancel := context.WithTimeout(ctx, testTimeout)
 	defer cancel()
-	remote, err := s.factory.Create(testCtx, src, password)
+	_, remote, err := s.OpenRemote(testCtx, id)
 	if err != nil {
 		return TestResult{}, err
 	}

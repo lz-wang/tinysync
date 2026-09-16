@@ -299,7 +299,7 @@ func TestRunHistoryAcrossRestartEndToEnd(t *testing.T) {
 	jobRepo2 := jobsqlite.NewRepository(db)
 	managedRepo2 := jobsqlite.NewManagedRepository(db)
 	runRepo2 := jobsqlite.NewRunRepository(db)
-	runner2 := syncjob.NewRunner(jobRepo2, managedRepo2, sources2, webdav.NewFactory(), runRepo2)
+	runner2 := syncjob.NewRunner(jobRepo2, managedRepo2, sources2, runRepo2)
 
 	// 启动恢复（与 app.Run 相同语义）：遗留 running 收敛为 failed。
 	recovered, err := runRepo2.FailStaleRunning(ctx, time.Now().UTC(), "previous process interrupted")

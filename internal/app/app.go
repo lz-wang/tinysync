@@ -52,9 +52,14 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 		logging.Infof("recovered %d stale running sync run(s) as failed", recovered)
 	}
 
-	// 装配 Source 领域：SQLite 仓库 + WebDAV factory + 应用服务。
+	// 装配 Source 领域：SQLite 仓库 + 协议注册表 + 应用服务。协议
+	// dispatch 只发生在 registry 一处，业务层不出现协议分支；
 	// REST / Web UI / MCP 共用该服务层。
-	sources := source.NewService(sqlite.New(db), webdav.NewFactory())
+	remotes, err := source.NewRemoteRegistry(webdav.NewFactory())
+	if err != nil {
+		return fmt.Errorf("assemble remote registry: %w", err)
+	}
+	sources := source.NewService(sqlite.New(db), remotes)
 
 	// 装配 Sync Job 领域：仓库共享同一 DB（FK RESTRICT / CASCADE 生效），
 	// 应用服务带 LocalRoot 归属保护，Runner 提供手动运行并以持久化
@@ -62,7 +67,7 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 	jobRepo := jobsqlite.NewRepository(db)
 	managedRepo := jobsqlite.NewManagedRepository(db)
 	jobs := syncjob.NewService(jobRepo, sources, cfg.DataDir)
-	runner := syncjob.NewRunner(jobRepo, managedRepo, sources, webdav.NewFactory(), runs)
+	runner := syncjob.NewRunner(jobRepo, managedRepo, sources, runs)
 	runner.MaxConcurrentJobs = cfg.MaxConcurrentJobs
 	runner.MaxConcurrentTransfers = cfg.MaxConcurrentTransfers
 	scheduler := syncjob.NewScheduler(jobRepo, runner, runs)

@@ -40,21 +40,15 @@ func (b *gateRemote) Close() error {
 	return nil
 }
 
-// staticCreds / staticFactory 提供固定的 Source 与远端。
-type staticCreds struct{}
+// staticGateway 是 SourceGateway 的内存实现：提供固定的 Source 与远端。
+type staticGateway struct{ remote source.Remote }
 
-func (staticCreds) Get(ctx context.Context, id string) (source.Source, error) {
+func (g staticGateway) Get(ctx context.Context, id string) (source.Source, error) {
 	return source.Source{ID: id, Name: "nas", Type: source.TypeWebDAV, Enabled: true}, nil
 }
 
-func (staticCreds) GetPassword(ctx context.Context, id string) (string, error) {
-	return "secret", nil
-}
-
-type staticFactory struct{ remote source.Remote }
-
-func (f staticFactory) Create(ctx context.Context, s source.Source, password string) (source.Remote, error) {
-	return f.remote, nil
+func (g staticGateway) OpenRemote(ctx context.Context, id string) (source.Source, source.Remote, error) {
+	return source.Source{ID: id, Name: "nas", Type: source.TypeWebDAV, Enabled: true}, g.remote, nil
 }
 
 func TestRunnerShutdownPersistsTerminalStateWithSQLite(t *testing.T) {
@@ -79,7 +73,7 @@ func TestRunnerShutdownPersistsTerminalStateWithSQLite(t *testing.T) {
 	runRepo := jobsqlite.NewRunRepository(db)
 
 	gate := make(chan struct{})
-	runner := syncjob.NewRunner(jobRepo, managedRepo, staticCreds{}, staticFactory{remote: &gateRemote{gate: gate}}, runRepo)
+	runner := syncjob.NewRunner(jobRepo, managedRepo, staticGateway{remote: &gateRemote{gate: gate}}, runRepo)
 
 	now := time.Now().UTC().Add(-time.Minute)
 	job := syncjob.Job{

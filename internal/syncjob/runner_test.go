@@ -41,19 +41,10 @@ func (b *blockingRemote) Close() error {
 	return nil
 }
 
-// stubFactory 是 source.RemoteFactory 的桩：返回构造时给定的 Remote。
-type stubFactory struct {
-	remote source.Remote
-}
-
-func (f stubFactory) Create(ctx context.Context, s source.Source, password string) (source.Remote, error) {
-	return f.remote, nil
-}
-
-// memCreds 是 SourceCredentials 的内存实现。
+// memCreds 是 SourceGateway 的内存实现。
 type memCreds struct {
-	source    source.Source
-	passwords map[string]string
+	source source.Source
+	remote source.Remote
 }
 
 func (m *memCreds) Get(ctx context.Context, id string) (source.Source, error) {
@@ -63,8 +54,11 @@ func (m *memCreds) Get(ctx context.Context, id string) (source.Source, error) {
 	return m.source, nil
 }
 
-func (m *memCreds) GetPassword(ctx context.Context, id string) (string, error) {
-	return m.passwords[id], nil
+func (m *memCreds) OpenRemote(ctx context.Context, id string) (source.Source, source.Remote, error) {
+	if m.source.ID != id {
+		return source.Source{}, nil, source.ErrNotFound
+	}
+	return m.source, m.remote, nil
 }
 
 // memJobRepo 是 Repository 的内存实现（Runner 测试专用）。
@@ -308,7 +302,7 @@ func newRunnerEnv(t *testing.T, remote source.Remote) *runnerEnv {
 				ID: "src_a", Name: "nas", Type: source.TypeWebDAV,
 				Endpoint: "https://dav.example.com/", Enabled: true,
 			},
-			passwords: map[string]string{"src_a": "secret"},
+			remote: remote,
 		},
 		history: newMemRunRepo(),
 		root:    t.TempDir(),
@@ -324,7 +318,7 @@ func newRunnerEnv(t *testing.T, remote source.Remote) *runnerEnv {
 		job.OnceConsumedFor = &consumed
 		env.repo.jobs[jobID] = job
 	}
-	env.runner = NewRunner(env.repo, env.managed, env.creds, stubFactory{remote: remote}, env.history)
+	env.runner = NewRunner(env.repo, env.managed, env.creds, env.history)
 	env.runner.Now = func() time.Time { return time.Unix(1757879400, 0).UTC() }
 	return env
 }

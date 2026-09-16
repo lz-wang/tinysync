@@ -48,11 +48,13 @@ var (
 	ErrJobMutating = errors.New("sync job is being modified")
 )
 
-// SourceCredentials 是 Runner 构造远端客户端所需的凭据查询能力。
-type SourceCredentials interface {
+// SourceGateway 是 Runner 访问 Source 领域的能力边界：读取 Source
+// 配置与打开远端客户端。凭据查询与协议 dispatch 集中在 source.Service
+// 内，Runner 不接触凭据明文与 RemoteFactory。
+type SourceGateway interface {
 	Get(ctx context.Context, id string) (source.Source, error)
-	// GetPassword 返回密码明文；无密码时为空串。
-	GetPassword(ctx context.Context, id string) (string, error)
+	// OpenRemote 打开 Source 的远端客户端并返回其配置；调用方负责 Close。
+	OpenRemote(ctx context.Context, id string) (source.Source, source.Remote, error)
 }
 
 // RunStatus 是一次运行的快照（API status 端点的数据形态）。
@@ -98,8 +100,8 @@ const (
 type Runner struct {
 	repo    Repository
 	managed ManagedRepository
-	creds   SourceCredentials
-	factory source.RemoteFactory
+	// sources 提供 Source 读取与远端客户端构造（含凭据与协议 dispatch）。
+	sources SourceGateway
 	// history 是运行记录的持久化仓库。
 	history RunRepository
 	// Now 返回当前时间；默认 UTC time.Now，测试可注入固定时钟。
@@ -122,12 +124,11 @@ type Runner struct {
 
 // NewRunner 构造 Runner：默认并发 Job 数 1（与 v0.3 行为一致）、
 // 并发传输 4，应用装配可按运行配置覆盖。
-func NewRunner(repo Repository, managed ManagedRepository, creds SourceCredentials, factory source.RemoteFactory, history RunRepository) *Runner {
+func NewRunner(repo Repository, managed ManagedRepository, sources SourceGateway, history RunRepository) *Runner {
 	return &Runner{
 		repo:                   repo,
 		managed:                managed,
-		creds:                  creds,
-		factory:                factory,
+		sources:                sources,
 		history:                history,
 		Now:                    func() time.Time { return time.Now().UTC() },
 		MaxConcurrentJobs:      1,
@@ -204,21 +205,18 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 	if !job.Enabled {
 		return "", fmt.Errorf("%w: %s", ErrJobDisabled, jobID)
 	}
-	src, err := r.creds.Get(ctx, job.SourceID)
+	// Enabled 检查在读配置链路完成，禁用 Source 不产生到远端的拨号；
+	// Remote 创建（凭据查询与协议 dispatch 均在 service 内）在 runCtx
+	// 发布之前，用独立 background context：运行取消语义由运行
+	// goroutine 的 runCtx 承担。
+	src, err := r.sources.Get(ctx, job.SourceID)
 	if err != nil {
 		return "", err
 	}
 	if !src.Enabled {
 		return "", fmt.Errorf("%w: %s", ErrSourceDisabled, job.SourceID)
 	}
-	password, err := r.creds.GetPassword(ctx, job.SourceID)
-	if err != nil {
-		return "", err
-	}
-	// Remote 创建在 runCtx 发布之前，用独立 background context：运行
-	// 取消语义由运行 goroutine 的 runCtx 承担；v0.5 将把创建收回到
-	// SourceService.OpenRemote(runCtx)，使连接建立阶段同样可取消。
-	remote, err := r.factory.Create(context.Background(), src, password)
+	_, remote, err := r.sources.OpenRemote(context.Background(), job.SourceID)
 	if err != nil {
 		return "", fmt.Errorf("create remote for job %s: %w", jobID, err)
 	}

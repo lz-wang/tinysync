@@ -47,6 +47,10 @@ type stubFactory struct {
 	lastPassword string
 }
 
+func (f *stubFactory) Type() source.Type {
+	return source.TypeWebDAV
+}
+
 func (f *stubFactory) Create(ctx context.Context, s source.Source, password string) (source.Remote, error) {
 	f.lastSource = s
 	f.lastPassword = password

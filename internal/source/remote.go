@@ -42,8 +42,11 @@ type Remote interface {
 	Close() error
 }
 
-// RemoteFactory 按 Source 配置构造远端客户端。
+// RemoteFactory 按 Source 配置构造远端客户端。每个协议 adapter 实现
+// 一份，经 RemoteRegistry 按类型 dispatch。
 type RemoteFactory interface {
+	// Type 声明本 factory 服务的协议类型；Registry 据此建立 dispatch。
+	Type() Type
 	// Create 用 Source 配置与密码明文构造 Remote；ctx 用于可取消的
 	// 连接建立（如 SFTP dial）。协议类型不支持时返回 ErrUnsupportedType。
 	Create(ctx context.Context, s Source, password string) (Remote, error)

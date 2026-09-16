@@ -90,7 +90,7 @@ func newJobRouter(t *testing.T, remote source.Remote) *gin.Engine {
 	jobRepo := jobsqlite.NewRepository(db)
 	managedRepo := jobsqlite.NewManagedRepository(db)
 	jobSvc := syncjob.NewService(jobRepo, sourceSvc, dataDir)
-	runner := syncjob.NewRunner(jobRepo, managedRepo, sourceSvc, fakeFactory{remote: remote}, jobsqlite.NewRunRepository(db))
+	runner := syncjob.NewRunner(jobRepo, managedRepo, sourceSvc, jobsqlite.NewRunRepository(db))
 	return NewRouter(testWebFS(), Dependencies{Sources: sourceSvc, Jobs: jobSvc, Runner: runner})
 }
 

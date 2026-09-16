@@ -46,6 +46,10 @@ type fakeFactory struct {
 	remote source.Remote
 }
 
+func (f fakeFactory) Type() source.Type {
+	return source.TypeWebDAV
+}
+
 func (f fakeFactory) Create(ctx context.Context, s source.Source, password string) (source.Remote, error) {
 	return f.remote, nil
 }

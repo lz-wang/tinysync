@@ -45,6 +45,11 @@ func NewFactory() *Factory {
 	return &Factory{}
 }
 
+// Type 实现 source.RemoteFactory：本 factory 服务 WebDAV 类型。
+func (f *Factory) Type() source.Type {
+	return source.TypeWebDAV
+}
+
 // Create 实现 source.RemoteFactory；匿名访问不发送 Authorization 头。
 // WebDAV 基于 HTTP 无持久会话，ctx 当前仅用于接口一致性（连接建立
 // 无独立网络操作）。
