@@ -31,11 +31,13 @@ func openRepository(t *testing.T) (*sql.DB, *Repository) {
 func newSource(id, name string) source.Source {
 	now := time.Unix(1757879400, 0).UTC()
 	return source.Source{
-		ID:        id,
-		Name:      name,
-		Type:      source.TypeWebDAV,
-		Endpoint:  "https://dav.example.com/files",
-		Username:  "user",
+		ID:   id,
+		Name: name,
+		Type: source.TypeWebDAV,
+		Config: source.Config{WebDAV: &source.WebDAVConfig{
+			Endpoint: "https://dav.example.com/files",
+			Username: "user",
+		}},
 		Enabled:   true,
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -43,11 +45,16 @@ func newSource(id, name string) source.Source {
 }
 
 // mustCreate 创建测试 Source，失败即终止。
-func mustCreate(t *testing.T, repo *Repository, s source.Source, password string) {
+func mustCreate(t *testing.T, repo *Repository, s source.Source, creds source.Credentials) {
 	t.Helper()
-	if err := repo.Create(context.Background(), s, password); err != nil {
+	if err := repo.Create(context.Background(), s, creds); err != nil {
 		t.Fatalf("create source %s: %v", s.ID, err)
 	}
+}
+
+// webdavPasswordSet 便捷读取 WebDAV 凭据状态。
+func webdavPasswordSet(s source.Source) bool {
+	return s.CredentialState.WebDAV != nil && s.CredentialState.WebDAV.PasswordSet
 }
 
 // 创建后 Get 返回全部字段，PasswordSet 正确，且不携带密码明文。
@@ -56,37 +63,40 @@ func TestCreateAndGet(t *testing.T) {
 	ctx := context.Background()
 
 	s := newSource("src_a", "NAS")
-	s.PasswordSet = false
-	mustCreate(t, repo, s, "secret")
+	s.CredentialState = source.CredentialState{
+		WebDAV: &source.WebDAVCredentialState{PasswordSet: true},
+	}
+	mustCreate(t, repo, s, source.Credentials{WebDAV: &source.WebDAVCredentials{Password: "secret"}})
 
 	got, err := repo.Get(ctx, "src_a")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
 	if got.Name != "NAS" || got.Type != source.TypeWebDAV ||
-		got.Endpoint != s.Endpoint || got.Username != "user" || !got.Enabled {
+		got.Config.WebDAV.Endpoint != s.Config.WebDAV.Endpoint ||
+		got.Config.WebDAV.Username != "user" || !got.Enabled {
 		t.Errorf("Get = %+v, want fields of %+v", got, s)
 	}
 	if !got.CreatedAt.Equal(s.CreatedAt) || !got.UpdatedAt.Equal(s.UpdatedAt) {
 		t.Errorf("timestamps = %v/%v, want %v/%v",
 			got.CreatedAt, got.UpdatedAt, s.CreatedAt, s.UpdatedAt)
 	}
-	if !got.PasswordSet {
+	if !webdavPasswordSet(got) {
 		t.Error("PasswordSet = false, want true")
 	}
-	if got.PasswordSet && got.Username == "secret" {
+	if got.Config.WebDAV.Username == "secret" {
 		t.Error("password leaked into username")
 	}
 
 	// 匿名 Source：PasswordSet 为 false。
 	anon := newSource("src_anon", "Anon")
-	anon.Username = ""
-	mustCreate(t, repo, anon, "")
+	anon.Config.WebDAV.Username = ""
+	mustCreate(t, repo, anon, source.Credentials{})
 	gotAnon, err := repo.Get(ctx, "src_anon")
 	if err != nil {
 		t.Fatalf("Get anon: %v", err)
 	}
-	if gotAnon.PasswordSet {
+	if webdavPasswordSet(gotAnon) {
 		t.Error("anon PasswordSet = true, want false")
 	}
 }
@@ -107,7 +117,7 @@ func TestListOrdering(t *testing.T) {
 		"src_a": "Alpha",
 		"src_b": "beta",
 	} {
-		mustCreate(t, repo, newSource(id, name), "")
+		mustCreate(t, repo, newSource(id, name), source.Credentials{})
 	}
 
 	list, err := repo.List(context.Background())
@@ -128,26 +138,29 @@ func TestListOrdering(t *testing.T) {
 // 同名（含大小写差异）创建返回 ErrConflict。
 func TestCreateDuplicateNameConflict(t *testing.T) {
 	_, repo := openRepository(t)
-	mustCreate(t, repo, newSource("src_a", "NAS"), "")
+	mustCreate(t, repo, newSource("src_a", "NAS"), source.Credentials{})
 
 	dup := newSource("src_b", "nas")
-	if err := repo.Create(context.Background(), dup, ""); !errors.Is(err, source.ErrConflict) {
+	if err := repo.Create(context.Background(), dup, source.Credentials{}); !errors.Is(err, source.ErrConflict) {
 		t.Fatalf("Create duplicate = %v, want ErrConflict", err)
 	}
 }
 
-// 更新字段生效且 created_at 不变；password 语义完整覆盖。
+// 更新字段生效且 created_at 不变；password 三态语义完整覆盖。
 func TestUpdateFieldsAndPassword(t *testing.T) {
 	_, repo := openRepository(t)
 	ctx := context.Background()
 	s := newSource("src_a", "NAS")
-	mustCreate(t, repo, s, "old-secret")
+	s.CredentialState = source.CredentialState{
+		WebDAV: &source.WebDAVCredentialState{PasswordSet: true},
+	}
+	mustCreate(t, repo, s, source.Credentials{WebDAV: &source.WebDAVCredentials{Password: "old-secret"}})
 
-	// 1. password 为 nil：字段更新，密码保留。
+	// 1. creds 为 nil：字段更新，密码保留。
 	updated := s
 	updated.Name = "NAS Renamed"
-	updated.Endpoint = "https://dav.example.com/other"
-	updated.Username = "user2"
+	updated.Config.WebDAV.Endpoint = "https://dav.example.com/other"
+	updated.Config.WebDAV.Username = "user2"
 	updated.Enabled = false
 	updated.UpdatedAt = s.UpdatedAt.Add(time.Minute)
 	if err := repo.Update(ctx, updated, nil); err != nil {
@@ -157,16 +170,16 @@ func TestUpdateFieldsAndPassword(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.Name != "NAS Renamed" || got.Endpoint != updated.Endpoint ||
-		got.Username != "user2" || got.Enabled {
+	if got.Name != "NAS Renamed" || got.Config.WebDAV.Endpoint != updated.Config.WebDAV.Endpoint ||
+		got.Config.WebDAV.Username != "user2" || got.Enabled {
 		t.Errorf("after update = %+v", got)
 	}
 	if !got.CreatedAt.Equal(s.CreatedAt) || !got.UpdatedAt.Equal(updated.UpdatedAt) {
 		t.Errorf("timestamps = %v/%v, want created %v updated %v",
 			got.CreatedAt, got.UpdatedAt, s.CreatedAt, updated.UpdatedAt)
 	}
-	if !got.PasswordSet {
-		t.Error("PasswordSet = false after nil-password update, want true")
+	if !webdavPasswordSet(got) {
+		t.Error("PasswordSet = false after nil-creds update, want true")
 	}
 	if pw, err := repo.GetPassword(ctx, "src_a"); err != nil || pw != "old-secret" {
 		t.Errorf("GetPassword after nil update = %q, %v; want old-secret", pw, err)
@@ -174,14 +187,16 @@ func TestUpdateFieldsAndPassword(t *testing.T) {
 
 	// 2. password 指向空串：清除密码。
 	cleared := ""
-	if err := repo.Update(ctx, updated, &cleared); err != nil {
+	if err := repo.Update(ctx, updated, &source.CredentialsUpdate{
+		WebDAV: &source.WebDAVCredentialsUpdate{Password: &cleared},
+	}); err != nil {
 		t.Fatalf("Update (clear password): %v", err)
 	}
 	got, err = repo.Get(ctx, "src_a")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.PasswordSet {
+	if webdavPasswordSet(got) {
 		t.Error("PasswordSet = true after clearing, want false")
 	}
 	if pw, err := repo.GetPassword(ctx, "src_a"); err != nil || pw != "" {
@@ -190,7 +205,9 @@ func TestUpdateFieldsAndPassword(t *testing.T) {
 
 	// 3. password 指向新值：替换密码。
 	newPw := "new-secret"
-	if err := repo.Update(ctx, updated, &newPw); err != nil {
+	if err := repo.Update(ctx, updated, &source.CredentialsUpdate{
+		WebDAV: &source.WebDAVCredentialsUpdate{Password: &newPw},
+	}); err != nil {
 		t.Fatalf("Update (replace password): %v", err)
 	}
 	if pw, err := repo.GetPassword(ctx, "src_a"); err != nil || pw != "new-secret" {
@@ -201,8 +218,8 @@ func TestUpdateFieldsAndPassword(t *testing.T) {
 // 更新为与其他 Source 冲突的 name 返回 ErrConflict。
 func TestUpdateNameConflict(t *testing.T) {
 	_, repo := openRepository(t)
-	mustCreate(t, repo, newSource("src_a", "first"), "")
-	mustCreate(t, repo, newSource("src_b", "second"), "")
+	mustCreate(t, repo, newSource("src_a", "first"), source.Credentials{})
+	mustCreate(t, repo, newSource("src_b", "second"), source.Credentials{})
 
 	updated := newSource("src_b", "FIRST")
 	if err := repo.Update(context.Background(), updated, nil); !errors.Is(err, source.ErrConflict) {
@@ -231,7 +248,11 @@ func TestDeleteAndPersistence(t *testing.T) {
 		t.Fatalf("storage.Migrate: %v", err)
 	}
 	repo := New(db)
-	mustCreate(t, repo, newSource("src_a", "NAS"), "secret")
+	s := newSource("src_a", "NAS")
+	s.CredentialState = source.CredentialState{
+		WebDAV: &source.WebDAVCredentialState{PasswordSet: true},
+	}
+	mustCreate(t, repo, s, source.Credentials{WebDAV: &source.WebDAVCredentials{Password: "secret"}})
 	if err := db.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
@@ -251,7 +272,7 @@ func TestDeleteAndPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get after reopen: %v", err)
 	}
-	if !got.PasswordSet {
+	if !webdavPasswordSet(got) {
 		t.Error("PasswordSet = false after reopen, want true")
 	}
 	if pw, err := repo2.GetPassword(ctx, "src_a"); err != nil || pw != "secret" {

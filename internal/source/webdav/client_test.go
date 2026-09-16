@@ -72,10 +72,12 @@ func newRemote(t *testing.T, srv *httptest.Server, username, password string) so
 	t.Helper()
 	factory := NewFactory()
 	r, err := factory.Create(context.Background(), source.Source{
-		Name:     "test",
-		Type:     source.TypeWebDAV,
-		Endpoint: srv.URL,
-		Username: username,
+		Name: "test",
+		Type: source.TypeWebDAV,
+		Config: source.Config{WebDAV: &source.WebDAVConfig{
+			Endpoint: srv.URL,
+			Username: username,
+		}},
 	}, password)
 	if err != nil {
 		t.Fatalf("Factory.Create: %v", err)

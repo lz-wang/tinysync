@@ -10,7 +10,7 @@ import (
 const testTimeout = 10 * time.Second
 
 // Service 是 Source 的应用服务：REST API、Web UI 与 MCP 共用的业务入口。
-// 统一处理校验、ID 与时间戳生成、password 更新语义、远端客户端构造与
+// 统一处理校验、ID 与时间戳生成、凭据三态更新语义、远端客户端构造与
 // 连接测试超时；调用方不接触存储细节。
 type Service struct {
 	repo    Repository
@@ -37,17 +37,10 @@ type TestResult struct {
 	Error string
 }
 
-// Create 校验并创建 Source。
+// Create 校验并创建 Source。Type 决定 Config / Credentials 的单选组；
+// 校验失败返回 ErrInvalid。
 func (s *Service) Create(ctx context.Context, input CreateInput) (Source, error) {
-	name := strings.TrimSpace(input.Name)
-	if err := ValidateName(name); err != nil {
-		return Source{}, err
-	}
-	if err := ValidateType(input.Type); err != nil {
-		return Source{}, err
-	}
-	endpoint := strings.TrimSpace(input.Endpoint)
-	if err := ValidateEndpoint(endpoint); err != nil {
+	if err := ValidateCreateInput(input); err != nil {
 		return Source{}, err
 	}
 
@@ -57,17 +50,16 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Source, error)
 	}
 	now := s.Now()
 	src := Source{
-		ID:          id,
-		Name:        name,
-		Type:        input.Type,
-		Endpoint:    endpoint,
-		Username:    input.Username,
-		PasswordSet: input.Password != "",
-		Enabled:     input.Enabled,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:              id,
+		Name:            strings.TrimSpace(input.Name),
+		Type:            input.Type,
+		Config:          input.Config.Normalized(input.Type),
+		CredentialState: CredentialStateOf(input.Type, input.Credentials),
+		Enabled:         input.Enabled,
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	}
-	if err := s.repo.Create(ctx, src, input.Password); err != nil {
+	if err := s.repo.Create(ctx, src, input.Credentials); err != nil {
 		return Source{}, err
 	}
 	return src, nil
@@ -83,7 +75,8 @@ func (s *Service) List(ctx context.Context) ([]Source, error) {
 	return s.repo.List(ctx)
 }
 
-// Update 部分更新 Source：nil 字段保留现有值；password 语义为
+// Update 部分更新 Source：nil 字段保留现有值。Type 不可变（输入结构
+// 不携带 Type）。Credentials 按协议组更新，组内 secret 为三态语义：
 // nil 保留、空串清除、非空替换。
 func (s *Service) Update(ctx context.Context, id string, input UpdateInput) (Source, error) {
 	current, err := s.repo.Get(ctx, id)
@@ -99,28 +92,24 @@ func (s *Service) Update(ctx context.Context, id string, input UpdateInput) (Sou
 		}
 		updated.Name = name
 	}
-	if input.Endpoint != nil {
-		endpoint := strings.TrimSpace(*input.Endpoint)
-		if err := ValidateEndpoint(endpoint); err != nil {
+	if input.Config != nil {
+		if err := ValidateConfig(updated.Type, *input.Config); err != nil {
 			return Source{}, err
 		}
-		updated.Endpoint = endpoint
+		updated.Config = input.Config.Normalized(updated.Type)
 	}
-	if input.Username != nil {
-		updated.Username = *input.Username
+	if input.Credentials != nil {
+		if err := ValidateCredentialsUpdate(updated.Type, input.Credentials); err != nil {
+			return Source{}, err
+		}
+		updated.CredentialState = applyCredentialsUpdate(updated.Type, updated.CredentialState, input.Credentials)
 	}
 	if input.Enabled != nil {
 		updated.Enabled = *input.Enabled
 	}
 	updated.UpdatedAt = s.Now()
 
-	var password *string
-	if input.Password != nil {
-		pw := *input.Password
-		password = &pw
-		updated.PasswordSet = pw != ""
-	}
-	if err := s.repo.Update(ctx, updated, password); err != nil {
+	if err := s.repo.Update(ctx, updated, input.Credentials); err != nil {
 		return Source{}, err
 	}
 	return updated, nil

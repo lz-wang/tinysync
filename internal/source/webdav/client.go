@@ -54,21 +54,22 @@ func (f *Factory) Type() source.Type {
 // WebDAV 基于 HTTP 无持久会话，ctx 当前仅用于接口一致性（连接建立
 // 无独立网络操作）。
 func (f *Factory) Create(ctx context.Context, s source.Source, password string) (source.Remote, error) {
-	if s.Type != source.TypeWebDAV {
+	if s.Type != source.TypeWebDAV || s.Config.WebDAV == nil {
 		return nil, fmt.Errorf("%w: %q", source.ErrUnsupportedType, s.Type)
 	}
-	endpoint, err := url.Parse(s.Endpoint)
+	cfg := *s.Config.WebDAV
+	endpoint, err := url.Parse(cfg.Endpoint)
 	if err != nil {
-		return nil, fmt.Errorf("parse webdav endpoint %s: %w", s.Endpoint, err)
+		return nil, fmt.Errorf("parse webdav endpoint %s: %w", cfg.Endpoint, err)
 	}
 	httpClient := newHTTPClient()
 	var auth webdav.HTTPClient = httpClient
-	if s.Username != "" || password != "" {
-		auth = webdav.HTTPClientWithBasicAuth(httpClient, s.Username, password)
+	if cfg.Username != "" || password != "" {
+		auth = webdav.HTTPClientWithBasicAuth(httpClient, cfg.Username, password)
 	}
-	client, err := webdav.NewClient(auth, s.Endpoint)
+	client, err := webdav.NewClient(auth, cfg.Endpoint)
 	if err != nil {
-		return nil, fmt.Errorf("create webdav client for %s: %w", s.Endpoint, err)
+		return nil, fmt.Errorf("create webdav client for %s: %w", cfg.Endpoint, err)
 	}
 	return &remote{client: client, hrefPrefix: normalizeHrefPrefix(endpoint.Path)}, nil
 }

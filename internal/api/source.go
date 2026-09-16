@@ -66,15 +66,27 @@ type sourceDTO struct {
 	UpdatedAt   string `json:"updated_at"`
 }
 
-// toSourceDTO 转换领域对象，时间输出 RFC3339。
+// toSourceDTO 转换领域对象，时间输出 RFC3339。当前 WebDAV-only
+// 契约：endpoint / username / password_set 从 typed config 与
+// credential state 提取（v0.5 API 将切换为 config / credentials
+// discriminated union）。
 func toSourceDTO(s source.Source) sourceDTO {
+	var endpoint, username string
+	var passwordSet bool
+	if s.Config.WebDAV != nil {
+		endpoint = s.Config.WebDAV.Endpoint
+		username = s.Config.WebDAV.Username
+	}
+	if s.CredentialState.WebDAV != nil {
+		passwordSet = s.CredentialState.WebDAV.PasswordSet
+	}
 	return sourceDTO{
 		ID:          s.ID,
 		Name:        s.Name,
 		Type:        string(s.Type),
-		Endpoint:    s.Endpoint,
-		Username:    s.Username,
-		PasswordSet: s.PasswordSet,
+		Endpoint:    endpoint,
+		Username:    username,
+		PasswordSet: passwordSet,
 		Enabled:     s.Enabled,
 		CreatedAt:   s.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:   s.UpdatedAt.Format(time.RFC3339),
@@ -123,11 +135,16 @@ func (h *sourceHandlers) list(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"sources": dtos})
 }
 
-// create POST /api/v1/sources。
+// create POST /api/v1/sources。当前 WebDAV-only 契约：请求体按
+// WebDAV 扁平字段组装 typed config / credentials；其他 type 返回 400。
 func (h *sourceHandlers) create(c *gin.Context) {
 	var req createSourceRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	if source.Type(req.Type) != source.TypeWebDAV {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported source type"})
 		return
 	}
 	enabled := true
@@ -135,12 +152,16 @@ func (h *sourceHandlers) create(c *gin.Context) {
 		enabled = *req.Enabled
 	}
 	created, err := h.svc.Create(c.Request.Context(), source.CreateInput{
-		Name:     req.Name,
-		Type:     source.Type(req.Type),
-		Endpoint: req.Endpoint,
-		Username: req.Username,
-		Password: req.Password,
-		Enabled:  enabled,
+		Name: req.Name,
+		Type: source.TypeWebDAV,
+		Config: source.Config{WebDAV: &source.WebDAVConfig{
+			Endpoint: req.Endpoint,
+			Username: req.Username,
+		}},
+		Credentials: source.Credentials{WebDAV: &source.WebDAVCredentials{
+			Password: req.Password,
+		}},
+		Enabled: enabled,
 	})
 	if err != nil {
 		handleSourceError(c, err)
@@ -164,6 +185,8 @@ func (h *sourceHandlers) get(c *gin.Context) {
 // 另一个合法远端，下轮完整扫描会把既有 managed 文件全部误判为
 // 远端消失，Mirror 将据其删除本地。更换 endpoint 的正确路径是
 // 新建 Source → Job 切换 SourceID（触发原子 metadata 重置）。
+// 当前 WebDAV-only 契约：endpoint / username 独立 PATCH，在适配层
+// 合并进 typed config 后整体提交。
 func (h *sourceHandlers) update(c *gin.Context) {
 	var req updateSourceRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -171,28 +194,45 @@ func (h *sourceHandlers) update(c *gin.Context) {
 		return
 	}
 	id := c.Param("id")
-	if req.Endpoint != nil && h.refGuard != nil {
-		current, err := h.svc.Get(c.Request.Context(), id)
-		if err != nil {
-			handleSourceError(c, err)
-			return
-		}
-		if strings.TrimSpace(*req.Endpoint) != current.Endpoint {
-			if err := h.refGuard(c.Request.Context(), id); err != nil {
-				c.JSON(http.StatusConflict, gin.H{
-					"error": "source endpoint cannot be changed while referenced by sync jobs",
-				})
-				return
+	current, err := h.svc.Get(c.Request.Context(), id)
+	if err != nil {
+		handleSourceError(c, err)
+		return
+	}
+	if current.Type != source.TypeWebDAV || current.Config.WebDAV == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported source type"})
+		return
+	}
+
+	input := source.UpdateInput{
+		Name:    req.Name,
+		Enabled: req.Enabled,
+	}
+	if req.Endpoint != nil || req.Username != nil {
+		dav := *current.Config.WebDAV
+		if req.Endpoint != nil {
+			if h.refGuard != nil && strings.TrimSpace(*req.Endpoint) != dav.Endpoint {
+				if err := h.refGuard(c.Request.Context(), id); err != nil {
+					c.JSON(http.StatusConflict, gin.H{
+						"error": "source endpoint cannot be changed while referenced by sync jobs",
+					})
+					return
+				}
 			}
+			dav.Endpoint = *req.Endpoint
+		}
+		if req.Username != nil {
+			dav.Username = *req.Username
+		}
+		input.Config = &source.Config{WebDAV: &dav}
+	}
+	if req.Password != nil {
+		pw := *req.Password
+		input.Credentials = &source.CredentialsUpdate{
+			WebDAV: &source.WebDAVCredentialsUpdate{Password: &pw},
 		}
 	}
-	updated, err := h.svc.Update(c.Request.Context(), id, source.UpdateInput{
-		Name:     req.Name,
-		Endpoint: req.Endpoint,
-		Username: req.Username,
-		Password: req.Password,
-		Enabled:  req.Enabled,
-	})
+	updated, err := h.svc.Update(c.Request.Context(), id, input)
 	if err != nil {
 		handleSourceError(c, err)
 		return

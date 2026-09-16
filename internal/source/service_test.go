@@ -80,12 +80,16 @@ func newTestService(t *testing.T, remote source.Remote) (*source.Service, *stubF
 // validInput 返回合法创建输入。
 func validInput() source.CreateInput {
 	return source.CreateInput{
-		Name:     "  NAS  ",
-		Type:     source.TypeWebDAV,
-		Endpoint: " https://dav.example.com/files ",
-		Username: "user",
-		Password: "secret",
-		Enabled:  true,
+		Name: "  NAS  ",
+		Type: source.TypeWebDAV,
+		Config: source.Config{WebDAV: &source.WebDAVConfig{
+			Endpoint: " https://dav.example.com/files ",
+			Username: "user",
+		}},
+		Credentials: source.Credentials{WebDAV: &source.WebDAVCredentials{
+			Password: "secret",
+		}},
+		Enabled: true,
 	}
 }
 
@@ -97,13 +101,13 @@ func TestServiceCreate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if got.Name != "NAS" || got.Endpoint != "https://dav.example.com/files" {
+	if got.Name != "NAS" || got.Config.WebDAV.Endpoint != "https://dav.example.com/files" {
 		t.Errorf("Create trimmed fields = %+v", got)
 	}
 	if len(got.ID) < 4 || got.ID[:4] != "src_" {
 		t.Errorf("ID = %q, want src_ prefix", got.ID)
 	}
-	if !got.PasswordSet || !got.Enabled {
+	if !got.CredentialState.WebDAV.PasswordSet || !got.Enabled {
 		t.Errorf("flags = %+v", got)
 	}
 	if !got.CreatedAt.Equal(got.UpdatedAt) {
@@ -129,13 +133,14 @@ func TestServiceCreateValidation(t *testing.T) {
 	if _, err := svc.Create(ctx, bad); !errors.Is(err, source.ErrInvalid) {
 		t.Errorf("blank name = %v, want ErrInvalid", err)
 	}
+	// type 与 config 不一致：声明 s3 却携带 webdav config。
 	bad = validInput()
-	bad.Type = "s3"
+	bad.Type = source.TypeS3
 	if _, err := svc.Create(ctx, bad); !errors.Is(err, source.ErrInvalid) {
-		t.Errorf("bad type = %v, want ErrInvalid", err)
+		t.Errorf("type/config mismatch = %v, want ErrInvalid", err)
 	}
 	bad = validInput()
-	bad.Endpoint = "https://user:pass@host/"
+	bad.Config.WebDAV.Endpoint = "https://user:pass@host/"
 	if _, err := svc.Create(ctx, bad); !errors.Is(err, source.ErrInvalid) {
 		t.Errorf("bad endpoint = %v, want ErrInvalid", err)
 	}
@@ -180,10 +185,11 @@ func TestServiceUpdatePartial(t *testing.T) {
 	if updated.Name != "Renamed" {
 		t.Errorf("name = %q, want Renamed", updated.Name)
 	}
-	if updated.Endpoint != created.Endpoint || updated.Username != created.Username || !updated.Enabled {
+	if updated.Config.WebDAV.Endpoint != created.Config.WebDAV.Endpoint ||
+		updated.Config.WebDAV.Username != created.Config.WebDAV.Username || !updated.Enabled {
 		t.Errorf("untouched fields changed: %+v", updated)
 	}
-	if !updated.PasswordSet {
+	if !updated.CredentialState.WebDAV.PasswordSet {
 		t.Error("PasswordSet = false, want unchanged true")
 	}
 	if !updated.UpdatedAt.After(created.UpdatedAt) {
@@ -192,11 +198,15 @@ func TestServiceUpdatePartial(t *testing.T) {
 
 	// 密码清除后 PasswordSet 同步为 false。
 	empty := ""
-	updated, err = svc.Update(ctx, created.ID, source.UpdateInput{Password: &empty})
+	updated, err = svc.Update(ctx, created.ID, source.UpdateInput{
+		Credentials: &source.CredentialsUpdate{
+			WebDAV: &source.WebDAVCredentialsUpdate{Password: &empty},
+		},
+	})
 	if err != nil {
 		t.Fatalf("Update clear password: %v", err)
 	}
-	if updated.PasswordSet {
+	if updated.CredentialState.WebDAV.PasswordSet {
 		t.Error("PasswordSet = true after clearing, want false")
 	}
 }
@@ -214,8 +224,8 @@ func TestServiceUpdateErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	badEndpoint := "ftp://x/"
-	if _, err := svc.Update(ctx, created.ID, source.UpdateInput{Endpoint: &badEndpoint}); !errors.Is(err, source.ErrInvalid) {
+	badConfig := source.Config{WebDAV: &source.WebDAVConfig{Endpoint: "ftp://x/"}}
+	if _, err := svc.Update(ctx, created.ID, source.UpdateInput{Config: &badConfig}); !errors.Is(err, source.ErrInvalid) {
 		t.Errorf("update bad endpoint = %v, want ErrInvalid", err)
 	}
 }

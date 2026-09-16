@@ -68,9 +68,11 @@ func (bs *basePathServer) endpoint() string {
 func newBasePathRemote(t *testing.T, bs *basePathServer) source.Remote {
 	factory := NewFactory()
 	r, err := factory.Create(context.Background(), source.Source{
-		Name:     "test",
-		Type:     source.TypeWebDAV,
-		Endpoint: bs.endpoint(),
+		Name: "test",
+		Type: source.TypeWebDAV,
+		Config: source.Config{WebDAV: &source.WebDAVConfig{
+			Endpoint: bs.endpoint(),
+		}},
 	}, "")
 	if err != nil {
 		t.Fatalf("Factory.Create: %v", err)
@@ -218,9 +220,11 @@ func TestStatRootPreservesTrailingSlash(t *testing.T) {
 	ts := newTrailingSlashServer(t)
 	factory := NewFactory()
 	r, err := factory.Create(context.Background(), source.Source{
-		Name:     "test",
-		Type:     source.TypeWebDAV,
-		Endpoint: ts.server.URL + "/dav/user/",
+		Name: "test",
+		Type: source.TypeWebDAV,
+		Config: source.Config{WebDAV: &source.WebDAVConfig{
+			Endpoint: ts.server.URL + "/dav/user/",
+		}},
 	}, "")
 	if err != nil {
 		t.Fatalf("Factory.Create: %v", err)

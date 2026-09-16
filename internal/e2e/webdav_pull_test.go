@@ -122,10 +122,12 @@ func openDB(t *testing.T, dataDir string) *sql.DB {
 func (e *env) createSource(t *testing.T) string {
 	t.Helper()
 	src, err := e.sources.Create(context.Background(), source.CreateInput{
-		Name:     "E2E WebDAV",
-		Type:     source.TypeWebDAV,
-		Endpoint: e.dav.srv.URL,
-		Enabled:  true,
+		Name: "E2E WebDAV",
+		Type: source.TypeWebDAV,
+		Config: source.Config{WebDAV: &source.WebDAVConfig{
+			Endpoint: e.dav.srv.URL,
+		}},
+		Enabled: true,
 	})
 	if err != nil {
 		t.Fatalf("create source: %v", err)
@@ -326,7 +328,7 @@ func TestJobPersistsAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("source after restart: %v", err)
 	}
-	if src.Endpoint != e.dav.srv.URL || !src.Enabled {
+	if src.Config.WebDAV == nil || src.Config.WebDAV.Endpoint != e.dav.srv.URL || !src.Enabled {
 		t.Fatalf("source after restart = %+v, want endpoint/enabled preserved", src)
 	}
 

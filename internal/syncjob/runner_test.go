@@ -300,7 +300,10 @@ func newRunnerEnv(t *testing.T, remote source.Remote) *runnerEnv {
 		creds: &memCreds{
 			source: source.Source{
 				ID: "src_a", Name: "nas", Type: source.TypeWebDAV,
-				Endpoint: "https://dav.example.com/", Enabled: true,
+				Config: source.Config{WebDAV: &source.WebDAVConfig{
+					Endpoint: "https://dav.example.com/",
+				}},
+				Enabled: true,
 			},
 			remote: remote,
 		},

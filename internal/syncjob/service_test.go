@@ -57,10 +57,12 @@ func newTestEnv(t *testing.T) *testEnv {
 func (e *testEnv) mustSource(t *testing.T) string {
 	t.Helper()
 	src, err := e.sourceSvc.Create(context.Background(), source.CreateInput{
-		Name:     "nas-" + newTestName(),
-		Type:     source.TypeWebDAV,
-		Endpoint: "https://dav.example.com/dav/user/",
-		Enabled:  true,
+		Name: "nas-" + newTestName(),
+		Type: source.TypeWebDAV,
+		Config: source.Config{WebDAV: &source.WebDAVConfig{
+			Endpoint: "https://dav.example.com/dav/user/",
+		}},
+		Enabled: true,
 	})
 	if err != nil {
 		t.Fatalf("create source: %v", err)
