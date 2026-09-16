@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -925,5 +926,180 @@ func TestRunnerRecordsFailure(t *testing.T) {
 	}
 	if final.State != RunFailed || final.Error == "" {
 		t.Errorf("final = %+v, want failed with error", final)
+	}
+}
+
+// hangReader 的 Read 阻塞到连接关闭：不感知 ctx——模拟 *sftp.File.Read
+// 这类不接受 context 的底层 I/O，只有连接被关闭才能让读取返回。
+type hangReader struct {
+	closed <-chan struct{}
+}
+
+func (r *hangReader) Read([]byte) (int, error) {
+	<-r.closed
+	return 0, errors.New("connection closed during read")
+}
+
+func (r *hangReader) Close() error { return nil }
+
+// hangRemote 模拟有连接生命周期协议（SFTP）的传输模型：Open 返回阻塞
+// reader，Close 关闭连接使阻塞中的读取返回。
+type hangRemote struct {
+	opened chan struct{} // Open 已被调用（读取已进入阻塞）
+	closed chan struct{} // 连接已关闭
+}
+
+func (h *hangRemote) Stat(ctx context.Context, path string) (source.FileInfo, error) {
+	return source.FileInfo{}, nil
+}
+
+func (h *hangRemote) List(ctx context.Context, path string) ([]source.FileInfo, error) {
+	return []source.FileInfo{{
+		Path:        "/big.bin",
+		Fingerprint: source.Fingerprint{Size: 1 << 20},
+	}}, nil
+}
+
+func (h *hangRemote) Open(ctx context.Context, path string) (io.ReadCloser, error) {
+	select {
+	case <-h.opened:
+	default:
+		close(h.opened)
+	}
+	return &hangReader{closed: h.closed}, nil
+}
+
+func (h *hangRemote) Close() error {
+	select {
+	case <-h.closed:
+	default:
+		close(h.closed)
+	}
+	return nil
+}
+
+// closingGateway 是感知 run 生命周期的 SourceGateway：OpenRemote 记录
+// 收到的 ctx，并可阻塞模拟拨号；ctx 取消时触发连接关闭——与 SFTP
+// Factory 内「ctx 取消关闭连接」的守护行为一致。
+type closingGateway struct {
+	src    source.Source
+	remote *hangRemote
+	// dial 非 nil 时 OpenRemote 阻塞直到放行或 ctx 取消（模拟拨号）。
+	dial    <-chan struct{}
+	mu      sync.Mutex
+	openCtx context.Context
+}
+
+func (g *closingGateway) Get(ctx context.Context, id string) (source.Source, error) {
+	return g.src, nil
+}
+
+func (g *closingGateway) OpenRemote(ctx context.Context, id string) (source.Source, source.Remote, error) {
+	g.mu.Lock()
+	g.openCtx = ctx
+	g.mu.Unlock()
+	if g.dial != nil {
+		select {
+		case <-g.dial:
+		case <-ctx.Done():
+			return source.Source{}, nil, ctx.Err()
+		}
+	}
+	// 模拟 Factory 的关闭守护：创建用的 ctx 取消即关闭连接。
+	go func() {
+		<-ctx.Done()
+		_ = g.remote.Close()
+	}()
+	return g.src, g.remote, nil
+}
+
+// hangRunnerEnv 在标准环境上用感知生命周期的 gateway 重建 Runner
+// （固定时钟与 newRunnerEnv 保持一致）。
+func hangRunnerEnv(t *testing.T, gw *closingGateway) *runnerEnv {
+	t.Helper()
+	env := newRunnerEnv(t, nil)
+	env.runner = NewRunner(env.repo, env.managed, gw, env.history)
+	env.runner.Now = func() time.Time { return time.Unix(1757879400, 0).UTC() }
+	return env
+}
+
+// 回归：Shutdown 必须能打断阻塞中的远端读取。runCtx 是 Remote 创建、
+// 关闭守护与引擎传输的唯一取消根——context 取消只能自父向子传播，
+// 若 Remote 创建挂在 run 之外的独立（父）context 上，取消 runCtx 传
+// 播不到连接，Shutdown 只能等传输自然结束（本测试超时失败）。
+func TestRunnerShutdownInterruptsBlockingTransfer(t *testing.T) {
+	remote := &hangRemote{opened: make(chan struct{}), closed: make(chan struct{})}
+	gw := &closingGateway{src: source.Source{
+		ID: "src_a", Name: "nas", Type: source.TypeWebDAV, Enabled: true,
+	}, remote: remote}
+	env := hangRunnerEnv(t, gw)
+	job := env.mustJob(t, "hang")
+
+	runID, err := env.runner.Start(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// 确认引擎已进入阻塞读取，Shutdown 面对的是真实的传输中连接。
+	select {
+	case <-remote.opened:
+	case <-time.After(5 * time.Second):
+		t.Fatal("engine never started reading the remote file")
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := env.runner.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown did not interrupt the blocking transfer: %v", err)
+	}
+
+	// 取消传播到 Remote 创建（关闭守护）用的 context 本身。
+	gw.mu.Lock()
+	openCtx := gw.openCtx
+	gw.mu.Unlock()
+	if openCtx == nil || openCtx.Err() == nil {
+		t.Error("OpenRemote ctx was not cancelled by Shutdown")
+	}
+
+	status, err := env.runner.Wait(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if status.State != RunFailed {
+		t.Errorf("run state after shutdown = %s (error %q), want failed", status.State, status.Error)
+	}
+}
+
+// 回归：拨号中的启动阶段也必须可被 Shutdown 终止。Remote 创建在 run
+// 发布（active / WaitGroup / running 记录）之后进行，启动窗口不再游离
+// 于 shutdown 生命周期之外；创建失败记为 failed run 而不是启动接口的
+// 同步错误。
+func TestRunnerShutdownInterruptsPendingOpenRemote(t *testing.T) {
+	remote := &hangRemote{closed: make(chan struct{})}
+	gw := &closingGateway{
+		src: source.Source{
+			ID: "src_a", Name: "nas", Type: source.TypeWebDAV, Enabled: true,
+		},
+		remote: remote,
+		dial:   make(chan struct{}),
+	}
+	env := hangRunnerEnv(t, gw)
+	job := env.mustJob(t, "dial")
+
+	runID, err := env.runner.Start(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := env.runner.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown did not interrupt pending OpenRemote: %v", err)
+	}
+	status, err := env.runner.Wait(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if status.State != RunFailed || !strings.Contains(status.Error, "create remote") {
+		t.Errorf("run after shutdown = %s/%q, want failed with create remote error", status.State, status.Error)
 	}
 }

@@ -155,6 +155,8 @@ func (r *Runner) StartScheduled(ctx context.Context, jobID string, trigger RunTr
 
 // start 是手动与调度触发的共同路径：原子占用 Job 协调位 → 读取并校验
 // 配置 → 检查全局容量 → 同步落库 running 记录 → 启动 goroutine。
+// Remote 创建在运行 goroutine 内进行：纳入 active 发布与 WaitGroup 之
+// 后的真实 run 生命周期，创建失败记为 failed run，取消语义见 runCtx。
 func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, scheduledFor *time.Time) (string, error) {
 	// 先原子占用协调位再读取任何配置：API 的修改 / 删除同样必须拿到
 	// 协调位才能执行，占用成功后读到的配置在其运行期间不会被变更，
@@ -191,13 +193,9 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 	r.occupancy[jobID] = occupantRun
 	r.mu.Unlock()
 	// 校验失败路径统一由此释放；run 发布成功后改由运行 goroutine 接管。
-	// remoteCtx 覆盖 Remote 创建与整个运行期：runCtx 是其子 context，
-	// 运行取消 / Shutdown 经传播链关闭有连接生命周期的 Remote（SFTP）。
-	remoteCtx, remoteCancel := context.WithCancel(context.Background())
 	starting := true
 	defer func() {
 		if starting {
-			remoteCancel()
 			r.releaseOccupancy(jobID)
 		}
 	}()
@@ -216,13 +214,6 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 	}
 	if !src.Enabled {
 		return "", fmt.Errorf("%w: %s", ErrSourceDisabled, job.SourceID)
-	}
-	// Remote 创建（凭据查询与协议 dispatch 均在 service 内）挂到
-	// remoteCtx：有连接生命周期的协议在创建阶段即可被取消；runCtx
-	// 发布后作为其子 context，取消语义覆盖整个运行期。
-	_, remote, err := r.sources.OpenRemote(remoteCtx, job.SourceID)
-	if err != nil {
-		return "", fmt.Errorf("create remote for job %s: %w", jobID, err)
 	}
 
 	maxConcurrent := r.MaxConcurrentJobs
@@ -244,9 +235,15 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 		return "", err
 	}
 	now := r.Now()
+	// runCtx 是这一轮 run 的唯一取消根：Remote 创建（含 SFTP 拨号）、
+	// 有连接生命周期协议的关闭守护与引擎传输全部挂在其取消链上，
+	// Shutdown 取消 runCtx 即可打断上述全部阶段——context 取消只能
+	// 自父向子传播，取消根必须是 run 自身而不是其外的独立 context。
 	// cancel 先于发布创建：active 一旦可见，Shutdown 就一定能取到
-	// 取消函数，不存在 cancel 尚为 nil 的生命周期窗口。
-	runCtx, cancel := context.WithCancel(remoteCtx)
+	// 取消函数，不存在 cancel 尚为 nil 的生命周期窗口；OpenRemote
+	// 也已纳入该生命周期，Shutdown 与仍在拨号中的启动阶段没有竞态。
+	// 运行 context 独立于调用方的 HTTP request context。
+	runCtx, cancel := context.WithCancel(context.Background())
 	run := &activeRun{
 		runID:        runID,
 		jobID:        jobID,
@@ -291,18 +288,11 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 		r.mu.Unlock()
 		r.wg.Done()
 		cancel()
-		remoteCancel()
 		return "", fmt.Errorf("persist run %s: %w", runID, err)
 	}
 
 	go func() {
 		defer r.wg.Done()
-		// 运行结束释放 Remote 连接并收链（有连接生命周期的协议如
-		// SFTP 不遗留会话）；关闭失败不影响本轮终态。
-		defer func() {
-			_ = remote.Close()
-			remoteCancel()
-		}()
 		defer func() {
 			r.mu.Lock()
 			delete(r.active, jobID)
@@ -311,7 +301,7 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 			cancel()
 			close(run.done)
 		}()
-		r.execute(runCtx, job, remote, run)
+		r.runOne(runCtx, job, run)
 	}()
 	return runID, nil
 }
@@ -338,8 +328,19 @@ func (r *Runner) transferLimiter() *TransferLimiter {
 	return r.transfers
 }
 
-// execute 运行同步引擎并把终态落库；落库失败只记日志，不改变本轮结果。
-func (r *Runner) execute(ctx context.Context, job Job, remote source.Remote, run *activeRun) {
+// runOne 建立远端连接并运行同步引擎：Remote 创建属于运行期——创建
+// 失败与运行失败同为一次 failed run（认证、host key、网络不通等在
+// 历史中可查，而不是只在启动接口同步报错），创建阶段与传输阶段共用
+// runCtx 一条取消链，Shutdown 取消运行即可打断拨号与阻塞中的读取。
+func (r *Runner) runOne(ctx context.Context, job Job, run *activeRun) {
+	_, remote, err := r.sources.OpenRemote(ctx, job.SourceID)
+	if err != nil {
+		r.finalize(ctx, run, RunStats{}, fmt.Errorf("create remote for source %s: %w", job.SourceID, err))
+		return
+	}
+	// 运行结束释放 Remote 连接（有连接生命周期的协议如 SFTP 不遗留
+	// 会话）；关闭失败不影响本轮终态。
+	defer func() { _ = remote.Close() }()
 	stats, runErr := Run(ctx, RunOptions{
 		Remote:    remote,
 		Job:       job,
@@ -348,6 +349,15 @@ func (r *Runner) execute(ctx context.Context, job Job, remote source.Remote, run
 		RunID:     run.runID,
 		Transfers: run.transfers,
 	})
+	r.finalize(ctx, run, stats, runErr)
+}
+
+// finalize 把终态落库；落库失败只记日志，不改变本轮结果。终态落库与
+// 历史回收不受运行取消影响：Shutdown 取消 runCtx 后 Engine 因取消返回，
+// 此刻正是最需要把 failed 终态写库的时机——用已取消的 ctx 调真实
+// SQLite 会直接失败，遗留 running 行只能等下次启动的 stale 恢复；
+// 优雅关闭应在本进程内完成终态收敛。
+func (r *Runner) finalize(ctx context.Context, run *activeRun, stats RunStats, runErr error) {
 	finishedAt := r.Now()
 	final := RunRecord{
 		ID:           run.runID,
@@ -363,10 +373,6 @@ func (r *Runner) execute(ctx context.Context, job Job, remote source.Remote, run
 		final.State = RunFailed
 		final.Error = runErr.Error()
 	}
-	// 终态落库与历史回收不受运行取消影响：Shutdown 取消 runCtx 后
-	// Engine 因取消返回，此刻正是最需要把 failed 终态写库的时机——
-	// 用已取消的 ctx 调真实 SQLite 会直接失败，遗留 running 行只能
-	// 等下次启动的 stale 恢复；优雅关闭应在本进程内完成终态收敛。
 	persistCtx := context.WithoutCancel(ctx)
 	if err := r.history.Finalize(persistCtx, final); err != nil {
 		logging.Errorf("finalize run %s: %v", run.runID, err)
