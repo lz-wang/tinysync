@@ -74,6 +74,18 @@ type activeRun struct {
 	startedAt time.Time
 }
 
+// occupant 标识 Job 协调位的占用者：执行链（Runner.start 到运行结束）
+// 或配置变更链（API 的修改 / 删除）。两类占用互斥，使「读取 Job 配置」
+// 与「声明运行中」成为原子操作，杜绝旧配置的运行与新配置写入交叉。
+// 零值 occupantNone 表示无占用者（map 读取缺省值即无占用）。
+type occupant int
+
+const (
+	occupantNone occupant = iota
+	occupantRun
+	occupantMutation
+)
+
 // Runner 是同步执行协调器：并发 Job 数受控（MaxConcurrentJobs）、同一
 // Job 严格串行（手动触发冲突报错，调度触发记 skipped）、运行记录以
 // history 为唯一事实来源（run row 在同步 goroutine 启动前落库）。
@@ -96,6 +108,7 @@ type Runner struct {
 
 	mu        sync.Mutex
 	active    map[string]*activeRun // jobID → 进行中的运行
+	occupancy map[string]occupant   // jobID → 协调位占用者（run / mutation）
 	transfers *TransferLimiter      // 进程级传输上限（惰性创建的单例）
 	wg        sync.WaitGroup
 }
@@ -113,6 +126,7 @@ func NewRunner(repo Repository, managed ManagedRepository, creds SourceCredentia
 		MaxConcurrentJobs:      1,
 		MaxConcurrentTransfers: 4,
 		active:                 make(map[string]*activeRun),
+		occupancy:              make(map[string]occupant),
 	}
 }
 
@@ -130,9 +144,42 @@ func (r *Runner) StartScheduled(ctx context.Context, jobID string, trigger RunTr
 	return r.start(ctx, jobID, trigger, &scheduledFor)
 }
 
-// start 是手动与调度触发的共同路径：校验 → 原子检查 overlap 与全局容量 →
-// 同步落库 running 记录 → 启动 goroutine。
+// start 是手动与调度触发的共同路径：原子占用 Job 协调位 → 读取并校验
+// 配置 → 检查全局容量 → 同步落库 running 记录 → 启动 goroutine。
 func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, scheduledFor *time.Time) (string, error) {
+	// 先原子占用协调位再读取任何配置：API 的修改 / 删除同样必须拿到
+	// 协调位才能执行，占用成功后读到的配置在其运行期间不会被变更，
+	// 旧 mapping 的 metadata 推进与新配置写入不再可能交叉。
+	r.mu.Lock()
+	occ, busy := r.occupancy[jobID]
+	if busy {
+		r.mu.Unlock()
+		if scheduledFor != nil {
+			reason := "previous run still active"
+			if occ == occupantMutation {
+				reason = "job configuration is being modified"
+			}
+			// 记录 skipped 需要 Job 配置；占用期间尽力读取，失败仅记日志。
+			job, err := r.repo.Get(ctx, jobID)
+			if err != nil {
+				logging.Errorf("record skipped run for job %s: %v", jobID, err)
+				return "", nil
+			}
+			r.recordSkipped(ctx, job, trigger, *scheduledFor, reason)
+			return "", nil
+		}
+		return "", fmt.Errorf("%w: job %s is running", ErrRunActive, jobID)
+	}
+	r.occupancy[jobID] = occupantRun
+	r.mu.Unlock()
+	// 校验失败路径统一由此释放；run 发布成功后改由运行 goroutine 接管。
+	starting := true
+	defer func() {
+		if starting {
+			r.releaseOccupancy(jobID)
+		}
+	}()
+
 	job, err := r.repo.Get(ctx, jobID)
 	if err != nil {
 		return "", err
@@ -162,16 +209,6 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 	}
 
 	r.mu.Lock()
-	// 同一 Job 严格串行：运行中再触发绝不并发（旧 mapping 的 metadata
-	// 推进与新一轮计划交叉会产生状态竞争）。
-	if _, running := r.active[jobID]; running {
-		r.mu.Unlock()
-		if scheduledFor != nil {
-			r.recordSkipped(ctx, job, trigger, *scheduledFor, "previous run still active")
-			return "", nil
-		}
-		return "", fmt.Errorf("%w: job %s is running", ErrRunActive, jobID)
-	}
 	if len(r.active) >= maxConcurrent {
 		r.mu.Unlock()
 		if scheduledFor != nil {
@@ -186,17 +223,21 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 		return "", err
 	}
 	now := r.Now()
+	// cancel 先于发布创建：active 一旦可见，Shutdown 就一定能取到
+	// 取消函数，不存在 cancel 尚为 nil 的生命周期窗口。
+	runCtx, cancel := context.WithCancel(context.Background())
 	run := &activeRun{
 		runID:        runID,
 		jobID:        jobID,
 		trigger:      trigger,
 		scheduledFor: scheduledFor,
-		cancel:       nil,
+		cancel:       cancel,
 		done:         make(chan struct{}),
 		transfers:    r.transferLimiter(),
 		startedAt:    now,
 	}
 	r.active[jobID] = run
+	starting = false
 	r.mu.Unlock()
 
 	// run row 必须在 goroutine 启动前同步写入成功：不允许出现已经开始
@@ -212,18 +253,19 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 	if err != nil {
 		r.mu.Lock()
 		delete(r.active, jobID)
+		delete(r.occupancy, jobID)
 		r.mu.Unlock()
+		cancel()
 		return "", fmt.Errorf("persist run %s: %w", runID, err)
 	}
 
-	runCtx, cancel := context.WithCancel(context.Background())
-	run.cancel = cancel
 	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()
 		defer func() {
 			r.mu.Lock()
 			delete(r.active, jobID)
+			delete(r.occupancy, jobID)
 			r.mu.Unlock()
 			cancel()
 			close(run.done)
@@ -231,6 +273,13 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 		r.execute(runCtx, job, remote, run)
 	}()
 	return runID, nil
+}
+
+// releaseOccupancy 释放执行链在校验阶段占用的协调位。
+func (r *Runner) releaseOccupancy(jobID string) {
+	r.mu.Lock()
+	delete(r.occupancy, jobID)
+	r.mu.Unlock()
 }
 
 // transferLimiter 返回进程级共享的传输 limiter：首次调用按
@@ -306,14 +355,34 @@ func (r *Runner) recordSkipped(ctx context.Context, job Job, trigger RunTrigger,
 	}
 }
 
-// IsRunning 判断指定 Job 是否正在运行，供 API 层修改/删除保护使用：
-// 运行中的 Job 拒绝 PATCH / DELETE，避免旧 mapping 的 metadata Upsert
-// 与配置变更交叉产生状态竞争。
+// BeginMutation 原子占用 Job 的协调位，与执行链（start → 运行结束）
+// 互斥：Job 正在运行或正在启动时返回 ErrRunActive。配置修改 / 删除
+// 在占用成功后才执行，从根上排除「IsRunning 检查通过后、Service 落库
+// 前」运行恰好启动的 TOCTOU 窗口；占用方完成后必须调用 EndMutation。
+func (r *Runner) BeginMutation(jobID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, busy := r.occupancy[jobID]; busy {
+		return fmt.Errorf("%w: job %s is running", ErrRunActive, jobID)
+	}
+	r.occupancy[jobID] = occupantMutation
+	return nil
+}
+
+// EndMutation 释放 BeginMutation 占用的协调位；多次调用安全。
+func (r *Runner) EndMutation(jobID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if occ, busy := r.occupancy[jobID]; busy && occ == occupantMutation {
+		delete(r.occupancy, jobID)
+	}
+}
+
+// IsRunning 判断指定 Job 是否被执行链占用（含正在启动的窗口）。
 func (r *Runner) IsRunning(jobID string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	_, running := r.active[jobID]
-	return running
+	return r.occupancy[jobID] == occupantRun
 }
 
 // GetStatus 返回 Job 的运行状态：进行中返回 running 快照，否则返回

@@ -436,6 +436,48 @@ func TestRunnerTransferLimitIsProcessWide(t *testing.T) {
 	}
 }
 
+// Job 协调位：配置变更与执行链原子互斥。mutation 占用期间手动启动
+// 报 ErrRunActive、调度触发记 skipped（原因注明配置变更中）；运行
+// 占用期间 BeginMutation 报 ErrRunActive；各自释放后恢复。
+func TestRunnerMutationGuard(t *testing.T) {
+	release := make(chan struct{})
+	env := newRunnerEnv(t, &blockingRemote{release: release})
+	job := env.mustJob(t, "guarded")
+	ctx := context.Background()
+
+	if err := env.runner.BeginMutation(job.ID); err != nil {
+		t.Fatalf("BeginMutation on idle job: %v", err)
+	}
+	if _, err := env.runner.Start(ctx, job.ID); !errors.Is(err, ErrRunActive) {
+		t.Errorf("Start during mutation = %v, want ErrRunActive", err)
+	}
+	occ := time.Unix(1757879400, 0).UTC()
+	runID, err := env.runner.StartScheduled(ctx, job.ID, TriggerInterval, occ)
+	if err != nil || runID != "" {
+		t.Fatalf("StartScheduled during mutation = (%q, %v), want empty success", runID, err)
+	}
+	rec, err := env.history.Latest(ctx, job.ID)
+	if err != nil || rec.State != RunSkipped || rec.Error != "job configuration is being modified" {
+		t.Errorf("skipped record = %+v (%v), want skipped with mutation reason", rec, err)
+	}
+	env.runner.EndMutation(job.ID)
+
+	if _, err := env.runner.Start(ctx, job.ID); err != nil {
+		t.Fatalf("Start after mutation released: %v", err)
+	}
+	if err := env.runner.BeginMutation(job.ID); !errors.Is(err, ErrRunActive) {
+		t.Errorf("BeginMutation during run = %v, want ErrRunActive", err)
+	}
+	close(release)
+	if err := env.runner.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	if err := env.runner.BeginMutation(job.ID); err != nil {
+		t.Errorf("BeginMutation after run finished = %v, want success", err)
+	}
+	env.runner.EndMutation(job.ID)
+}
+
 // 调度触发的 overlap 与容量不足不排队：记录 skipped run（occurrence
 // 已消费、error 记原因），返回空 run ID 与 nil 错误。
 func TestRunnerScheduledSkipped(t *testing.T) {

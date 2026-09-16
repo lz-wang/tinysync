@@ -45,6 +45,11 @@ func (e *engineRemote) Open(ctx context.Context, path string) (io.ReadCloser, er
 	// (nil, true) 返回空 reader。
 	if rc, ok := e.overrides[path]; ok {
 		delete(e.overrides, path)
+		// 模拟 response body 绑定 request context：reader 在 Open 时
+		// 拿到本次下载的 ctx，取消沿 ctx 传播到读取。
+		if binder, ok := rc.(ctxAware); ok {
+			binder.bindCtx(ctx)
+		}
 		return rc, nil
 	}
 	if content, ok := e.contents[path]; ok {
@@ -736,3 +741,65 @@ func (hangingReader) Read(p []byte) (int, error) {
 }
 
 func (hangingReader) Close() error { return nil }
+
+// ctxAware 是测试 reader 的可选能力：engineRemote.Open 时注入本次
+// 下载的 ctx，模拟 response body 绑定 request context 的取消传播。
+type ctxAware interface {
+	bindCtx(context.Context)
+}
+
+// cancelAwareReader 模拟绑定 request context 的远端响应体：Read 阻塞
+// 直到放行或 ctx 取消；被 ctx 取消中断时关闭 cancelled 信号（供测试
+// 断言传输真正被取消，而不是默默继续下载）。
+type cancelAwareReader struct {
+	ctx       context.Context // Open 时注入
+	rel       chan struct{}
+	cancelled chan struct{}
+}
+
+func (r *cancelAwareReader) bindCtx(ctx context.Context) { r.ctx = ctx }
+
+func (r *cancelAwareReader) Read(p []byte) (int, error) {
+	select {
+	case <-r.rel:
+		return 0, io.EOF
+	case <-r.ctx.Done():
+		close(r.cancelled)
+		return 0, r.ctx.Err()
+	}
+}
+
+func (r *cancelAwareReader) Close() error { return nil }
+
+// 首次传输失败必须真正取消在途下载：失败后不再派发新任务，在途
+// worker 经传输 context 中断（不再继续下载完整文件），整体失败，
+// 被取消的文件不落地。
+func TestRunTransferCancellationAfterFirstFailure(t *testing.T) {
+	f := newEngineFixture(t, ModeCopy)
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+
+	remote := buildRemote(map[string]string{"/a.txt": "v1", "/b.txt": "v2"}, nil)
+	remote.openErrs["/a.txt"] = errorsNew("read reset by peer")
+	b := &cancelAwareReader{rel: make(chan struct{}), cancelled: make(chan struct{})}
+	// 直接放 reader 本体（不可包一层 NopCloser，否则丢失 ctxAware）。
+	remote.overrides["/b.txt"] = b
+
+	_, err := Run(runCtx, RunOptions{
+		Remote:    remote,
+		Job:       f.job,
+		Managed:   f.managed,
+		Transfers: NewTransferLimiter(2),
+	})
+	if err == nil || !strings.Contains(err.Error(), "a.txt") {
+		t.Fatalf("Run err = %v, want transfer failure mentioning a.txt", err)
+	}
+	select {
+	case <-b.cancelled:
+	default:
+		t.Fatal("in-flight download of b.txt was not cancelled after a.txt failed")
+	}
+	if _, statErr := os.Lstat(filepath.Join(f.root, "b.txt")); !os.IsNotExist(statErr) {
+		t.Errorf("b.txt exists after cancelled transfer (%v), want absent", statErr)
+	}
+}

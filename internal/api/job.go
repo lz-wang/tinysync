@@ -259,13 +259,17 @@ func (h *jobHandlers) get(c *gin.Context) {
 	c.JSON(http.StatusOK, toJobDTO(job))
 }
 
-// update PATCH /api/v1/jobs/:id。运行中的 Job 拒绝修改：旧 mapping
-// 的传输可能仍在推进 metadata，与配置变更交叉会产生状态竞争。
+// update PATCH /api/v1/jobs/:id。通过 Runner 协调位与执行链原子互斥
+// （运行中或正在启动的 Job 拒绝修改）：旧 mapping 的传输可能仍在推进
+// metadata，与配置变更交叉会产生状态竞争。
 func (h *jobHandlers) update(c *gin.Context) {
 	id := c.Param("id")
-	if h.runner != nil && h.runner.IsRunning(id) {
-		c.JSON(http.StatusConflict, gin.H{"error": "sync job is running"})
-		return
+	if h.runner != nil {
+		if err := h.runner.BeginMutation(id); err != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": "sync job is running"})
+			return
+		}
+		defer h.runner.EndMutation(id)
 	}
 	var req updateJobRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -295,13 +299,17 @@ func (h *jobHandlers) update(c *gin.Context) {
 }
 
 // delete DELETE /api/v1/jobs/:id。只删除 Job 配置与 managed metadata，
-// 真实本地文件永远保留；运行中的 Job 拒绝删除，避免进行中的传输
-// 向已删除的 Job 登记 metadata。
+// 真实本地文件永远保留；通过 Runner 协调位与执行链原子互斥，运行中
+// 或正在启动的 Job 拒绝删除，避免进行中的传输向已删除的 Job 登记
+// metadata。
 func (h *jobHandlers) delete(c *gin.Context) {
 	id := c.Param("id")
-	if h.runner != nil && h.runner.IsRunning(id) {
-		c.JSON(http.StatusConflict, gin.H{"error": "sync job is running"})
-		return
+	if h.runner != nil {
+		if err := h.runner.BeginMutation(id); err != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": "sync job is running"})
+			return
+		}
+		defer h.runner.EndMutation(id)
 	}
 	if err := h.svc.Delete(c.Request.Context(), id); err != nil {
 		handleJobError(c, err)

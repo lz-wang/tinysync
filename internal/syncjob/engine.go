@@ -225,6 +225,12 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 	if limiter == nil {
 		limiter = NewTransferLimiter(1)
 	}
+	// transferCtx 是传输阶段的可取消子 context：首次失败即取消在途
+	// 下载（远端 reader 绑定 request context，取消立即中断读取），
+	// 不让失败后的大文件继续消耗远端流量或推迟失败收敛。
+	transferCtx, cancelTransfers := context.WithCancel(ctx)
+	defer cancelTransfers()
+
 	var (
 		wg sync.WaitGroup
 		// results 带全量缓冲：worker 发送结果后立即执行 defer 释放
@@ -237,15 +243,16 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 	fail := func(err error) {
 		if firstErr == nil {
 			firstErr = err
+			cancelTransfers()
 		}
 	}
 	next := 0
 	for next < len(jobs) || inflight > 0 {
-		for next < len(jobs) && inflight < limiter.Capacity() && firstErr == nil && ctx.Err() == nil {
+		for next < len(jobs) && inflight < limiter.Capacity() && firstErr == nil && transferCtx.Err() == nil {
 			j := jobs[next]
 			// 先占全局传输名额再登记 pending：拿不到名额的文件保持
 			// 计划态，不提前把 pending 写入 managed。
-			if err := limiter.Acquire(ctx); err != nil {
+			if err := limiter.Acquire(transferCtx); err != nil {
 				break
 			}
 			if err := markPending(j); err != nil {
@@ -259,7 +266,7 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 			go func(j transferJob) {
 				defer wg.Done()
 				defer limiter.Release()
-				err := downloader.Download(ctx, j.entry.remote.Path, job.LocalRoot, j.entry.relPath, j.entry.remote.Fingerprint)
+				err := downloader.Download(transferCtx, j.entry.remote.Path, job.LocalRoot, j.entry.relPath, j.entry.remote.Fingerprint)
 				results <- transferOutcome{job: j, err: err}
 			}(j)
 		}
@@ -271,6 +278,7 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 		if out.err != nil {
 			fail(transferFailure(fmt.Errorf("transfer %s: %w", out.job.entry.relPath, out.err)))
 			// 失败明细尽力记录：主错误（传输失败）优先，不被覆盖。
+			// 因取消被中断的在途下载同样如实记 failed。
 			_ = recordItem(RunItem{
 				Path:   out.job.entry.relPath,
 				Action: out.job.action,
@@ -279,7 +287,7 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 			})
 			continue
 		}
-		if firstErr != nil || ctx.Err() != nil {
+		if firstErr != nil || transferCtx.Err() != nil {
 			continue
 		}
 		if err := applySuccess(out.job); err != nil {
