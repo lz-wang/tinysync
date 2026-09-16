@@ -1,5 +1,5 @@
-// Package config 承载运行时配置：底层参数（数据目录、端口）由 CLI/env 提供，
-// 其余沿用内置默认值。骨架阶段只有 --datadir 与 --port 两项。
+// Package config 承载运行时配置：底层参数（数据目录、端口、并发上限）
+// 由 CLI/env 提供，其余沿用内置默认值。
 package config
 
 import (

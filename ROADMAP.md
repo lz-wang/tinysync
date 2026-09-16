@@ -13,9 +13,10 @@ Pull 表示同步方向；Copy / Mirror 表示远端删除后的本地保留策�
 **Remote Source → Sync Job → Selector → Sync Engine → Local Files → Publish Policy / HTTP**。
 
 Web UI、REST API、MCP 复用应用服务层；Source、Job 与 Publish Policy 分别建模。
-其中 Remote Source 管理链路（持久化、WebDAV 只读访问与连接测试）与
-WebDAV Pull Sync 手动同步链路（Sync Job → Selector → Sync Engine →
-Local Files）已实现；调度、持久化历史、发布、认证与 MCP 尚未实现。
+其中 Remote Source 管理链路（持久化、WebDAV 只读访问与连接测试）、
+WebDAV Pull Sync 同步链路（Sync Job → Selector → Sync Engine →
+Local Files）与调度及同步历史链路（自动触发、持久化运行历史、
+并发控制）已实现；发布、认证与 MCP 尚未实现。
 
 ## 当前状态与优先级
 
@@ -49,7 +50,7 @@ cron 时区，missed 周期不补跑）、Scheduler、多 Job Runner（重叠跳
 - 版本号只来自 Git，由 Makefile 解析并经 `-ldflags` 注入 `internal/buildinfo.Version`；不引入 VERSION 文件、package version 或配置版本作为第二个发布版本来源。
 - `-tags webui` 嵌入 `web/dist`，无 tag 时嵌入 `web/fallback`，保证无 Node 环境可完整编译、测试 Go 代码。
 - 未知 `/api/v1/*` 必须返回 404，不得被 SPA fallback 吞掉；前后端 API 契约变更同步更新两端实现与测试。
-- 当前运行配置仅 `--datadir` / `--port`，环境变量为 `TINYSYNC_DATADIR` / `TINYSYNC_PORT`；新增配置先明确用途。
+- 当前运行配置为 `--datadir` / `--port` / `--max-concurrent-jobs` / `--max-concurrent-transfers`，环境变量为 `TINYSYNC_DATADIR` / `TINYSYNC_PORT` / `TINYSYNC_MAX_CONCURRENT_JOBS` / `TINYSYNC_MAX_CONCURRENT_TRANSFERS`；新增配置先明确用途。
 - 以下为领域开发约束：本地文件系统保存文件内容；SQLite 只保存配置、状态、元数据和历史，采用 pure-Go driver。
 - Source 与 Job 分离，一个 Source 可供多个 Job 复用；v1 只做单向 Copy / Mirror，不提供远端写操作。
 - 默认保护本地数据：Mirror 仅删除 `managed_files` 明确归属于当前 Job 的文件，不用 `local_root - remote_listing` 删除未知文件；下载采用临时文件与原子替换，失败不破坏原文件。
