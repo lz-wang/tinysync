@@ -501,3 +501,45 @@ func TestManagedCascadeOnJobDelete(t *testing.T) {
 		t.Errorf("managed rows after job delete = %d, want 0 (CASCADE)", len(list))
 	}
 }
+
+// MarkOnceConsumed 写入的 once 消费时间戳经 Get / List 往返保持
+// （毫秒精度持久化 correctness state，独立于运行历史）；不存在的
+// Job 返回 ErrNotFound。
+func TestMarkOnceConsumedRoundTrip(t *testing.T) {
+	db, repo, _ := openRepos(t)
+	mustSeedSource(t, db, "src_a")
+	ctx := context.Background()
+
+	job := newJob("job_a", "photos", "src_a")
+	job.Schedule = syncjob.Schedule{Type: syncjob.ScheduleOnce, Value: "2026-09-20T03:00:00Z"}
+	if err := repo.Create(ctx, job); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	got, err := repo.Get(ctx, "job_a")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.OnceConsumedFor != nil {
+		t.Fatalf("fresh once job consumed_for = %v, want nil", got.OnceConsumedFor)
+	}
+
+	at := time.Unix(1757879400, 0).UTC().Add(333 * time.Millisecond)
+	if err := repo.MarkOnceConsumed(ctx, "job_a", at); err != nil {
+		t.Fatalf("MarkOnceConsumed: %v", err)
+	}
+	got, err = repo.Get(ctx, "job_a")
+	if err != nil {
+		t.Fatalf("Get after mark: %v", err)
+	}
+	if got.OnceConsumedFor == nil || !got.OnceConsumedFor.Equal(at) {
+		t.Errorf("consumed_for = %v, want %v (ms precision)", got.OnceConsumedFor, at)
+	}
+	listed, err := repo.List(ctx)
+	if err != nil || len(listed) != 1 || listed[0].OnceConsumedFor == nil {
+		t.Errorf("List = %+v (%v), want consumed_for kept", listed, err)
+	}
+
+	if err := repo.MarkOnceConsumed(ctx, "job_missing", at); !errors.Is(err, syncjob.ErrNotFound) {
+		t.Errorf("MarkOnceConsumed missing job = %v, want ErrNotFound", err)
+	}
+}

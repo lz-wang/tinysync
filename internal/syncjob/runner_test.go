@@ -115,6 +115,16 @@ func (r *memJobRepo) CountBySource(ctx context.Context, sourceID string) (int, e
 	return 0, nil
 }
 
+func (r *memJobRepo) MarkOnceConsumed(ctx context.Context, jobID string, at time.Time) error {
+	job, ok := r.jobs[jobID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	job.OnceConsumedFor = &at
+	r.jobs[jobID] = job
+	return nil
+}
+
 // memRunRepo 是 RunRepository 的内存实现（Runner 测试专用）。
 type memRunRepo struct {
 	mu     sync.Mutex
@@ -508,6 +518,62 @@ func TestRunnerSkippedRunPrunesRetention(t *testing.T) {
 	close(release)
 	if err := env.runner.Shutdown(ctx); err != nil {
 		t.Fatalf("Shutdown: %v", err)
+	}
+}
+
+// once occurrence 产生 run 即消费（succeeded 与 skipped 都算）：消费
+// 状态写入 Job 本身，与可裁剪的运行历史解耦。
+func TestRunnerOnceConsumptionMarkedOnJob(t *testing.T) {
+	env := newRunnerEnv(t, buildRemote(map[string]string{"/a.txt": "v1"}, nil))
+	ctx := context.Background()
+	occ := time.Unix(1757879400, 0).UTC().Add(-time.Hour)
+
+	job := env.mustJob(t, "once")
+	job.Schedule = Schedule{Type: ScheduleOnce, Value: occ.Format(time.RFC3339)}
+	if err := env.repo.Update(ctx, job); err != nil {
+		t.Fatalf("set once schedule: %v", err)
+	}
+
+	runID, err := env.runner.StartScheduled(ctx, job.ID, TriggerOnce, occ)
+	if err != nil {
+		t.Fatalf("StartScheduled once: %v", err)
+	}
+	final, err := env.runner.Wait(ctx, runID)
+	if err != nil || final.State != RunSucceeded {
+		t.Fatalf("once run = %+v (%v), want succeeded", final, err)
+	}
+	stored, err := env.repo.Get(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if stored.OnceConsumedFor == nil || !stored.OnceConsumedFor.Equal(occ) {
+		t.Errorf("OnceConsumedFor = %v, want %v", stored.OnceConsumedFor, occ)
+	}
+
+	// skipped 的 once 同样消费 occurrence（occurrence 已产生 run）。
+	occ2 := occ.Add(time.Minute)
+	job2 := env.mustJob(t, "once2")
+	job2.Schedule = Schedule{Type: ScheduleOnce, Value: occ2.Format(time.RFC3339)}
+	if err := env.repo.Update(ctx, job2); err != nil {
+		t.Fatalf("set once2 schedule: %v", err)
+	}
+	env.runner.recordSkipped(ctx, job2, TriggerOnce, occ2, "previous run still active")
+	stored2, err := env.repo.Get(ctx, job2.ID)
+	if err != nil {
+		t.Fatalf("Get job2: %v", err)
+	}
+	if stored2.OnceConsumedFor == nil || !stored2.OnceConsumedFor.Equal(occ2) {
+		t.Errorf("skipped OnceConsumedFor = %v, want %v", stored2.OnceConsumedFor, occ2)
+	}
+
+	// NextRunAt 对已消费的 once 不再返回触发时刻。
+	job2.Schedule.Value = occ.Format(time.RFC3339)
+	job2.OnceConsumedFor = &occ
+	if err := env.repo.Update(ctx, job2); err != nil {
+		t.Fatalf("set job2 consumed: %v", err)
+	}
+	if _, ok, err := env.runner.NextRunAt(ctx, job2); err != nil || ok {
+		t.Errorf("NextRunAt after consumption = (ok %t, %v), want false", ok, err)
 	}
 }
 

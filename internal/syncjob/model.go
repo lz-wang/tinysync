@@ -56,8 +56,13 @@ type Job struct {
 	Exclude    []string
 	Enabled    bool
 	Schedule   Schedule
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	// OnceConsumedFor 是 once 调度的持久化消费状态：occurrence 产生
+	// run（succeeded/failed/skipped）后写入该 occurrence。once 的
+	// 「只执行一次」语义靠它判定，与可被 retention 裁剪的运行历史
+	// 解耦；非 once 调度、未执行的 once 恒为 nil。
+	OnceConsumedFor *time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 // idPrefix 是 Job ID 的固定前缀，便于在日志与 API 中一眼识别。

@@ -584,6 +584,66 @@ func TestUpdateSameIntervalKeepsAnchor(t *testing.T) {
 	}
 }
 
+// once 消费状态随 schedule 语义变化清空、同值保留：改时刻（或切换
+// 类型）后新 occurrence 可执行；同值 PATCH（含等价时区表示）不清空，
+// 已执行的 once 不重放。
+func TestUpdateOnceConsumptionSemantics(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+	jobRepo := sqlite.NewRepository(env.db)
+
+	at := env.now.Add(-time.Hour)
+	input := env.validInput(t, "once-consumed")
+	input.Schedule = &syncjob.Schedule{Type: syncjob.ScheduleOnce, Value: at.Format(time.RFC3339)}
+	job, err := env.service.Create(ctx, input)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := jobRepo.MarkOnceConsumed(ctx, job.ID, at); err != nil {
+		t.Fatalf("MarkOnceConsumed: %v", err)
+	}
+
+	// 同值 PATCH（+08:00 偏移表示同一时刻）：消费状态保留。
+	cst := time.FixedZone("CST", 8*3600)
+	sameInstant := syncjob.Schedule{
+		Type:  syncjob.ScheduleOnce,
+		Value: at.In(cst).Format(time.RFC3339),
+	}
+	kept, err := env.service.Update(ctx, job.ID, syncjob.UpdateInput{Schedule: &sameInstant})
+	if err != nil {
+		t.Fatalf("Update same instant: %v", err)
+	}
+	if kept.Schedule.Value != at.UTC().Format(time.RFC3339) {
+		t.Errorf("normalized value = %q, want UTC RFC3339", kept.Schedule.Value)
+	}
+	if kept.OnceConsumedFor == nil || !kept.OnceConsumedFor.Equal(at) {
+		t.Errorf("consumed_for after same-value PATCH = %v, want kept %v", kept.OnceConsumedFor, at)
+	}
+
+	// 改时刻：语义变化，消费状态清空。
+	moved := syncjob.Schedule{
+		Type:  syncjob.ScheduleOnce,
+		Value: env.now.Add(time.Hour).Format(time.RFC3339),
+	}
+	movedJob, err := env.service.Update(ctx, job.ID, syncjob.UpdateInput{Schedule: &moved})
+	if err != nil {
+		t.Fatalf("Update moved once: %v", err)
+	}
+	if movedJob.OnceConsumedFor != nil {
+		t.Errorf("consumed_for after reschedule = %v, want nil (new occurrence)", movedJob.OnceConsumedFor)
+	}
+
+	// 切换 interval：消费状态保持为空。
+	interval := syncjob.Schedule{Type: syncjob.ScheduleInterval, Value: "1h"}
+	intervalJob, err := env.service.Update(ctx, job.ID, syncjob.UpdateInput{Schedule: &interval})
+	if err != nil {
+		t.Fatalf("Update to interval: %v", err)
+	}
+	if intervalJob.OnceConsumedFor != nil {
+		t.Errorf("consumed_for on interval job = %v, want nil", intervalJob.OnceConsumedFor)
+	}
+}
+
 // seedManaged 直接向 managed repo 写一条记录，供释放语义断言使用。
 func seedManaged(t *testing.T, env *testEnv, jobID string) {
 	t.Helper()

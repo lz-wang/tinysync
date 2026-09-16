@@ -23,7 +23,7 @@ import (
 const jobColumns = "id, name, source_id, remote_root, local_root, mode, " +
 	"include_patterns, exclude_patterns, enabled, " +
 	"schedule_type, schedule_value, schedule_timezone, schedule_anchor_at, " +
-	"created_at, updated_at"
+	"once_consumed_for, created_at, updated_at"
 
 // managedColumns 是 managed_files 的读取列清单。
 const managedColumns = "job_id, remote_path, local_rel_path, state, " +
@@ -61,11 +61,12 @@ func (r *Repository) Create(ctx context.Context, job syncjob.Job) error {
 		(id, name, source_id, remote_root, local_root, mode,
 		 include_patterns, exclude_patterns, enabled,
 		 schedule_type, schedule_value, schedule_timezone, schedule_anchor_at,
-		 created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 once_consumed_for, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		job.ID, job.Name, job.SourceID, job.RemoteRoot, job.LocalRoot, string(job.Mode),
 		include, exclude, boolToInt(job.Enabled),
 		string(schedule.Type), schedule.Value, schedule.Timezone, nullMillis(schedule.AnchorAt),
+		nullMillis(job.OnceConsumedFor),
 		job.CreatedAt.UnixMilli(), job.UpdatedAt.UnixMilli(),
 	)
 	return mapJobError("create job", job.ID, err)
@@ -148,11 +149,12 @@ func (r *Repository) updateExec(ctx context.Context, exec interface {
 		name = ?, source_id = ?, remote_root = ?, local_root = ?, mode = ?,
 		include_patterns = ?, exclude_patterns = ?, enabled = ?,
 		schedule_type = ?, schedule_value = ?, schedule_timezone = ?,
-		schedule_anchor_at = ?, updated_at = ?
+		schedule_anchor_at = ?, once_consumed_for = ?, updated_at = ?
 		WHERE id = ?`,
 		job.Name, job.SourceID, job.RemoteRoot, job.LocalRoot, string(job.Mode),
 		include, exclude, boolToInt(job.Enabled),
 		string(schedule.Type), schedule.Value, schedule.Timezone, nullMillis(schedule.AnchorAt),
+		nullMillis(job.OnceConsumedFor),
 		job.UpdatedAt.UnixMilli(), job.ID,
 	)
 	if err != nil {
@@ -182,6 +184,21 @@ func (r *Repository) CountBySource(ctx context.Context, sourceID string) (int, e
 		return 0, fmt.Errorf("count jobs by source %s: %w", sourceID, err)
 	}
 	return count, nil
+}
+
+// MarkOnceConsumed 实现 syncjob.Repository：写入 once occurrence 的
+// 消费时间戳。只更新该列，不触碰其他字段（运行路径的独立状态推进）。
+func (r *Repository) MarkOnceConsumed(ctx context.Context, jobID string, at time.Time) error {
+	res, err := r.db.ExecContext(ctx,
+		"UPDATE sync_jobs SET once_consumed_for = ? WHERE id = ?",
+		at.UnixMilli(), jobID)
+	if err != nil {
+		return fmt.Errorf("mark once consumed %s: %w", jobID, err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return fmt.Errorf("%w: %s", syncjob.ErrNotFound, jobID)
+	}
+	return nil
 }
 
 // ListByJob 实现 syncjob.ManagedRepository，按 remote_path 排序。
@@ -286,12 +303,14 @@ func scanJob(row rowScanner) (syncjob.Job, error) {
 		scheduleValue    string
 		scheduleTimezone string
 		scheduleAnchor   sql.NullInt64
+		onceConsumedFor  sql.NullInt64
 		createdAtMillis  int64
 		updatedAtMillis  int64
 	)
 	if err := row.Scan(&job.ID, &job.Name, &job.SourceID, &job.RemoteRoot,
 		&job.LocalRoot, &mode, &includeJSON, &excludeJSON,
 		&enabled, &scheduleType, &scheduleValue, &scheduleTimezone, &scheduleAnchor,
+		&onceConsumedFor,
 		&createdAtMillis, &updatedAtMillis); err != nil {
 		return syncjob.Job{}, err
 	}
@@ -310,6 +329,7 @@ func scanJob(row rowScanner) (syncjob.Job, error) {
 		Timezone: scheduleTimezone,
 		AnchorAt: timeFromMillis(scheduleAnchor),
 	}
+	job.OnceConsumedFor = timeFromMillis(onceConsumedFor)
 	job.CreatedAt = time.UnixMilli(createdAtMillis).UTC()
 	job.UpdatedAt = time.UnixMilli(updatedAtMillis).UTC()
 	return job, nil

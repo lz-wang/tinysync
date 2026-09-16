@@ -222,7 +222,7 @@ func (s Schedule) NextRun(now time.Time) (time.Time, bool) {
 // DueOccurrence 返回调度窗口 (from, now] 内到期的 occurrence。调度器
 // 每个 tick 以内存游标为 from：窗口之外（含离线期间错过）的周期不回看，
 // 即 cron / interval 不补跑；once 不受窗口限制——错过也要执行一次，
-// 是否已消费由调用方查运行历史判定。
+// 是否已消费由调用方查 Job 的消费状态判定。
 func (s Schedule) DueOccurrence(from, now time.Time) (time.Time, bool) {
 	switch s.Type {
 	case ScheduleOnce:
@@ -240,4 +240,12 @@ func (s Schedule) DueOccurrence(from, now time.Time) (time.Time, bool) {
 	default:
 		return time.Time{}, false
 	}
+}
+
+// onceConsumed 判断 once 的 occurrence 是否已被消费。消费状态在
+// sync_jobs.once_consumed_for（毫秒精度持久化），与可被 retention
+// 裁剪的运行历史解耦——once 的「只执行一次」语义不依赖历史行存活。
+func onceConsumed(job Job, at time.Time) bool {
+	return job.OnceConsumedFor != nil &&
+		job.OnceConsumedFor.UnixMilli() == at.UnixMilli()
 }

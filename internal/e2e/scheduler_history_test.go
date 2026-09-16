@@ -5,6 +5,7 @@ package e2e
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -151,6 +152,75 @@ func TestSchedulerOnceCatchUpEndToEnd(t *testing.T) {
 	scheduler2.Stop()
 	if _, total, err := runRepo.List(ctx, syncjob.RunFilter{JobID: job.ID}); err != nil || total != 1 {
 		t.Errorf("runs after scheduler restart = %d (%v), want 1 (consumed)", total, err)
+	}
+}
+
+// once 消费状态独立于可裁剪的运行历史：once 执行后，即使该 run 连同
+// 整个历史被 retention 裁剪，调度器也不重放 once——「只执行一次」
+// 靠 sync_jobs.once_consumed_for 维持，不靠 sync_runs 行存活。
+func TestOnceConsumedSurvivesRetentionEndToEnd(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	e.dav.writeFile(t, "/a.txt", "v1")
+	sourceID := e.createSource(t)
+	job := e.createJob(t, "Once Retention", sourceID, string(syncjob.ModeMirror))
+	e.setOnce(t, job.ID, time.Now().UTC().Add(-time.Hour))
+
+	runRepo := e.newRunRepo()
+	scheduler := syncjob.NewScheduler(e.jobRepo, e.runner, runRepo)
+	scheduler.Start(ctx)
+
+	local := filepath.Join(job.LocalRoot, "a.txt")
+	waitFor(t, 15*time.Second, "once catch-up", func() bool {
+		_, err := os.Stat(local)
+		return err == nil
+	})
+	waitFor(t, 15*time.Second, "once finalize", func() bool {
+		rec, err := runRepo.Latest(ctx, job.ID)
+		return err == nil && rec.State == syncjob.RunSucceeded
+	})
+	onceRun, err := runRepo.Latest(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("latest once run: %v", err)
+	}
+	scheduler.Stop()
+
+	// 消费状态已写入 Job。
+	fresh, err := e.jobRepo.Get(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if fresh.OnceConsumedFor == nil || !fresh.OnceConsumedFor.Equal(*onceRun.ScheduledFor) {
+		t.Fatalf("OnceConsumedFor = %v, want occurrence %v", fresh.OnceConsumedFor, onceRun.ScheduledFor)
+	}
+
+	// 填充超过 retention 上限的运行并裁剪：once run 被裁剪出历史。
+	for i := 0; i < syncjob.RetentionRunsPerJob+1; i++ {
+		if err := runRepo.Insert(ctx, syncjob.RunRecord{
+			ID:        fmt.Sprintf("run_fill_%04d", i),
+			JobID:     job.ID,
+			Trigger:   syncjob.TriggerManual,
+			State:     syncjob.RunSucceeded,
+			StartedAt: onceRun.StartedAt.Add(time.Duration(i+1) * time.Millisecond),
+		}); err != nil {
+			t.Fatalf("insert filler run: %v", err)
+		}
+	}
+	if err := runRepo.PruneRetention(ctx, syncjob.RetentionRunsPerJob); err != nil {
+		t.Fatalf("prune retention: %v", err)
+	}
+	if _, err := runRepo.Get(ctx, onceRun.ID); err == nil {
+		t.Fatalf("once run %s survived prune, want pruned", onceRun.ID)
+	}
+
+	// 调度器继续运行：once 不重放（若重放会出现第 501 条之外的 run）。
+	scheduler2 := syncjob.NewScheduler(e.jobRepo, e.runner, runRepo)
+	scheduler2.Start(ctx)
+	time.Sleep(3 * time.Second)
+	scheduler2.Stop()
+	_, total, err := runRepo.List(ctx, syncjob.RunFilter{JobID: job.ID})
+	if err != nil || total != syncjob.RetentionRunsPerJob {
+		t.Errorf("runs after retention + idle window = %d (%v), want %d (no once replay)", total, err, syncjob.RetentionRunsPerJob)
 	}
 }
 

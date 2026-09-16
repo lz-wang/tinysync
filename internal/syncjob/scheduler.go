@@ -111,16 +111,24 @@ func (s *Scheduler) tick(ctx context.Context) {
 		if !due {
 			continue
 		}
-		// occurrence 消费以持久化历史判定（含 skipped）：once 错过
-		// 仍要补执行一次的幂等依据；interval / cron 借此在游标因
-		// 内部失败回退重扫时不会重复触发同一 occurrence。
-		consumed, err := s.history.HasRunFor(ctx, job.ID, trigger, occurrence)
-		if err != nil {
-			logging.Errorf("scheduler check occurrence consumption for job %s: %v", job.ID, err)
-			continue
-		}
-		if consumed {
-			continue
+		if trigger == TriggerOnce {
+			// once 的消费状态在 Job 上（sync_jobs.once_consumed_for，
+			// 持久化 correctness state）：错过仍补执行一次，且不依赖
+			// 可被 retention 裁剪的运行历史存活。
+			if onceConsumed(job, occurrence) {
+				continue
+			}
+		} else {
+			// interval / cron 以持久化历史（含 skipped）判定 occurrence
+			// 消费：游标因内部失败回退重扫时不重复触发同一 occurrence。
+			consumed, err := s.history.HasRunFor(ctx, job.ID, trigger, occurrence)
+			if err != nil {
+				logging.Errorf("scheduler check occurrence consumption for job %s: %v", job.ID, err)
+				continue
+			}
+			if consumed {
+				continue
+			}
 		}
 		if _, err := s.runner.StartScheduled(ctx, job.ID, trigger, occurrence); err != nil {
 			// 禁用等校验失败只记日志：不阻塞后续 Job。

@@ -324,6 +324,46 @@ func TestSchedulerListFailureKeepsCursor(t *testing.T) {
 	}
 }
 
+// once 消费状态与运行历史解耦：runs 表里没有该 occurrence 的记录
+// （如历史已被 retention 裁剪）时，已消费的 once 依然不重放。
+func TestSchedulerOnceConsumptionSurvivesPrunedHistory(t *testing.T) {
+	env := newSchedulerEnv(t, buildRemote(map[string]string{"/a.txt": "v1"}, nil))
+	ctx := context.Background()
+	at := schedulerBase.Add(-time.Hour)
+	job := env.mustScheduledJob(t, "once-pruned", Schedule{
+		Type:  ScheduleOnce,
+		Value: at.Format(time.RFC3339),
+	})
+
+	// 模拟 once 已执行且消费状态已写入，但运行历史随后被裁剪。
+	if err := env.repo.MarkOnceConsumed(ctx, job.ID, at); err != nil {
+		t.Fatalf("MarkOnceConsumed: %v", err)
+	}
+	env.tickTo(t, schedulerBase.Add(time.Hour))
+	if got := env.runCount(t, job.ID); got != 0 {
+		t.Fatalf("runs after consumed-once tick = %d, want 0 (no replay)", got)
+	}
+
+	// once 语义变化（改 at，消费状态清空）后新 occurrence 正常触发。
+	newAt := schedulerBase.Add(90 * time.Minute)
+	fresh, err := env.repo.Get(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	fresh.Schedule = Schedule{Type: ScheduleOnce, Value: newAt.Format(time.RFC3339)}
+	fresh.OnceConsumedFor = nil
+	if err := env.repo.Update(ctx, fresh); err != nil {
+		t.Fatalf("set new once: %v", err)
+	}
+	env.tickTo(t, newAt.Add(time.Second))
+	if got := env.runCount(t, job.ID); got != 1 {
+		t.Fatalf("runs after rescheduled once = %d, want 1", got)
+	}
+	if err := env.runner.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+}
+
 // Start / Stop 生命周期：Stop 后调度循环退出，不泄漏 goroutine。
 func TestSchedulerStartStop(t *testing.T) {
 	env := newSchedulerEnv(t, buildRemote(nil, nil))

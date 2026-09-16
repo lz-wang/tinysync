@@ -258,6 +258,14 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 		cancel()
 		return "", fmt.Errorf("persist run %s: %w", runID, err)
 	}
+	// once occurrence 已产生 run 即消费：消费状态写入 Job（独立于可
+	// 裁剪的运行历史），标记失败只记日志——下轮重放是幂等同步，好于
+	// 在此回收已启动的运行。
+	if trigger == TriggerOnce {
+		if err := r.repo.MarkOnceConsumed(ctx, jobID, *scheduledFor); err != nil {
+			logging.Errorf("mark once consumed for job %s: %v", jobID, err)
+		}
+	}
 
 	r.wg.Add(1)
 	go func() {
@@ -359,6 +367,12 @@ func (r *Runner) recordSkipped(ctx context.Context, job Job, trigger RunTrigger,
 	if err := r.history.Insert(ctx, run); err != nil {
 		logging.Errorf("record skipped run for job %s: %v", job.ID, err)
 		return
+	}
+	// skipped 同样消费 once occurrence（occurrence 已产生 run）。
+	if trigger == TriggerOnce {
+		if err := r.repo.MarkOnceConsumed(ctx, job.ID, scheduledFor); err != nil {
+			logging.Errorf("mark once consumed for job %s: %v", job.ID, err)
+		}
 	}
 	r.pruneHistory(ctx)
 }
@@ -495,11 +509,9 @@ func (r *Runner) NextRunAt(ctx context.Context, job Job) (time.Time, bool, error
 		if err != nil {
 			return time.Time{}, false, nil
 		}
-		consumed, err := r.history.HasRunFor(ctx, job.ID, trigger, at)
-		if err != nil {
-			return time.Time{}, false, err
-		}
-		if consumed {
+		// once 消费状态在 Job 上（持久化 correctness state），不依赖
+		// 运行历史存活。
+		if onceConsumed(job, at) {
 			return time.Time{}, false, nil
 		}
 	}
