@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -621,6 +622,20 @@ func TestRunItemsUnknownRunAPI(t *testing.T) {
 	rec := doJSON(t, router, "GET", "/api/v1/runs/run_missing/items", "")
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("items of unknown run = %d %s, want 404", rec.Code, rec.Body.String())
+	}
+}
+
+// Runner 正在关闭时的运行触发映射为 503：优雅关闭期间拒绝新运行。
+func TestHandleRunErrorShuttingDown(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	handleRunError(c, syncjob.ErrShuttingDown)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("shutting down run error = %d %s, want 503", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "shutting down") {
+		t.Errorf("body = %s, want mentioning shutting down", rec.Body.String())
 	}
 }
 

@@ -618,8 +618,8 @@ func handleJobError(c *gin.Context, err error) {
 }
 
 // handleRunError 把手动运行的领域错误映射为 REST 状态码：
-// 202 之外的分支只有 404（Job / run 不存在）与 409（禁用、引用缺失、
-// 占用中、并发已满）。
+// 202 之外的分支有 404（Job / run 不存在）、409（禁用、引用缺失、
+// 占用中、并发已满）与 503（Runner 正在关闭）。
 func handleRunError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, syncjob.ErrNotFound):
@@ -634,6 +634,8 @@ func handleRunError(c *gin.Context, err error) {
 		c.JSON(http.StatusConflict, gin.H{"error": "another sync run is active"})
 	case errors.Is(err, syncjob.ErrConcurrencyLimit):
 		c.JSON(http.StatusConflict, gin.H{"error": "concurrency limit reached"})
+	case errors.Is(err, syncjob.ErrShuttingDown):
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "sync runner is shutting down"})
 	case errors.Is(err, source.ErrNotFound):
 		c.JSON(http.StatusConflict, gin.H{"error": "source does not exist"})
 	default:

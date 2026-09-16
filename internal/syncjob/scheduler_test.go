@@ -124,8 +124,18 @@ func TestSchedulerIntervalPhase(t *testing.T) {
 		t.Fatalf("runs after repeat tick = %d, want 1", got)
 	}
 	close(release)
-	if err := env.runner.Shutdown(ctx); err != nil {
-		t.Fatalf("Shutdown: %v", err)
+	// 等待在途 interval run 收敛（Shutdown 是终态语义，会拒绝后续
+	// 调度触发，不适用于仍在调度的场景）。
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		rec, err := env.history.Latest(ctx, job.ID)
+		if err == nil && rec.State == RunSucceeded {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("interval run did not finalize: %+v (%v)", rec, err)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	// 重启模拟：游标重置为当前时刻，错过的边界（1h）不补跑，相位保持。

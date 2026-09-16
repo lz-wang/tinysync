@@ -557,6 +557,28 @@ func TestRunnerStartScheduledPersistenceError(t *testing.T) {
 	}
 }
 
+// Shutdown 后拒绝启动新运行：手动与调度触发都返回 ErrShuttingDown，
+// 且 Shutdown 幂等。
+func TestRunnerRejectsStartAfterShutdown(t *testing.T) {
+	env := newRunnerEnv(t, buildRemote(map[string]string{"/a.txt": "v1"}, nil))
+	job := env.mustJob(t, "late")
+	ctx := context.Background()
+
+	if err := env.runner.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	if _, err := env.runner.Start(ctx, job.ID); !errors.Is(err, ErrShuttingDown) {
+		t.Errorf("Start after shutdown = %v, want ErrShuttingDown", err)
+	}
+	occ := time.Unix(1757879400, 0).UTC()
+	if _, err := env.runner.StartScheduled(ctx, job.ID, TriggerOnce, occ); !errors.Is(err, ErrShuttingDown) {
+		t.Errorf("StartScheduled after shutdown = %v, want ErrShuttingDown", err)
+	}
+	if err := env.runner.Shutdown(ctx); err != nil {
+		t.Errorf("second Shutdown = %v, want nil", err)
+	}
+}
+
 // once occurrence 产生 run 即消费（succeeded 与 skipped 都算）：消费
 // 状态写入 Job 本身，与可裁剪的运行历史解耦。
 func TestRunnerOnceConsumptionMarkedOnJob(t *testing.T) {

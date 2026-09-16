@@ -40,6 +40,9 @@ var (
 	ErrSourceDisabled = errors.New("source is disabled")
 	// ErrRunUnknown 表示查询的运行记录不存在。
 	ErrRunUnknown = errors.New("run not found")
+	// ErrShuttingDown 表示 Runner 正在关闭，拒绝启动新的运行
+	// （手动触发返回 503）。
+	ErrShuttingDown = errors.New("sync runner is shutting down")
 )
 
 // SourceCredentials 是 Runner 构造远端客户端所需的凭据查询能力。
@@ -106,11 +109,12 @@ type Runner struct {
 	// 由所有 Job 的同步引擎经共享 transfer limiter 消费；必须为正整数。
 	MaxConcurrentTransfers int
 
-	mu        sync.Mutex
-	active    map[string]*activeRun // jobID → 进行中的运行
-	occupancy map[string]occupant   // jobID → 协调位占用者（run / mutation）
-	transfers *TransferLimiter      // 进程级传输上限（惰性创建的单例）
-	wg        sync.WaitGroup
+	mu           sync.Mutex
+	active       map[string]*activeRun // jobID → 进行中的运行
+	occupancy    map[string]occupant   // jobID → 协调位占用者（run / mutation）
+	transfers    *TransferLimiter      // 进程级传输上限（惰性创建的单例）
+	shuttingDown bool                  // Shutdown 已进入：拒绝启动新运行
+	wg           sync.WaitGroup
 }
 
 // NewRunner 构造 Runner：默认并发 Job 数 1（与 v0.3 行为一致）、
@@ -152,6 +156,10 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 	// 协调位才能执行，占用成功后读到的配置在其运行期间不会被变更，
 	// 旧 mapping 的 metadata 推进与新配置写入不再可能交叉。
 	r.mu.Lock()
+	if r.shuttingDown {
+		r.mu.Unlock()
+		return "", ErrShuttingDown
+	}
 	occ, busy := r.occupancy[jobID]
 	if busy {
 		r.mu.Unlock()
@@ -237,6 +245,9 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 	}
 	r.active[jobID] = run
 	starting = false
+	// 与发布同一临界区递增 WaitGroup：Shutdown 读到该 run 时 wg 必已
+	// 计入，Wait 不会在 goroutine 启动前先行返回。
+	r.wg.Add(1)
 	r.mu.Unlock()
 
 	// run row 必须在 goroutine 启动前同步写入成功：不允许出现已经开始
@@ -266,7 +277,6 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 		}
 	}
 
-	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()
 		defer func() {
@@ -329,10 +339,15 @@ func (r *Runner) execute(ctx context.Context, job Job, remote source.Remote, run
 		final.State = RunFailed
 		final.Error = runErr.Error()
 	}
-	if err := r.history.Finalize(ctx, final); err != nil {
+	// 终态落库与历史回收不受运行取消影响：Shutdown 取消 runCtx 后
+	// Engine 因取消返回，此刻正是最需要把 failed 终态写库的时机——
+	// 用已取消的 ctx 调真实 SQLite 会直接失败，遗留 running 行只能
+	// 等下次启动的 stale 恢复；优雅关闭应在本进程内完成终态收敛。
+	persistCtx := context.WithoutCancel(ctx)
+	if err := r.history.Finalize(persistCtx, final); err != nil {
 		logging.Errorf("finalize run %s: %v", run.runID, err)
 	}
-	r.pruneHistory(ctx)
+	r.pruneHistory(persistCtx)
 }
 
 // pruneHistory 在 run 终态落库后回收每 Job 的历史容量（保留最近
@@ -448,9 +463,11 @@ func (r *Runner) Wait(ctx context.Context, runID string) (RunStatus, error) {
 	return runRecordToStatus(rec), nil
 }
 
-// Shutdown 取消全部运行并等待退出；ctx 超时则返回 ctx 错误。
+// Shutdown 拒绝启动新运行，取消全部在途运行并等待退出；ctx 超时
+// 则返回 ctx 错误。多次调用安全。
 func (r *Runner) Shutdown(ctx context.Context) error {
 	r.mu.Lock()
+	r.shuttingDown = true
 	cancels := make([]context.CancelFunc, 0, len(r.active))
 	for _, run := range r.active {
 		cancels = append(cancels, run.cancel)
