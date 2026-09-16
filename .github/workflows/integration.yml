@@ -1,17 +1,29 @@
-name: Protocol Integration
+name: S3 Integration
 
-# 可复用的协议 integration gate：真实 S3 服务（MinIO 容器）+ 真实
-# SSH/SFTP 协议栈，验证 adapter 与同一 Sync Engine 的真实端到端行为。
-# Build 与 Release workflow 共用本 workflow，避免维护两份 MinIO 装配；
-# 远端发布门禁因此与 main 的持续集成使用同一套 integration 证据。
+# 可复用的 S3 integration gate：真实 S3 服务（MinIO 容器），验证 S3
+# adapter 与同一 Sync Engine 的真实端到端行为。Build 与 Release
+# workflow 共用本 workflow，避免维护两份 MinIO 装配；远端发布门禁
+# 因此与 main 的持续集成使用同一套 integration 证据。SFTP / WebDAV
+# 的真实协议栈测试由 in-process server 覆盖、随 make check 运行，
+# 不在本 gate 内。
+#
+# ref 为必填输入：可复用 workflow 的 github context 始终跟随调用方
+# 事件，checkout 不显式指定 ref 时会检出触发调用方的 commit。Build
+# 传入 github.sha，Release 传入发布 tag，保证"被验证的 commit ==
+# 被发布的 commit"。
 #
 # MinIO 以固定版本的 step 容器启动而不是 service container：service
-# container 拉取失败（如 Docker Hub 限流）无法重试，会让 gate 在未
-# 运行任何测试的情况下变红；step 方式允许 pull 重试，且固定版本保证
-# 行为可复现。in-process SFTP server 与 env 门控测试在无服务环境自动
-# 跳过，不影响常规 make check。
+# container 拉取失败无法重试，会让 gate 在未运行任何测试的情况下变
+# 红；step 方式允许 pull 重试，且固定版本保证行为可复现。镜像来自
+# MinIO 官方 Quay 仓库：GitHub-hosted runner 匿名拉取 Docker Hub 的
+# minio/minio 曾持续被拒，Quay 为官方同步发布的渠道。
 on:
   workflow_call:
+    inputs:
+      ref:
+        description: "Commit SHA or tag to checkout and test"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -21,10 +33,12 @@ env:
 
 jobs:
   integration:
-    name: Protocol integration (MinIO + SFTP)
+    name: S3 integration (MinIO)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -33,10 +47,10 @@ jobs:
           check-latest: true
 
       # 固定 MinIO 版本：跟随 latest 曾因镜像无法拉取让远端 gate 变红，
-      # 固定 tag 后 digest 可预期；pull 重试以吸收 Docker Hub 瞬时限流。
+      # 固定 tag 后 digest 可预期；pull 重试以吸收瞬时限流。
       - name: Start MinIO
         run: |
-          image="minio/minio:RELEASE.2025-04-22T22-12-26Z"
+          image="quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z"
           pulled=false
           for attempt in 1 2 3; do
             if docker pull "$image"; then
@@ -74,7 +88,7 @@ jobs:
           docker logs minio
           exit 1
 
-      - name: Run protocol integration tests
+      - name: Run S3 integration tests
         env:
           TINYSYNC_IT_S3_ENDPOINT: http://localhost:9000
           TINYSYNC_IT_S3_REGION: us-east-1

@@ -119,13 +119,16 @@ jobs:
       - name: Run release checks
         run: make ci
 
-  # 协议 integration gate 是发布门禁的一部分：main 集成变红时不可能
+  # S3 integration gate 是发布门禁的一部分：main 集成变红时不可能
   # 发布。实现与 Build workflow 共用（integration.yml），避免维护两份
-  # MinIO 装配。
+  # MinIO 装配；ref 固定为发布 tag——手动补跑时调用方事件 ref 可能是
+  # main，必须保证被验证的 commit 就是被发布的 commit。
   integration:
-    name: Protocol integration (MinIO + SFTP)
+    name: S3 integration (MinIO)
     needs: prepare
     uses: ./.github/workflows/integration.yml
+    with:
+      ref: ${{ needs.prepare.outputs.tag }}
 
   smoke:
     name: Smoke ${{ matrix.os }}

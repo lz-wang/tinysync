@@ -72,13 +72,15 @@ jobs:
           name: backend
           fail_ci_if_error: false
 
-  # 协议 integration gate：真实 S3 服务（MinIO 容器）+ 真实 SSH/SFTP
-  # 协议栈。实现在 integration.yml 可复用 workflow 中，与 Release
-  # workflow 共用同一套装配与证据。
+  # S3 integration gate：真实 MinIO 服务。实现在 integration.yml 可复用
+  # workflow 中，与 Release workflow 共用同一套装配与证据；ref 固定为
+  # 本 workflow 检出的 commit，保证被验证的就是被构建的代码。
   integration:
-    name: Protocol integration (MinIO + SFTP)
+    name: S3 integration (MinIO)
     needs: prepare
     uses: ./.github/workflows/integration.yml
+    with:
+      ref: ${{ github.sha }}
 
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
