@@ -72,6 +72,44 @@ jobs:
           name: backend
           fail_ci_if_error: false
 
+  # 协议 integration gate：真实 S3 服务（MinIO 容器）+ 真实 SSH/SFTP
+  # 协议栈，验证 adapter 与同一 Sync Engine 的真实端到端行为。
+  # in-process SFTP server 与 env 门控测试在无服务环境自动跳过，
+  # 不影响常规 make check。
+  integration:
+    name: Protocol integration (MinIO + SFTP)
+    needs: prepare
+    runs-on: ubuntu-latest
+    services:
+      minio:
+        image: minio/minio:latest
+        env:
+          MINIO_ROOT_USER: tinysync
+          MINIO_ROOT_PASSWORD: tinysync-secret
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd "curl -f http://localhost:9000/minio/health/live"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+
+      - name: Run protocol integration tests
+        env:
+          TINYSYNC_IT_S3_ENDPOINT: http://localhost:9000
+          TINYSYNC_IT_S3_REGION: us-east-1
+          TINYSYNC_IT_S3_ACCESS_KEY: tinysync
+          TINYSYNC_IT_S3_SECRET_KEY: tinysync-secret
+        run: make integration
+
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
     needs: [prepare, test]

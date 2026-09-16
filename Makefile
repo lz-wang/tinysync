@@ -6,7 +6,7 @@
 
 .PHONY: \
 	build build-all build-os package-os dist \
-	test coverage check format setup clean version help ci \
+	test coverage check format setup clean version help ci integration \
 	web-install web-ci-install web-lint web-typecheck web-build web-format \
 	_build-platform _package-platform _check-platform \
 	_install-go-tools _check-go-format _check-go-mod
@@ -191,6 +191,22 @@ dist: clean web-build
 test:
 	@echo "[tinysync] test Go"
 	@$(GOENV) $(GO) test -timeout 30s ./...
+
+## Run protocol integration tests against a real S3 service.
+## Usage: make integration TINYSYNC_IT_S3_ENDPOINT=http://localhost:9000 \
+##          TINYSYNC_IT_S3_ACCESS_KEY=... TINYSYNC_IT_S3_SECRET_KEY=...
+## 未设置 ENDPOINT 时相关测试自动跳过（不影响退出码）。
+integration:
+	@echo "[tinysync] protocol integration"
+	@$(GOENV) \
+		TINYSYNC_IT_S3_ENDPOINT="$(TINYSYNC_IT_S3_ENDPOINT)" \
+		TINYSYNC_IT_S3_REGION="$(TINYSYNC_IT_S3_REGION)" \
+		TINYSYNC_IT_S3_ACCESS_KEY="$(TINYSYNC_IT_S3_ACCESS_KEY)" \
+		TINYSYNC_IT_S3_SECRET_KEY="$(TINYSYNC_IT_S3_SECRET_KEY)" \
+		TINYSYNC_IT_S3_BUCKET="$(TINYSYNC_IT_S3_BUCKET)" \
+		TINYSYNC_IT_S3_PREFIX="$(TINYSYNC_IT_S3_PREFIX)" \
+		TINYSYNC_IT_S3_PATH_STYLE="$(TINYSYNC_IT_S3_PATH_STYLE)" \
+		$(GO) test -timeout 300s -v -run 'TestIntegration' ./internal/e2e/
 
 ## Generate backend coverage files for Codecov and local inspection.
 coverage:
