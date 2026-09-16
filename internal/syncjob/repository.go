@@ -51,10 +51,6 @@ type Repository interface {
 	Delete(ctx context.Context, id string) error
 	// CountBySource 统计引用给定 Source 的 Job 数，用于 Source 删除保护。
 	CountBySource(ctx context.Context, sourceID string) (int, error)
-	// MarkOnceConsumed 写入 once occurrence 的消费时间戳（调度器持久化
-	// correctness state，独立于可裁剪的运行历史）；Job 不存在时返回
-	// ErrNotFound。
-	MarkOnceConsumed(ctx context.Context, jobID string, at time.Time) error
 }
 
 // ManagedRepository 是 managed_files 的持久化接口。

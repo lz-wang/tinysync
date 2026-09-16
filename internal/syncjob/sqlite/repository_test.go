@@ -502,10 +502,9 @@ func TestManagedCascadeOnJobDelete(t *testing.T) {
 	}
 }
 
-// MarkOnceConsumed 写入的 once 消费时间戳经 Get / List 往返保持
-// （毫秒精度持久化 correctness state，独立于运行历史）；不存在的
-// Job 返回 ErrNotFound。
-func TestMarkOnceConsumedRoundTrip(t *testing.T) {
+// once 消费时间戳经 Update / Get 往返保持（毫秒精度持久化
+// correctness state，独立于运行历史）。
+func TestOnceConsumedForRoundTrip(t *testing.T) {
 	db, repo, _ := openRepos(t)
 	mustSeedSource(t, db, "src_a")
 	ctx := context.Background()
@@ -524,12 +523,14 @@ func TestMarkOnceConsumedRoundTrip(t *testing.T) {
 	}
 
 	at := time.Unix(1757879400, 0).UTC().Add(333 * time.Millisecond)
-	if err := repo.MarkOnceConsumed(ctx, "job_a", at); err != nil {
-		t.Fatalf("MarkOnceConsumed: %v", err)
+	consumed := at
+	job.OnceConsumedFor = &consumed
+	if err := repo.Update(ctx, job); err != nil {
+		t.Fatalf("Update: %v", err)
 	}
 	got, err = repo.Get(ctx, "job_a")
 	if err != nil {
-		t.Fatalf("Get after mark: %v", err)
+		t.Fatalf("Get after update: %v", err)
 	}
 	if got.OnceConsumedFor == nil || !got.OnceConsumedFor.Equal(at) {
 		t.Errorf("consumed_for = %v, want %v (ms precision)", got.OnceConsumedFor, at)
@@ -537,9 +538,5 @@ func TestMarkOnceConsumedRoundTrip(t *testing.T) {
 	listed, err := repo.List(ctx)
 	if err != nil || len(listed) != 1 || listed[0].OnceConsumedFor == nil {
 		t.Errorf("List = %+v (%v), want consumed_for kept", listed, err)
-	}
-
-	if err := repo.MarkOnceConsumed(ctx, "job_missing", at); !errors.Is(err, syncjob.ErrNotFound) {
-		t.Errorf("MarkOnceConsumed missing job = %v, want ErrNotFound", err)
 	}
 }

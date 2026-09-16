@@ -599,8 +599,11 @@ func TestUpdateOnceConsumptionSemantics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if err := jobRepo.MarkOnceConsumed(ctx, job.ID, at); err != nil {
-		t.Fatalf("MarkOnceConsumed: %v", err)
+	// 模拟 once 已执行：消费状态经整体更新写入。
+	consumedAt := at
+	job.OnceConsumedFor = &consumedAt
+	if err := jobRepo.Update(ctx, job); err != nil {
+		t.Fatalf("set consumed: %v", err)
 	}
 
 	// 同值 PATCH（+08:00 偏移表示同一时刻）：消费状态保留。

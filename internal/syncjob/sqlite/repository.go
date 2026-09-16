@@ -186,21 +186,6 @@ func (r *Repository) CountBySource(ctx context.Context, sourceID string) (int, e
 	return count, nil
 }
 
-// MarkOnceConsumed 实现 syncjob.Repository：写入 once occurrence 的
-// 消费时间戳。只更新该列，不触碰其他字段（运行路径的独立状态推进）。
-func (r *Repository) MarkOnceConsumed(ctx context.Context, jobID string, at time.Time) error {
-	res, err := r.db.ExecContext(ctx,
-		"UPDATE sync_jobs SET once_consumed_for = ? WHERE id = ?",
-		at.UnixMilli(), jobID)
-	if err != nil {
-		return fmt.Errorf("mark once consumed %s: %w", jobID, err)
-	}
-	if n, err := res.RowsAffected(); err == nil && n == 0 {
-		return fmt.Errorf("%w: %s", syncjob.ErrNotFound, jobID)
-	}
-	return nil
-}
-
 // ListByJob 实现 syncjob.ManagedRepository，按 remote_path 排序。
 func (r *ManagedRepository) ListByJob(ctx context.Context, jobID string) ([]syncjob.ManagedFile, error) {
 	rows, err := r.db.QueryContext(ctx,

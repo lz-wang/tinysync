@@ -43,6 +43,9 @@ var (
 	// ErrShuttingDown 表示 Runner 正在关闭，拒绝启动新的运行
 	// （手动触发返回 503）。
 	ErrShuttingDown = errors.New("sync runner is shutting down")
+	// ErrJobMutating 表示 Job 的配置变更正在进行（手动触发返回 409；
+	// 调度触发视为瞬时状态，occurrence 不消费，稍后重试）。
+	ErrJobMutating = errors.New("sync job is being modified")
 )
 
 // SourceCredentials 是 Runner 构造远端客户端所需的凭据查询能力。
@@ -164,9 +167,12 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 	if busy {
 		r.mu.Unlock()
 		if scheduledFor != nil {
-			reason := "previous run still active"
 			if occ == occupantMutation {
-				reason = "job configuration is being modified"
+				// 配置变更只是毫秒级的短暂互斥，不属于 overlap 策略：
+				// 记 skipped 会永久消费 occurrence（once 尤其不该被
+				// 一次顺手改名吞掉）。返回瞬时错误让调度器保持游标
+				// 重试，变更完成后按新配置执行。
+				return "", ErrJobMutating
 			}
 			// 记录 skipped 需要 Job 配置；读取或落库失败都视为
 			// occurrence 未消费，交由调度器重试。
@@ -174,7 +180,10 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 			if err != nil {
 				return "", fmt.Errorf("load job %s to record skipped run: %w", jobID, err)
 			}
-			return "", r.recordSkipped(ctx, job, trigger, *scheduledFor, reason)
+			return "", r.recordSkipped(ctx, job, trigger, *scheduledFor, "previous run still active")
+		}
+		if occ == occupantMutation {
+			return "", ErrJobMutating
 		}
 		return "", fmt.Errorf("%w: job %s is running", ErrRunActive, jobID)
 	}
@@ -251,18 +260,25 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 	r.mu.Unlock()
 
 	// run row 必须在 goroutine 启动前同步写入成功：不允许出现已经开始
-	// 修改本地文件、却没有任何历史 run ID 的状态。失败则回收发布时
-	// 预留的全部资源——active / 协调位 / WaitGroup 名额（goroutine
-	// 尚未启动，Done 必须在此补齐，否则 wg 永不归零，Shutdown 只能
-	// 靠超时返回）。
-	err = r.history.Insert(ctx, RunRecord{
+	// 修改本地文件、却没有任何历史 run ID 的状态。调度触发经事务路径
+	// 落库——once 的消费状态与 run row 原子写入，「run 存在 ⇔
+	// occurrence 已消费」，不存在 Mark 失败导致重放的中间状态。失败
+	// 则回收发布时预留的全部资源——active / 协调位 / WaitGroup 名额
+	//（goroutine 尚未启动，Done 必须在此补齐，否则 wg 永不归零，
+	// Shutdown 只能靠超时返回）。
+	record := RunRecord{
 		ID:           runID,
 		JobID:        jobID,
 		Trigger:      trigger,
 		ScheduledFor: scheduledFor,
 		State:        RunRunning,
 		StartedAt:    now,
-	})
+	}
+	if trigger == TriggerManual {
+		err = r.history.Insert(ctx, record)
+	} else {
+		err = r.history.PersistScheduledRun(ctx, record)
+	}
 	if err != nil {
 		r.mu.Lock()
 		delete(r.active, jobID)
@@ -271,14 +287,6 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 		r.wg.Done()
 		cancel()
 		return "", fmt.Errorf("persist run %s: %w", runID, err)
-	}
-	// once occurrence 已产生 run 即消费：消费状态写入 Job（独立于可
-	// 裁剪的运行历史），标记失败只记日志——下轮重放是幂等同步，好于
-	// 在此回收已启动的运行。
-	if trigger == TriggerOnce {
-		if err := r.repo.MarkOnceConsumed(ctx, jobID, *scheduledFor); err != nil {
-			logging.Errorf("mark once consumed for job %s: %v", jobID, err)
-		}
 	}
 
 	go func() {
@@ -364,9 +372,10 @@ func (r *Runner) pruneHistory(ctx context.Context) {
 }
 
 // recordSkipped 记录调度触发的 skipped run：occurrence 已消费，
-// 不排队、不执行；终态落库后与正常执行走同一条容量回收路径。
-// 持久化失败时返回错误——occurrence 未被成功消费，调用方（调度器）
-// 据此重试整个窗口而不是把它当作已处理。
+// 不排队、不执行；终态经事务路径落库（once 的消费状态与 skipped
+// 记录原子写入），之后与正常执行走同一条容量回收路径。持久化失败
+// 时返回错误——occurrence 未被成功消费，调用方（调度器）据此重试
+// 整个窗口而不是把它当作已处理。
 func (r *Runner) recordSkipped(ctx context.Context, job Job, trigger RunTrigger, scheduledFor time.Time, reason string) error {
 	id, err := newRunID()
 	if err != nil {
@@ -383,14 +392,8 @@ func (r *Runner) recordSkipped(ctx context.Context, job Job, trigger RunTrigger,
 		FinishedAt:   &now,
 		Error:        reason,
 	}
-	if err := r.history.Insert(ctx, run); err != nil {
+	if err := r.history.PersistScheduledRun(ctx, run); err != nil {
 		return fmt.Errorf("record skipped run for job %s: %w", job.ID, err)
-	}
-	// skipped 同样消费 once occurrence（occurrence 已产生 run）。
-	if trigger == TriggerOnce {
-		if err := r.repo.MarkOnceConsumed(ctx, job.ID, scheduledFor); err != nil {
-			logging.Errorf("mark once consumed for job %s: %v", job.ID, err)
-		}
 	}
 	r.pruneHistory(ctx)
 	return nil

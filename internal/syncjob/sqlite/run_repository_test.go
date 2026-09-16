@@ -402,3 +402,66 @@ func TestRunPruneRetention(t *testing.T) {
 		t.Errorf("items of kept run = (%d rows, total %d, %v), want 1", len(keptItems), itemCount, err)
 	}
 }
+
+// PersistScheduledRun 在单事务内落库 run 并写入 once 消费状态：
+// 「run 存在 ⇔ occurrence 已消费」；非 once 触发只落历史，不触碰
+// 消费状态；目标 Job 不存在时整体失败（事务回滚，run 未落库）。
+func TestPersistScheduledRunConsumesOnceAtomically(t *testing.T) {
+	db, jobRepo, _ := openRepos(t)
+	mustSeedSource(t, db, "src_a")
+	runRepo := NewRunRepository(db)
+	ctx := context.Background()
+
+	mustInsertOnceJob := func(id, name string) {
+		t.Helper()
+		job := newJob(id, name, "src_a")
+		job.Schedule = syncjob.Schedule{
+			Type:  syncjob.ScheduleOnce,
+			Value: baseTime.Add(time.Hour).Format(time.RFC3339),
+		}
+		if err := jobRepo.Create(ctx, job); err != nil {
+			t.Fatalf("create job %s: %v", id, err)
+		}
+	}
+	mustInsertOnceJob("job_a", "once")
+	mustInsertOnceJob("job_b", "once-b")
+
+	// once：run 落库 + 消费状态同事务写入。
+	at := baseTime.Add(time.Minute)
+	run := runningRun("run_once", "job_a", syncjob.TriggerOnce, &at, 0)
+	if err := runRepo.PersistScheduledRun(ctx, run); err != nil {
+		t.Fatalf("PersistScheduledRun once: %v", err)
+	}
+	if _, err := runRepo.Get(ctx, "run_once"); err != nil {
+		t.Fatalf("get persisted run: %v", err)
+	}
+	got, err := jobRepo.Get(ctx, "job_a")
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if got.OnceConsumedFor == nil || !got.OnceConsumedFor.Equal(at) {
+		t.Errorf("consumed_for = %v, want %v", got.OnceConsumedFor, at)
+	}
+
+	// interval：只落历史，消费状态保持不变。
+	iv := runningRun("run_iv", "job_a", syncjob.TriggerInterval, &at, 0)
+	if err := runRepo.PersistScheduledRun(ctx, iv); err != nil {
+		t.Fatalf("PersistScheduledRun interval: %v", err)
+	}
+	got, err = jobRepo.Get(ctx, "job_a")
+	if err != nil {
+		t.Fatalf("get job after interval run: %v", err)
+	}
+	if got.OnceConsumedFor == nil || !got.OnceConsumedFor.Equal(at) {
+		t.Errorf("consumed_for after interval run = %v, want unchanged %v", got.OnceConsumedFor, at)
+	}
+
+	// 不存在的 Job：整体失败（事务回滚），run 未落库。
+	missing := runningRun("run_missing", "job_missing", syncjob.TriggerOnce, &at, 0)
+	if err := runRepo.PersistScheduledRun(ctx, missing); !errors.Is(err, syncjob.ErrNotFound) {
+		t.Fatalf("PersistScheduledRun missing job = %v, want ErrNotFound", err)
+	}
+	if _, err := runRepo.Get(ctx, "run_missing"); err == nil {
+		t.Error("run row of missing job survived, want rollback")
+	}
+}

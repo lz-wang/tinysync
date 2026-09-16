@@ -346,8 +346,10 @@ func TestSchedulerOnceConsumptionSurvivesPrunedHistory(t *testing.T) {
 	})
 
 	// 模拟 once 已执行且消费状态已写入，但运行历史随后被裁剪。
-	if err := env.repo.MarkOnceConsumed(ctx, job.ID, at); err != nil {
-		t.Fatalf("MarkOnceConsumed: %v", err)
+	consumedAt := at
+	job.OnceConsumedFor = &consumedAt
+	if err := env.repo.Update(ctx, job); err != nil {
+		t.Fatalf("set once consumed: %v", err)
 	}
 	env.tickTo(t, schedulerBase.Add(time.Hour))
 	if got := env.runCount(t, job.ID); got != 0 {
@@ -414,6 +416,38 @@ func TestSchedulerTransientOccurrenceFailureKeepsCursor(t *testing.T) {
 	env.tickTo(t, anchor.Add(90*time.Minute+2*time.Second))
 	if got := env.runCount(t, job.ID); got != 2 {
 		t.Fatalf("runs after recovery tick = %d, want 2 (occurrence retried)", got)
+	}
+	if err := env.runner.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+}
+
+// mutation 占用是瞬时的：occurrence 不被消费、游标不推进；变更
+// 释放后下一 tick 重新触发（once 尤其不该被几毫秒的配置互斥吞掉）。
+func TestSchedulerMutationOccupancyIsTransient(t *testing.T) {
+	env := newSchedulerEnv(t, buildRemote(map[string]string{"/a.txt": "v1"}, nil))
+	anchor := schedulerBase
+	job := env.mustScheduledJob(t, "mutating", Schedule{
+		Type:     ScheduleInterval,
+		Value:    "30m",
+		AnchorAt: &anchor,
+	})
+	ctx := context.Background()
+	boundary := anchor.Add(30 * time.Minute)
+
+	if err := env.runner.BeginMutation(job.ID); err != nil {
+		t.Fatalf("BeginMutation: %v", err)
+	}
+	env.tickTo(t, boundary.Add(time.Second))
+	if got := env.runCount(t, job.ID); got != 0 {
+		t.Fatalf("runs during mutation = %d, want 0 (occurrence not consumed)", got)
+	}
+	env.runner.EndMutation(job.ID)
+
+	// 释放后下一 tick 重扫窗口，按（未被修改影响的）配置触发。
+	env.tickTo(t, boundary.Add(2*time.Second))
+	if got := env.runCount(t, job.ID); got != 1 {
+		t.Fatalf("runs after mutation released = %d, want 1 (occurrence retried)", got)
 	}
 	if err := env.runner.Shutdown(ctx); err != nil {
 		t.Fatalf("Shutdown: %v", err)

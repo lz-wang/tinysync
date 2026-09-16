@@ -115,24 +115,19 @@ func (r *memJobRepo) CountBySource(ctx context.Context, sourceID string) (int, e
 	return 0, nil
 }
 
-func (r *memJobRepo) MarkOnceConsumed(ctx context.Context, jobID string, at time.Time) error {
-	job, ok := r.jobs[jobID]
-	if !ok {
-		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
-	}
-	job.OnceConsumedFor = &at
-	r.jobs[jobID] = job
-	return nil
-}
-
 // memRunRepo 是 RunRepository 的内存实现（Runner 测试专用）。
 type memRunRepo struct {
-	mu        sync.Mutex
-	runs      map[string]RunRecord
-	order     []string
-	prunes    int
-	insertErr error // 非 nil 时 Insert 失败（模拟持久化故障）
-	hasErr    error // 非 nil 时 HasRunFor 失败（模拟读取故障）
+	mu     sync.Mutex
+	runs   map[string]RunRecord
+	order  []string
+	prunes int
+	// insertErr 非 nil 时 Insert / PersistScheduledRun 失败（模拟持久化故障）。
+	insertErr error
+	// hasErr 非 nil 时 HasRunFor 失败（模拟读取故障）。
+	hasErr error
+	// markOnce 模拟 PersistScheduledRun 事务内的 once 消费写入
+	//（runnerEnv 装配时桥接到 memJobRepo）。
+	markOnce func(jobID string, at time.Time)
 }
 
 func newMemRunRepo() *memRunRepo {
@@ -147,6 +142,24 @@ func (m *memRunRepo) Insert(ctx context.Context, run RunRecord) error {
 	}
 	m.runs[run.ID] = run
 	m.order = append(m.order, run.ID)
+	return nil
+}
+
+// PersistScheduledRun 模拟事务路径：落库 run，once 触发时同步写入
+// 消费状态（消费写入失败即整体未落库，与 SQLite 事务语义一致）。
+func (m *memRunRepo) PersistScheduledRun(ctx context.Context, run RunRecord) error {
+	m.mu.Lock()
+	if m.insertErr != nil {
+		err := m.insertErr
+		m.mu.Unlock()
+		return err
+	}
+	m.runs[run.ID] = run
+	m.order = append(m.order, run.ID)
+	m.mu.Unlock()
+	if run.Trigger == TriggerOnce && run.ScheduledFor != nil && m.markOnce != nil {
+		m.markOnce(run.JobID, *run.ScheduledFor)
+	}
 	return nil
 }
 
@@ -295,6 +308,17 @@ func newRunnerEnv(t *testing.T, remote source.Remote) *runnerEnv {
 		},
 		history: newMemRunRepo(),
 		root:    t.TempDir(),
+	}
+	// 桥接 PersistScheduledRun 的事务性 once 消费写入（生产路径在
+	// SQLite 事务内写 sync_jobs.once_consumed_for）。
+	env.history.markOnce = func(jobID string, at time.Time) {
+		job, ok := env.repo.jobs[jobID]
+		if !ok {
+			return
+		}
+		consumed := at
+		job.OnceConsumedFor = &consumed
+		env.repo.jobs[jobID] = job
 	}
 	env.runner = NewRunner(env.repo, env.managed, env.creds, stubFactory{remote: remote}, env.history)
 	env.runner.Now = func() time.Time { return time.Unix(1757879400, 0).UTC() }
@@ -460,9 +484,10 @@ func TestRunnerTransferLimitIsProcessWide(t *testing.T) {
 	}
 }
 
-// Job 协调位：配置变更与执行链原子互斥。mutation 占用期间手动启动
-// 报 ErrRunActive、调度触发记 skipped（原因注明配置变更中）；运行
-// 占用期间 BeginMutation 报 ErrRunActive；各自释放后恢复。
+// Job 协调位：配置变更与执行链原子互斥。mutation 占用期间手动与
+// 调度启动都报瞬时错误（occurrence 不被消费——几毫秒的配置互斥
+// 不属于 overlap 策略，不该吞掉一次调度）；运行占用期间
+// BeginMutation 报 ErrRunActive；各自释放后恢复。
 func TestRunnerMutationGuard(t *testing.T) {
 	release := make(chan struct{})
 	env := newRunnerEnv(t, &blockingRemote{release: release})
@@ -472,17 +497,17 @@ func TestRunnerMutationGuard(t *testing.T) {
 	if err := env.runner.BeginMutation(job.ID); err != nil {
 		t.Fatalf("BeginMutation on idle job: %v", err)
 	}
-	if _, err := env.runner.Start(ctx, job.ID); !errors.Is(err, ErrRunActive) {
-		t.Errorf("Start during mutation = %v, want ErrRunActive", err)
+	if _, err := env.runner.Start(ctx, job.ID); !errors.Is(err, ErrJobMutating) {
+		t.Errorf("Start during mutation = %v, want ErrJobMutating", err)
 	}
 	occ := time.Unix(1757879400, 0).UTC()
 	runID, err := env.runner.StartScheduled(ctx, job.ID, TriggerInterval, occ)
-	if err != nil || runID != "" {
-		t.Fatalf("StartScheduled during mutation = (%q, %v), want empty success", runID, err)
+	if !errors.Is(err, ErrJobMutating) || runID != "" {
+		t.Fatalf("StartScheduled during mutation = (%q, %v), want ErrJobMutating", runID, err)
 	}
-	rec, err := env.history.Latest(ctx, job.ID)
-	if err != nil || rec.State != RunSkipped || rec.Error != "job configuration is being modified" {
-		t.Errorf("skipped record = %+v (%v), want skipped with mutation reason", rec, err)
+	// occurrence 未被消费：无任何 run 记录（含 skipped）。
+	if got := env.runCountGuard(t, job.ID); got != 0 {
+		t.Fatalf("runs after mutation-rejected occurrence = %d, want 0 (not consumed)", got)
 	}
 	env.runner.EndMutation(job.ID)
 
@@ -555,6 +580,16 @@ func TestRunnerStartScheduledPersistenceError(t *testing.T) {
 	if err := env.runner.Shutdown(ctx); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
+}
+
+// runCountGuard 统计 Job 的持久化 run 数（runnerEnv 的 history）。
+func (e *runnerEnv) runCountGuard(t *testing.T, jobID string) int {
+	t.Helper()
+	_, total, err := e.history.List(context.Background(), RunFilter{JobID: jobID})
+	if err != nil {
+		t.Fatalf("list runs: %v", err)
+	}
+	return total
 }
 
 // Shutdown 后拒绝启动新运行：手动与调度触发都返回 ErrShuttingDown，

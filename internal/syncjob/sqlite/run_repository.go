@@ -10,6 +10,7 @@ import (
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 
+	"tinysync/internal/storage"
 	"tinysync/internal/syncjob"
 )
 
@@ -31,18 +32,51 @@ func NewRunRepository(db *sql.DB) *RunRepository {
 	return &RunRepository{db: db}
 }
 
+// insertRunSQL 是 sync_runs 的插入语句，Insert 与 PersistScheduledRun 共用。
+const insertRunSQL = `INSERT INTO sync_runs
+	(id, job_id, trigger_type, scheduled_for, status, started_at, finished_at, error)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+
+// insertRunArgs 按插入语句的参数顺序展开运行记录。
+func insertRunArgs(run syncjob.RunRecord) []any {
+	return []any{
+		run.ID, run.JobID, string(run.Trigger), nullMillis(run.ScheduledFor),
+		string(run.State), run.StartedAt.UnixMilli(),
+		nullMillis(run.FinishedAt), run.Error,
+	}
+}
+
 // Insert 实现 syncjob.RunRepository：整体落库运行记录。正常运行带
 // running 状态（goroutine 启动前写入）；调度跳过的记录直接携带
 // skipped 终态、原因与结束时间。
 func (r *RunRepository) Insert(ctx context.Context, run syncjob.RunRecord) error {
-	_, err := r.db.ExecContext(ctx, `INSERT INTO sync_runs
-		(id, job_id, trigger_type, scheduled_for, status, started_at, finished_at, error)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		run.ID, run.JobID, string(run.Trigger), nullMillis(run.ScheduledFor),
-		string(run.State), run.StartedAt.UnixMilli(),
-		nullMillis(run.FinishedAt), run.Error,
-	)
+	_, err := r.db.ExecContext(ctx, insertRunSQL, insertRunArgs(run)...)
 	return mapRunError("insert run", run.ID, err)
+}
+
+// PersistScheduledRun 实现 syncjob.RunRepository：单个事务内落库运行
+// 记录；once 触发时同步写入 sync_jobs.once_consumed_for，使
+// 「run 存在 ⇔ occurrence 已消费」原子成立——两次独立写之间的失败
+// 不会再让调度器把未消费的 once 误判为已处理（或反之）。非 once
+// 触发只落历史。
+func (r *RunRepository) PersistScheduledRun(ctx context.Context, run syncjob.RunRecord) error {
+	return storage.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, insertRunSQL, insertRunArgs(run)...); err != nil {
+			return mapRunError("insert run", run.ID, err)
+		}
+		if run.Trigger == syncjob.TriggerOnce && run.ScheduledFor != nil {
+			res, err := tx.ExecContext(ctx,
+				"UPDATE sync_jobs SET once_consumed_for = ? WHERE id = ?",
+				run.ScheduledFor.UnixMilli(), run.JobID)
+			if err != nil {
+				return fmt.Errorf("mark once consumed %s: %w", run.JobID, err)
+			}
+			if n, err := res.RowsAffected(); err == nil && n == 0 {
+				return fmt.Errorf("%w: %s", syncjob.ErrNotFound, run.JobID)
+			}
+		}
+		return nil
+	})
 }
 
 // Finalize 实现 syncjob.RunRepository：整体覆盖终态与统计。

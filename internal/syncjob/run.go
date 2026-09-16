@@ -116,6 +116,11 @@ type RunRepository interface {
 	// goroutine 启动前调用成功（保证「已开始修改本地文件却没有历史
 	// run」的状态不存在）；调度跳过的记录直接携带 skipped 终态与原因。
 	Insert(ctx context.Context, run RunRecord) error
+	// PersistScheduledRun 以单个事务落库调度触发的运行记录：trigger
+	// 为 once 且携带 occurrence 时，同一事务内写入 Job 的 once 消费
+	// 状态——「run 存在 ⇔ occurrence 已消费」，不存在中间状态；
+	// 非 once 触发只落历史，不触碰消费状态。
+	PersistScheduledRun(ctx context.Context, run RunRecord) error
 	// Finalize 以 run 的 State / Stats / FinishedAt / Error 覆盖运行终态；
 	// 目标 run 不存在时返回 ErrRunUnknown。
 	Finalize(ctx context.Context, run RunRecord) error

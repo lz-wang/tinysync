@@ -632,6 +632,8 @@ func handleRunError(c *gin.Context, err error) {
 		c.JSON(http.StatusConflict, gin.H{"error": "source is disabled"})
 	case errors.Is(err, syncjob.ErrRunActive):
 		c.JSON(http.StatusConflict, gin.H{"error": "another sync run is active"})
+	case errors.Is(err, syncjob.ErrJobMutating):
+		c.JSON(http.StatusConflict, gin.H{"error": "sync job is being modified"})
 	case errors.Is(err, syncjob.ErrConcurrencyLimit):
 		c.JSON(http.StatusConflict, gin.H{"error": "concurrency limit reached"})
 	case errors.Is(err, syncjob.ErrShuttingDown):

@@ -137,8 +137,8 @@ func (s *Scheduler) tick(ctx context.Context) {
 		if _, err := s.runner.StartScheduled(ctx, job.ID, trigger, occurrence); err != nil {
 			logging.Errorf("scheduled run for job %s: %v", job.ID, err)
 			// 禁用 / 引用缺失等确定性校验失败重试无意义，occurrence
-			// 随本轮丢弃；其余（配置读取、run 落库等）视为瞬时故障，
-			// 游标不推进，下一 tick 重试整个窗口。
+			// 随本轮丢弃；其余（配置变更占用、配置读取、run 落库等）
+			// 视为瞬时故障，游标不推进，下一 tick 重试整个窗口。
 			if !errors.Is(err, ErrJobDisabled) &&
 				!errors.Is(err, ErrSourceDisabled) &&
 				!errors.Is(err, ErrNotFound) {
