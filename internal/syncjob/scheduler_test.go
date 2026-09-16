@@ -364,6 +364,52 @@ func TestSchedulerOnceConsumptionSurvivesPrunedHistory(t *testing.T) {
 	}
 }
 
+// occurrence 处理的瞬时故障不推进游标：HasRunFor 或 run 落库失败时
+// 本 tick 保持游标不动，恢复后重扫同一窗口补上触发；已成功持久化的
+// occurrence 由消费记录挡住，重扫不重复执行。
+func TestSchedulerTransientOccurrenceFailureKeepsCursor(t *testing.T) {
+	env := newSchedulerEnv(t, buildRemote(map[string]string{"/a.txt": "v1"}, nil))
+	anchor := schedulerBase
+	job := env.mustScheduledJob(t, "retry", Schedule{
+		Type:     ScheduleInterval,
+		Value:    "30m",
+		AnchorAt: &anchor,
+	})
+	ctx := context.Background()
+	boundary := anchor.Add(30 * time.Minute)
+
+	// HasRunFor 瞬时失败：不触发，游标不推进。
+	env.history.hasErr = errors.New("sqlite busy")
+	env.tickTo(t, boundary.Add(time.Second))
+	if got := env.runCount(t, job.ID); got != 0 {
+		t.Fatalf("runs after HasRunFor failure = %d, want 0", got)
+	}
+
+	// 恢复后重扫同一窗口，补上触发。
+	env.history.hasErr = nil
+	env.tickTo(t, boundary.Add(2*time.Second))
+	if got := env.runCount(t, job.ID); got != 1 {
+		t.Fatalf("runs after recovery = %d, want 1", got)
+	}
+
+	// run 落库瞬时失败：occurrence 未消费，游标不推进；恢复后重扫
+	// 同一窗口补上触发。
+	env.restartAt(anchor.Add(time.Hour))
+	env.history.insertErr = errors.New("disk I/O error")
+	env.tickTo(t, anchor.Add(90*time.Minute+time.Second))
+	if got := env.runCount(t, job.ID); got != 1 {
+		t.Fatalf("runs after insert failure = %d, want 1 (occurrence not consumed)", got)
+	}
+	env.history.insertErr = nil
+	env.tickTo(t, anchor.Add(90*time.Minute+2*time.Second))
+	if got := env.runCount(t, job.ID); got != 2 {
+		t.Fatalf("runs after recovery tick = %d, want 2 (occurrence retried)", got)
+	}
+	if err := env.runner.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+}
+
 // Start / Stop 生命周期：Stop 后调度循环退出，不泄漏 goroutine。
 func TestSchedulerStartStop(t *testing.T) {
 	env := newSchedulerEnv(t, buildRemote(nil, nil))

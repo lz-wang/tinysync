@@ -127,10 +127,12 @@ func (r *memJobRepo) MarkOnceConsumed(ctx context.Context, jobID string, at time
 
 // memRunRepo 是 RunRepository 的内存实现（Runner 测试专用）。
 type memRunRepo struct {
-	mu     sync.Mutex
-	runs   map[string]RunRecord
-	order  []string
-	prunes int
+	mu        sync.Mutex
+	runs      map[string]RunRecord
+	order     []string
+	prunes    int
+	insertErr error // 非 nil 时 Insert 失败（模拟持久化故障）
+	hasErr    error // 非 nil 时 HasRunFor 失败（模拟读取故障）
 }
 
 func newMemRunRepo() *memRunRepo {
@@ -140,6 +142,9 @@ func newMemRunRepo() *memRunRepo {
 func (m *memRunRepo) Insert(ctx context.Context, run RunRecord) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.insertErr != nil {
+		return m.insertErr
+	}
 	m.runs[run.ID] = run
 	m.order = append(m.order, run.ID)
 	return nil
@@ -230,6 +235,9 @@ func (m *memRunRepo) Items(ctx context.Context, runID string, limit, offset int)
 func (m *memRunRepo) HasRunFor(ctx context.Context, jobID string, trigger RunTrigger, scheduledFor time.Time) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.hasErr != nil {
+		return false, m.hasErr
+	}
 	for _, id := range m.order {
 		run := m.runs[id]
 		if run.JobID == jobID && run.Trigger == trigger &&
@@ -521,6 +529,34 @@ func TestRunnerSkippedRunPrunesRetention(t *testing.T) {
 	}
 }
 
+// StartScheduled 的持久化失败如实返回错误：occurrence 未被消费，
+// 调度器据此重试窗口而不是当作已处理。
+func TestRunnerStartScheduledPersistenceError(t *testing.T) {
+	release := make(chan struct{})
+	env := newRunnerEnv(t, &blockingRemote{release: release})
+	job := env.mustJob(t, "persist-fail")
+	ctx := context.Background()
+
+	if _, err := env.runner.Start(ctx, job.ID); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	occ := time.Unix(1757879400, 0).UTC()
+	env.history.insertErr = errorsNew("disk I/O error")
+	runID, err := env.runner.StartScheduled(ctx, job.ID, TriggerInterval, occ)
+	if err == nil || runID != "" {
+		t.Fatalf("StartScheduled with insert failure = (%q, %v), want error", runID, err)
+	}
+	consumed, err := env.history.HasRunFor(ctx, job.ID, TriggerInterval, occ)
+	if err != nil || consumed {
+		t.Errorf("occurrence consumed = (%t, %v), want false (not consumed)", consumed, err)
+	}
+	env.history.insertErr = nil
+	close(release)
+	if err := env.runner.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+}
+
 // once occurrence 产生 run 即消费（succeeded 与 skipped 都算）：消费
 // 状态写入 Job 本身，与可裁剪的运行历史解耦。
 func TestRunnerOnceConsumptionMarkedOnJob(t *testing.T) {
@@ -557,7 +593,9 @@ func TestRunnerOnceConsumptionMarkedOnJob(t *testing.T) {
 	if err := env.repo.Update(ctx, job2); err != nil {
 		t.Fatalf("set once2 schedule: %v", err)
 	}
-	env.runner.recordSkipped(ctx, job2, TriggerOnce, occ2, "previous run still active")
+	if err := env.runner.recordSkipped(ctx, job2, TriggerOnce, occ2, "previous run still active"); err != nil {
+		t.Fatalf("recordSkipped: %v", err)
+	}
 	stored2, err := env.repo.Get(ctx, job2.ID)
 	if err != nil {
 		t.Fatalf("Get job2: %v", err)

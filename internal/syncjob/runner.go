@@ -139,7 +139,8 @@ func (r *Runner) Start(ctx context.Context, jobID string) (string, error) {
 
 // StartScheduled 以调度触发启动一轮同步。occurrence 到期但同 Job 运行中
 // 或全局并发已满时不排队：记录 status=skipped 的 run（error 记原因）并
-// 消费该 occurrence，返回空 run ID 与 nil 错误。
+// 消费该 occurrence，返回空 run ID 与 nil 错误；读取配置或落库失败返回
+// 错误——occurrence 未被消费，调度器应重试窗口而不是视为已处理。
 func (r *Runner) StartScheduled(ctx context.Context, jobID string, trigger RunTrigger, scheduledFor time.Time) (string, error) {
 	return r.start(ctx, jobID, trigger, &scheduledFor)
 }
@@ -159,14 +160,13 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 			if occ == occupantMutation {
 				reason = "job configuration is being modified"
 			}
-			// 记录 skipped 需要 Job 配置；占用期间尽力读取，失败仅记日志。
+			// 记录 skipped 需要 Job 配置；读取或落库失败都视为
+			// occurrence 未消费，交由调度器重试。
 			job, err := r.repo.Get(ctx, jobID)
 			if err != nil {
-				logging.Errorf("record skipped run for job %s: %v", jobID, err)
-				return "", nil
+				return "", fmt.Errorf("load job %s to record skipped run: %w", jobID, err)
 			}
-			r.recordSkipped(ctx, job, trigger, *scheduledFor, reason)
-			return "", nil
+			return "", r.recordSkipped(ctx, job, trigger, *scheduledFor, reason)
 		}
 		return "", fmt.Errorf("%w: job %s is running", ErrRunActive, jobID)
 	}
@@ -212,8 +212,7 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 	if len(r.active) >= maxConcurrent {
 		r.mu.Unlock()
 		if scheduledFor != nil {
-			r.recordSkipped(ctx, job, trigger, *scheduledFor, "concurrency limit reached")
-			return "", nil
+			return "", r.recordSkipped(ctx, job, trigger, *scheduledFor, "concurrency limit reached")
 		}
 		return "", fmt.Errorf("%w: at most %d concurrent jobs", ErrConcurrencyLimit, maxConcurrent)
 	}
@@ -347,11 +346,12 @@ func (r *Runner) pruneHistory(ctx context.Context) {
 
 // recordSkipped 记录调度触发的 skipped run：occurrence 已消费，
 // 不排队、不执行；终态落库后与正常执行走同一条容量回收路径。
-func (r *Runner) recordSkipped(ctx context.Context, job Job, trigger RunTrigger, scheduledFor time.Time, reason string) {
+// 持久化失败时返回错误——occurrence 未被成功消费，调用方（调度器）
+// 据此重试整个窗口而不是把它当作已处理。
+func (r *Runner) recordSkipped(ctx context.Context, job Job, trigger RunTrigger, scheduledFor time.Time, reason string) error {
 	id, err := newRunID()
 	if err != nil {
-		logging.Errorf("generate skipped run id for job %s: %v", job.ID, err)
-		return
+		return fmt.Errorf("generate skipped run id for job %s: %w", job.ID, err)
 	}
 	now := r.Now()
 	run := RunRecord{
@@ -365,8 +365,7 @@ func (r *Runner) recordSkipped(ctx context.Context, job Job, trigger RunTrigger,
 		Error:        reason,
 	}
 	if err := r.history.Insert(ctx, run); err != nil {
-		logging.Errorf("record skipped run for job %s: %v", job.ID, err)
-		return
+		return fmt.Errorf("record skipped run for job %s: %w", job.ID, err)
 	}
 	// skipped 同样消费 once occurrence（occurrence 已产生 run）。
 	if trigger == TriggerOnce {
@@ -375,6 +374,7 @@ func (r *Runner) recordSkipped(ctx context.Context, job Job, trigger RunTrigger,
 		}
 	}
 	r.pruneHistory(ctx)
+	return nil
 }
 
 // BeginMutation 原子占用 Job 的协调位，与执行链（start → 运行结束）

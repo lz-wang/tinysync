@@ -2,6 +2,7 @@ package syncjob
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -75,9 +76,10 @@ func (s *Scheduler) Stop() {
 // Runner.StartScheduled 触发（overlap / 容量不足时由 Runner 记 skipped），
 // 窗口外不回看。抽出为独立方法以便固定时钟直接测试。
 //
-// 游标只在成功读取并处理完全部 Job 后推进：List 失败或处理中断时保持
-// 不动，下一个 tick 重扫同一窗口，不会因一次内部失败吞掉 occurrence；
-// 重复扫描由持久化的 occurrence 消费记录挡住（见下）。
+// 游标只在成功读取并处理完全部 Job 后推进：List 失败、处理中断或任一
+// occurrence 的检查 / 持久化失败时保持不动，下一个 tick 重扫同一窗口，
+// 不会因一次内部失败吞掉 occurrence；已成功启动 / skip 的 occurrence
+// 由持久化消费记录（once 读 Job、interval / cron 读历史）挡住重复。
 func (s *Scheduler) tick(ctx context.Context) {
 	s.mu.Lock()
 	from := s.cursor
@@ -89,6 +91,7 @@ func (s *Scheduler) tick(ctx context.Context) {
 		logging.Errorf("scheduler list jobs: %v", err)
 		return
 	}
+	tickComplete := true
 	for _, job := range jobs {
 		if ctx.Err() != nil {
 			return
@@ -124,6 +127,7 @@ func (s *Scheduler) tick(ctx context.Context) {
 			consumed, err := s.history.HasRunFor(ctx, job.ID, trigger, occurrence)
 			if err != nil {
 				logging.Errorf("scheduler check occurrence consumption for job %s: %v", job.ID, err)
+				tickComplete = false
 				continue
 			}
 			if consumed {
@@ -131,9 +135,19 @@ func (s *Scheduler) tick(ctx context.Context) {
 			}
 		}
 		if _, err := s.runner.StartScheduled(ctx, job.ID, trigger, occurrence); err != nil {
-			// 禁用等校验失败只记日志：不阻塞后续 Job。
 			logging.Errorf("scheduled run for job %s: %v", job.ID, err)
+			// 禁用 / 引用缺失等确定性校验失败重试无意义，occurrence
+			// 随本轮丢弃；其余（配置读取、run 落库等）视为瞬时故障，
+			// 游标不推进，下一 tick 重试整个窗口。
+			if !errors.Is(err, ErrJobDisabled) &&
+				!errors.Is(err, ErrSourceDisabled) &&
+				!errors.Is(err, ErrNotFound) {
+				tickComplete = false
+			}
 		}
+	}
+	if !tickComplete {
+		return
 	}
 	s.mu.Lock()
 	s.cursor = now
