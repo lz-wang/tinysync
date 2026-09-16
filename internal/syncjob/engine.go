@@ -22,9 +22,11 @@ type RunOptions struct {
 	Items ItemRecorder
 	// RunID 是本轮运行的持久化 ID，写入每条明细。
 	RunID string
-	// MaxConcurrentTransfers 是全进程同时进行的远端下载上限；
-	// <=0 视为 1。远端下载 I/O 并行，SQLite 状态推进始终串行。
-	MaxConcurrentTransfers int
+	// Transfers 是本轮下载前必须 Acquire 的并发上限。生产路径由 Runner
+	// 注入全进程共享的 limiter，使上限约束所有 Job 的下载总和；nil
+	//（独立调用）退化为本地单传输串行。远端下载 I/O 并行，SQLite
+	// 状态推进始终串行。
+	Transfers *TransferLimiter
 }
 
 // ItemRecorder 接收文件级变更明细。返回错误视为本轮失败：历史明细缺失
@@ -214,17 +216,21 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 		jobs = append(jobs, transferJob{entry: e, action: ItemUpdate})
 	}
 
-	// 传输阶段：pending 登记串行、下载并发、结果单点收敛。
-	// 首次失败后停止派发、取消在途工作并排空结果——失败后完成的下载
-	// 不推进 synced（保留 pending 供下一轮重传），relinquish 与
-	// Mirror delete 一律不执行。
-	limit := opts.MaxConcurrentTransfers
-	if limit < 1 {
-		limit = 1
+	// 传输阶段：pending 登记串行、下载并发、结果单点收敛。并发名额由
+	// TransferLimiter 统一控制（Runner 注入进程级共享 limiter，独立
+	// 调用退化为本地串行）。首次失败后停止派发、取消在途工作并排空
+	// 结果——失败后完成的下载不推进 synced（保留 pending 供下一轮
+	// 重传），relinquish 与 Mirror delete 一律不执行。
+	limiter := opts.Transfers
+	if limiter == nil {
+		limiter = NewTransferLimiter(1)
 	}
 	var (
-		wg       sync.WaitGroup
-		results  = make(chan transferOutcome)
+		wg sync.WaitGroup
+		// results 带全量缓冲：worker 发送结果后立即执行 defer 释放
+		// 传输名额，不依赖协调者当时是否在收取——否则多个 Job 的协调者
+		// 同时阻塞在全局 limiter 的 Acquire 上会互相等死。
+		results  = make(chan transferOutcome, len(jobs))
 		firstErr error
 		inflight int
 	)
@@ -235,17 +241,24 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 	}
 	next := 0
 	for next < len(jobs) || inflight > 0 {
-		for next < len(jobs) && inflight < limit && firstErr == nil && ctx.Err() == nil {
+		for next < len(jobs) && inflight < limiter.Capacity() && firstErr == nil && ctx.Err() == nil {
 			j := jobs[next]
-			next++
+			// 先占全局传输名额再登记 pending：拿不到名额的文件保持
+			// 计划态，不提前把 pending 写入 managed。
+			if err := limiter.Acquire(ctx); err != nil {
+				break
+			}
 			if err := markPending(j); err != nil {
+				limiter.Release()
 				fail(transferFailure(fmt.Errorf("register pending for %s: %w", j.entry.relPath, err)))
 				break
 			}
+			next++
 			inflight++
 			wg.Add(1)
 			go func(j transferJob) {
 				defer wg.Done()
+				defer limiter.Release()
 				err := downloader.Download(ctx, j.entry.remote.Path, job.LocalRoot, j.entry.relPath, j.entry.remote.Fingerprint)
 				results <- transferOutcome{job: j, err: err}
 			}(j)

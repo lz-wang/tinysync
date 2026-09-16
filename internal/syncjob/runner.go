@@ -68,6 +68,8 @@ type activeRun struct {
 	scheduledFor *time.Time
 	cancel       context.CancelFunc
 	done         chan struct{}
+	// transfers 是本轮使用的进程级传输 limiter（Runner 单例的快照）。
+	transfers *TransferLimiter
 	// startedAt 在 goroutine 结束时用于填充最终状态。
 	startedAt time.Time
 }
@@ -89,12 +91,13 @@ type Runner struct {
 	// 由应用装配从运行配置注入。
 	MaxConcurrentJobs int
 	// MaxConcurrentTransfers 是全进程同时进行的远端文件下载上限，
-	// 由同步引擎消费；必须为正整数。
+	// 由所有 Job 的同步引擎经共享 transfer limiter 消费；必须为正整数。
 	MaxConcurrentTransfers int
 
-	mu     sync.Mutex
-	active map[string]*activeRun // jobID → 进行中的运行
-	wg     sync.WaitGroup
+	mu        sync.Mutex
+	active    map[string]*activeRun // jobID → 进行中的运行
+	transfers *TransferLimiter      // 进程级传输上限（惰性创建的单例）
+	wg        sync.WaitGroup
 }
 
 // NewRunner 构造 Runner：默认并发 Job 数 1（与 v0.3 行为一致）、
@@ -190,6 +193,7 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 		scheduledFor: scheduledFor,
 		cancel:       nil,
 		done:         make(chan struct{}),
+		transfers:    r.transferLimiter(),
 		startedAt:    now,
 	}
 	r.active[jobID] = run
@@ -229,15 +233,30 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 	return runID, nil
 }
 
+// transferLimiter 返回进程级共享的传输 limiter：首次调用按
+// MaxConcurrentTransfers 构造（应用装配在 Start 之前注入运行配置），
+// 之后所有 Job 共用同一实例，使下载并发上限约束整个进程。
+// 调用方必须持有 r.mu。
+func (r *Runner) transferLimiter() *TransferLimiter {
+	if r.transfers == nil {
+		limit := r.MaxConcurrentTransfers
+		if limit < 1 {
+			limit = 1
+		}
+		r.transfers = NewTransferLimiter(limit)
+	}
+	return r.transfers
+}
+
 // execute 运行同步引擎并把终态落库；落库失败只记日志，不改变本轮结果。
 func (r *Runner) execute(ctx context.Context, job Job, remote source.Remote, run *activeRun) {
 	stats, runErr := Run(ctx, RunOptions{
-		Remote:                 remote,
-		Job:                    job,
-		Managed:                r.managed,
-		Items:                  runItemRecorder{repo: r.history},
-		RunID:                  run.runID,
-		MaxConcurrentTransfers: r.MaxConcurrentTransfers,
+		Remote:    remote,
+		Job:       job,
+		Managed:   r.managed,
+		Items:     runItemRecorder{repo: r.history},
+		RunID:     run.runID,
+		Transfers: run.transfers,
 	})
 	finishedAt := r.Now()
 	final := RunRecord{

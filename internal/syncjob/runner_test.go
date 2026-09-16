@@ -277,8 +277,14 @@ func newRunnerEnv(t *testing.T, remote source.Remote) *runnerEnv {
 	return env
 }
 
-// mustJob 创建启用的测试 Job。
+// mustJob 创建启用的测试 Job（默认 LocalRoot）。
 func (e *runnerEnv) mustJob(t *testing.T, name string) Job {
+	t.Helper()
+	return e.mustJobIn(t, name, e.root)
+}
+
+// mustJobIn 创建启用且指定 LocalRoot 的测试 Job。
+func (e *runnerEnv) mustJobIn(t *testing.T, name, localRoot string) Job {
 	t.Helper()
 	id, err := NewID()
 	if err != nil {
@@ -290,7 +296,7 @@ func (e *runnerEnv) mustJob(t *testing.T, name string) Job {
 		Name:       name + "-" + id,
 		SourceID:   "src_a",
 		RemoteRoot: "/",
-		LocalRoot:  e.root,
+		LocalRoot:  localRoot,
 		Mode:       ModeCopy,
 		Enabled:    true,
 		CreatedAt:  now,
@@ -377,6 +383,56 @@ func TestRunnerConcurrency(t *testing.T) {
 	}
 	if env.runner.IsRunning(jobA.ID) || env.runner.IsRunning(jobB.ID) {
 		t.Error("jobs still running after Shutdown")
+	}
+}
+
+// MaxConcurrentTransfers 是全进程上限：多个 Job 并行时，全部下载的
+// 并发峰值不超过共享 TransferLimiter 容量——每个 Job 各持一份限额的
+// 叠加（MaxConcurrentJobs × 上限）必须被排除。
+func TestRunnerTransferLimitIsProcessWide(t *testing.T) {
+	files := map[string]string{}
+	for _, name := range []string{"/a1", "/a2", "/a3", "/a4", "/a5", "/b1", "/b2", "/b3", "/b4", "/b5"} {
+		files[name] = "content-of" + name
+	}
+	probe := &probeRemote{
+		engineRemote: buildRemote(files, nil),
+		delay:        40 * time.Millisecond,
+	}
+	env := newRunnerEnv(t, probe)
+	env.runner.MaxConcurrentJobs = 2
+	env.runner.MaxConcurrentTransfers = 3
+
+	jobA := env.mustJobIn(t, "a", t.TempDir())
+	jobB := env.mustJobIn(t, "b", t.TempDir())
+	ctx := context.Background()
+
+	runA, err := env.runner.Start(ctx, jobA.ID)
+	if err != nil {
+		t.Fatalf("Start A: %v", err)
+	}
+	runB, err := env.runner.Start(ctx, jobB.ID)
+	if err != nil {
+		t.Fatalf("Start B: %v", err)
+	}
+	finalA, err := env.runner.Wait(ctx, runA)
+	if err != nil {
+		t.Fatalf("Wait A: %v", err)
+	}
+	if finalA.State != RunSucceeded {
+		t.Errorf("run A state = %q (%s), want succeeded", finalA.State, finalA.Error)
+	}
+	finalB, err := env.runner.Wait(ctx, runB)
+	if err != nil {
+		t.Fatalf("Wait B: %v", err)
+	}
+	if finalB.State != RunSucceeded {
+		t.Errorf("run B state = %q (%s), want succeeded", finalB.State, finalB.Error)
+	}
+	if probe.maxSeen > 3 {
+		t.Errorf("process-wide concurrent Open peak = %d, want <= 3", probe.maxSeen)
+	}
+	if probe.maxSeen < 2 {
+		t.Errorf("concurrent Open peak = %d, want cross-job overlap observed (>= 2)", probe.maxSeen)
 	}
 }
 

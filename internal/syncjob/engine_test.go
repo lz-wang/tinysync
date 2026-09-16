@@ -60,8 +60,10 @@ type errString struct{ msg string }
 
 func (e *errString) Error() string { return e.msg }
 
-// inMemoryManaged 是 ManagedRepository 的内存实现。
+// inMemoryManaged 是 ManagedRepository 的内存实现；多 Job 并行运行时
+// 会被并发读写（生产路径由 SQLite 串行化），用锁保证测试桩线程安全。
 type inMemoryManaged struct {
+	mu    sync.Mutex
 	files map[string]ManagedFile // key: remotePath（单 Job 测试）
 }
 
@@ -70,6 +72,8 @@ func newInMemoryManaged() *inMemoryManaged {
 }
 
 func (m *inMemoryManaged) ListByJob(ctx context.Context, jobID string) ([]ManagedFile, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	var list []ManagedFile
 	for _, f := range m.files {
 		list = append(list, f)
@@ -79,6 +83,8 @@ func (m *inMemoryManaged) ListByJob(ctx context.Context, jobID string) ([]Manage
 }
 
 func (m *inMemoryManaged) Upsert(ctx context.Context, files []ManagedFile) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	for _, f := range files {
 		f.UpdatedAt = time.Now().UTC()
 		m.files[f.RemotePath] = f
@@ -87,6 +93,8 @@ func (m *inMemoryManaged) Upsert(ctx context.Context, files []ManagedFile) error
 }
 
 func (m *inMemoryManaged) Delete(ctx context.Context, jobID string, remotePaths []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	for _, p := range remotePaths {
 		delete(m.files, p)
 	}
@@ -94,6 +102,8 @@ func (m *inMemoryManaged) Delete(ctx context.Context, jobID string, remotePaths 
 }
 
 func (m *inMemoryManaged) DeleteAllForJob(ctx context.Context, jobID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.files = map[string]ManagedFile{}
 	return nil
 }
@@ -623,7 +633,7 @@ func TestRunTransferFailureItemsAndSafety(t *testing.T) {
 
 	_, err := f.runWith(broken, func(o *RunOptions) {
 		o.Items = items
-		o.MaxConcurrentTransfers = 1
+		o.Transfers = NewTransferLimiter(1)
 	})
 	if err == nil {
 		t.Fatal("Run with transfer failure = nil, want error")
@@ -639,8 +649,8 @@ func TestRunTransferFailureItemsAndSafety(t *testing.T) {
 	}
 }
 
-// 并发上限：全进程同时进行的远端下载不超过 MaxConcurrentTransfers，
-// 全部文件仍传输成功。
+// 并发上限：单轮 Run 同时进行的远端下载不超过注入的 TransferLimiter
+// 容量，全部文件仍传输成功。
 func TestRunTransferConcurrencyCapped(t *testing.T) {
 	f := newEngineFixture(t, ModeCopy)
 	files := map[string]string{}
@@ -652,7 +662,7 @@ func TestRunTransferConcurrencyCapped(t *testing.T) {
 		delay:        40 * time.Millisecond,
 	}
 
-	stats, err := f.runWith(probe, func(o *RunOptions) { o.MaxConcurrentTransfers = 2 })
+	stats, err := f.runWith(probe, func(o *RunOptions) { o.Transfers = NewTransferLimiter(2) })
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
