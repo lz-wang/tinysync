@@ -293,15 +293,22 @@ func TestMigrateFromV1PreservesSources(t *testing.T) {
 	}
 	assertVersion(t, db, embeddedLatestVersion(t))
 
-	// Source 完整保留（含密码明文）。
-	var name, password string
+	// Source 完整保留：密码随 0005 backfill 移入 credentials_json，
+	// legacy password 列清空为 tombstone。
+	var name, password, credsJSON string
 	if err := db.QueryRow(
-		"SELECT name, password FROM sources WHERE id = 'src_a'",
-	).Scan(&name, &password); err != nil {
+		"SELECT name, password, credentials_json FROM sources WHERE id = 'src_a'",
+	).Scan(&name, &password, &credsJSON); err != nil {
 		t.Fatalf("query source after migrate: %v", err)
 	}
-	if name != "nas" || password != "secret" {
-		t.Errorf("source after migrate = (%q, %q), want (nas, secret)", name, password)
+	if name != "nas" {
+		t.Errorf("source name after migrate = %q, want nas", name)
+	}
+	if credsJSON != `{"password":"secret"}` {
+		t.Errorf("credentials_json after migrate = %s, want backfilled secret", credsJSON)
+	}
+	if password != "" {
+		t.Errorf("legacy password after migrate = %q, want cleared", password)
 	}
 
 	// sync_jobs 可创建，且受 FK RESTRICT 保护：被引用的 Source 禁删。
@@ -601,6 +608,103 @@ func TestMigrateV3ToV4BackfillsOnceConsumption(t *testing.T) {
 	assertVersion(t, backupDB, 3)
 	if _, err := backupDB.Query("SELECT once_consumed_for FROM sync_jobs"); err == nil {
 		t.Error("backup should not contain once_consumed_for column")
+	}
+}
+
+// v4 → v5 升级：WebDAV 扁平列一次性 backfill 到 config_json /
+// credentials_json 后清空 legacy 列；匿名 Source 的 credentials_json
+// 保持空对象。migration 一旦发布即不可变接口，0005 的核心价值
+// （存量 WebDAV 无损迁移）必须有专项回归。
+func TestMigrateV4ToV5BackfillsSourceConfigs(t *testing.T) {
+	dataDir := t.TempDir()
+	db, err := Open(dataDir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	// 用真实的 0001-0004 schema 构造 v4 形态的库。
+	v4FS := fstest.MapFS{}
+	for _, name := range []string{
+		"0001_sources.sql", "0002_sync_jobs.sql",
+		"0003_scheduler_history.sql", "0004_once_consumption.sql",
+	} {
+		data, err := fs.ReadFile(migrationFS, "migrations/"+name)
+		if err != nil {
+			t.Fatalf("read embedded %s: %v", name, err)
+		}
+		v4FS["migrations/"+name] = &fstest.MapFile{Data: data}
+	}
+	if err := migrate(ctx, db, dataDir, v4FS); err != nil {
+		t.Fatalf("build v4 database: %v", err)
+	}
+	assertVersion(t, db, 4)
+
+	// 带密码与匿名（含特殊字符密码）两个存量 WebDAV Source。
+	if _, err := db.Exec(`INSERT INTO sources
+		(id, name, type, endpoint, username, password, enabled, created_at, updated_at)
+		VALUES
+		('src_a', 'nas', 'webdav', 'https://example.com/dav/', 'user', 'se"cret''x', 1, 1, 1),
+		('src_anon', 'anon', 'webdav', 'https://anon.example.com/dav/', '', '', 1, 1, 1)`); err != nil {
+		t.Fatalf("insert sources: %v", err)
+	}
+
+	if err := Migrate(ctx, db, dataDir); err != nil {
+		t.Fatalf("Migrate v4->v5: %v", err)
+	}
+	assertVersion(t, db, embeddedLatestVersion(t))
+
+	row := func(id string) (configJSON, credsJSON, endpoint, username, password string) {
+		t.Helper()
+		if err := db.QueryRow(
+			"SELECT config_json, credentials_json, endpoint, username, password FROM sources WHERE id = ?", id,
+		).Scan(&configJSON, &credsJSON, &endpoint, &username, &password); err != nil {
+			t.Fatalf("query source %s: %v", id, err)
+		}
+		return
+	}
+
+	// 带密码行：config / credentials backfill 完整，legacy 列清空。
+	configJSON, credsJSON, endpoint, username, password := row("src_a")
+	if configJSON != `{"endpoint":"https://example.com/dav/","username":"user"}` {
+		t.Errorf("config_json = %s, want backfilled webdav config", configJSON)
+	}
+	if credsJSON != `{"password":"se\"cret'x"}` {
+		t.Errorf("credentials_json = %s, want backfilled password with escaping", credsJSON)
+	}
+	if endpoint != "" || username != "" || password != "" {
+		t.Errorf("legacy columns = %q/%q/%q, want all cleared", endpoint, username, password)
+	}
+
+	// 匿名行：credentials_json 为空对象，不写入空串键。
+	configJSON, credsJSON, endpoint, username, password = row("src_anon")
+	if configJSON != `{"endpoint":"https://anon.example.com/dav/","username":""}` {
+		t.Errorf("anon config_json = %s", configJSON)
+	}
+	if credsJSON != `{}` {
+		t.Errorf("anon credentials_json = %s, want empty object", credsJSON)
+	}
+	if endpoint != "" || username != "" || password != "" {
+		t.Errorf("anon legacy columns = %q/%q/%q, want all cleared", endpoint, username, password)
+	}
+
+	// 升级备份存在且停留在 v4。
+	entries, err := os.ReadDir(filepath.Join(dataDir, backupsDirName))
+	if err != nil {
+		t.Fatalf("read backups dir: %v", err)
+	}
+	if len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), "tinysync-v4-") {
+		t.Fatalf("backup files = %v, want one tinysync-v4-* entry", entries)
+	}
+	backupDB, err := sql.Open("sqlite", filepath.Join(dataDir, backupsDirName, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("open backup: %v", err)
+	}
+	defer backupDB.Close()
+	assertVersion(t, backupDB, 4)
+	if _, err := backupDB.Query("SELECT config_json FROM sources"); err == nil {
+		t.Error("backup should not contain config_json column")
 	}
 }
 

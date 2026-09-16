@@ -73,7 +73,7 @@ func newBasePathRemote(t *testing.T, bs *basePathServer) source.Remote {
 		Config: source.Config{WebDAV: &source.WebDAVConfig{
 			Endpoint: bs.endpoint(),
 		}},
-	}, "")
+	}, source.Credentials{})
 	if err != nil {
 		t.Fatalf("Factory.Create: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestStatRootPreservesTrailingSlash(t *testing.T) {
 		Config: source.Config{WebDAV: &source.WebDAVConfig{
 			Endpoint: ts.server.URL + "/dav/user/",
 		}},
-	}, "")
+	}, source.Credentials{})
 	if err != nil {
 		t.Fatalf("Factory.Create: %v", err)
 	}

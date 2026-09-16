@@ -72,30 +72,30 @@ type Config struct {
 
 // WebDAVConfig 是 WebDAV Source 的非敏感配置。
 type WebDAVConfig struct {
-	Endpoint string
-	Username string
+	Endpoint string `json:"endpoint"`
+	Username string `json:"username"`
 }
 
 // S3Config 是 S3 Source 的非敏感配置。AccessKey 本身不按 secret 处理；
 // Endpoint 为空串表示 AWS 默认 endpoint（自建 S3 / MinIO 填显式值）。
 type S3Config struct {
-	Endpoint  string
-	Region    string
-	Bucket    string
-	Prefix    string
-	PathStyle bool
-	AccessKey string
+	Endpoint  string `json:"endpoint"`
+	Region    string `json:"region"`
+	Bucket    string `json:"bucket"`
+	Prefix    string `json:"prefix"`
+	PathStyle bool   `json:"path_style"`
+	AccessKey string `json:"access_key"`
 }
 
 // SFTPConfig 是 SFTP Source 的非敏感配置。AuthMethod 显式声明认证
 // 方式；HostKeyFingerprint 为 SHA256:... 形式，必须提供。
 type SFTPConfig struct {
-	Host               string
-	Port               int
-	Username           string
-	RemoteRoot         string
-	AuthMethod         SFTPAuthMethod
-	HostKeyFingerprint string
+	Host               string         `json:"host"`
+	Port               int            `json:"port"`
+	Username           string         `json:"username"`
+	RemoteRoot         string         `json:"remote_root"`
+	AuthMethod         SFTPAuthMethod `json:"auth_method"`
+	HostKeyFingerprint string         `json:"host_key_fingerprint"`
 }
 
 // Credentials 是一次写入或构造远端客户端的 secret 集合，按 Type
@@ -130,26 +130,26 @@ type SFTPCredentials struct {
 // CredentialState 是各 secret 是否已设置的布尔集合，协议无关地用于
 // API 回显与 UI 状态展示；按 Type 严格单选，与 Config 对应。
 type CredentialState struct {
-	WebDAV *WebDAVCredentialState
-	S3     *S3CredentialState
-	SFTP   *SFTPCredentialState
+	WebDAV *WebDAVCredentialState `json:"webdav,omitempty"`
+	S3     *S3CredentialState     `json:"s3,omitempty"`
+	SFTP   *SFTPCredentialState   `json:"sftp,omitempty"`
 }
 
 // WebDAVCredentialState 是 WebDAV 的凭据状态。
 type WebDAVCredentialState struct {
-	PasswordSet bool
+	PasswordSet bool `json:"password_set"`
 }
 
 // S3CredentialState 是 S3 的凭据状态。
 type S3CredentialState struct {
-	SecretKeySet bool
+	SecretKeySet bool `json:"secret_key_set"`
 }
 
 // SFTPCredentialState 是 SFTP 的凭据状态。
 type SFTPCredentialState struct {
-	PasswordSet             bool
-	PrivateKeySet           bool
-	PrivateKeyPassphraseSet bool
+	PasswordSet             bool `json:"password_set"`
+	PrivateKeySet           bool `json:"private_key_set"`
+	PrivateKeyPassphraseSet bool `json:"private_key_passphrase_set"`
 }
 
 // idPrefix 是 Source ID 的固定前缀，便于在日志与 API 中一眼识别。

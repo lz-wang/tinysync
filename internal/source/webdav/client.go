@@ -53,9 +53,13 @@ func (f *Factory) Type() source.Type {
 // Create 实现 source.RemoteFactory；匿名访问不发送 Authorization 头。
 // WebDAV 基于 HTTP 无持久会话，ctx 当前仅用于接口一致性（连接建立
 // 无独立网络操作）。
-func (f *Factory) Create(ctx context.Context, s source.Source, password string) (source.Remote, error) {
+func (f *Factory) Create(ctx context.Context, s source.Source, credentials source.Credentials) (source.Remote, error) {
 	if s.Type != source.TypeWebDAV || s.Config.WebDAV == nil {
 		return nil, fmt.Errorf("%w: %q", source.ErrUnsupportedType, s.Type)
+	}
+	password := ""
+	if credentials.WebDAV != nil {
+		password = credentials.WebDAV.Password
 	}
 	cfg := *s.Config.WebDAV
 	endpoint, err := url.Parse(cfg.Endpoint)

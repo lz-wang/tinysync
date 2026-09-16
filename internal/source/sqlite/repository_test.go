@@ -181,8 +181,9 @@ func TestUpdateFieldsAndPassword(t *testing.T) {
 	if !webdavPasswordSet(got) {
 		t.Error("PasswordSet = false after nil-creds update, want true")
 	}
-	if pw, err := repo.GetPassword(ctx, "src_a"); err != nil || pw != "old-secret" {
-		t.Errorf("GetPassword after nil update = %q, %v; want old-secret", pw, err)
+	if creds, err := repo.GetCredentials(ctx, "src_a"); err != nil ||
+		creds.WebDAV.Password != "old-secret" {
+		t.Errorf("GetCredentials after nil update = %+v, %v; want old-secret", creds, err)
 	}
 
 	// 2. password 指向空串：清除密码。
@@ -199,8 +200,8 @@ func TestUpdateFieldsAndPassword(t *testing.T) {
 	if webdavPasswordSet(got) {
 		t.Error("PasswordSet = true after clearing, want false")
 	}
-	if pw, err := repo.GetPassword(ctx, "src_a"); err != nil || pw != "" {
-		t.Errorf("GetPassword after clearing = %q, %v; want empty", pw, err)
+	if creds, err := repo.GetCredentials(ctx, "src_a"); err != nil || creds.WebDAV.Password != "" {
+		t.Errorf("GetCredentials after clearing = %+v, %v; want empty", creds, err)
 	}
 
 	// 3. password 指向新值：替换密码。
@@ -210,8 +211,9 @@ func TestUpdateFieldsAndPassword(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Update (replace password): %v", err)
 	}
-	if pw, err := repo.GetPassword(ctx, "src_a"); err != nil || pw != "new-secret" {
-		t.Errorf("GetPassword after replace = %q, %v; want new-secret", pw, err)
+	if creds, err := repo.GetCredentials(ctx, "src_a"); err != nil ||
+		creds.WebDAV.Password != "new-secret" {
+		t.Errorf("GetCredentials after replace = %+v, %v; want new-secret", creds, err)
 	}
 }
 
@@ -275,8 +277,9 @@ func TestDeleteAndPersistence(t *testing.T) {
 	if !webdavPasswordSet(got) {
 		t.Error("PasswordSet = false after reopen, want true")
 	}
-	if pw, err := repo2.GetPassword(ctx, "src_a"); err != nil || pw != "secret" {
-		t.Errorf("GetPassword after reopen = %q, %v; want secret", pw, err)
+	if creds, err := repo2.GetCredentials(ctx, "src_a"); err != nil ||
+		creds.WebDAV.Password != "secret" {
+		t.Errorf("GetCredentials after reopen = %+v, %v; want secret", creds, err)
 	}
 
 	if err := repo2.Delete(ctx, "src_a"); err != nil {

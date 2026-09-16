@@ -33,7 +33,7 @@ type regStubFactory struct {
 
 func (f *regStubFactory) Type() Type { return f.typ }
 
-func (f *regStubFactory) Create(ctx context.Context, s Source, password string) (Remote, error) {
+func (f *regStubFactory) Create(ctx context.Context, s Source, credentials Credentials) (Remote, error) {
 	f.called++
 	return f.remote, nil
 }
@@ -48,7 +48,7 @@ func TestRegistryDispatch(t *testing.T) {
 	}
 
 	src := Source{Type: TypeWebDAV}
-	remote, err := registry.Create(context.Background(), src, "pw")
+	remote, err := registry.Create(context.Background(), src, Credentials{})
 	if err != nil {
 		t.Fatalf("Create webdav: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestRegistryDispatch(t *testing.T) {
 		t.Fatalf("webdav factory called = %d, want 1", dav.called)
 	}
 
-	_, err = registry.Create(context.Background(), Source{Type: Type("s3")}, "")
+	_, err = registry.Create(context.Background(), Source{Type: Type("s3")}, Credentials{})
 	if !errors.Is(err, ErrUnsupportedType) {
 		t.Fatalf("Create unregistered type = %v, want ErrUnsupportedType", err)
 	}

@@ -131,11 +131,11 @@ func (s *Service) OpenRemote(ctx context.Context, id string) (Source, Remote, er
 	if err != nil {
 		return Source{}, nil, err
 	}
-	password, err := s.repo.GetPassword(ctx, id)
+	creds, err := s.repo.GetCredentials(ctx, id)
 	if err != nil {
 		return Source{}, nil, err
 	}
-	remote, err := s.factory.Create(ctx, src, password)
+	remote, err := s.factory.Create(ctx, src, creds)
 	if err != nil {
 		return Source{}, nil, err
 	}

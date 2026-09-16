@@ -78,7 +78,7 @@ func newRemote(t *testing.T, srv *httptest.Server, username, password string) so
 			Endpoint: srv.URL,
 			Username: username,
 		}},
-	}, password)
+	}, source.Credentials{WebDAV: &source.WebDAVCredentials{Password: password}})
 	if err != nil {
 		t.Fatalf("Factory.Create: %v", err)
 	}
@@ -302,7 +302,7 @@ func TestHTTPSDowngradeRedirectRejected(t *testing.T) {
 // Factory 拒绝不支持的协议类型。
 func TestFactoryUnsupportedType(t *testing.T) {
 	factory := NewFactory()
-	_, err := factory.Create(context.Background(), source.Source{Type: source.Type("s3")}, "")
+	_, err := factory.Create(context.Background(), source.Source{Type: source.Type("s3")}, source.Credentials{})
 	if !errors.Is(err, source.ErrUnsupportedType) {
 		t.Fatalf("Create s3 = %v, want ErrUnsupportedType", err)
 	}

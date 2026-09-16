@@ -27,7 +27,7 @@ type Repository interface {
 	// Delete 硬删除；不存在返回 ErrNotFound。
 	Delete(ctx context.Context, id string) error
 
-	// GetPassword 返回密码明文；不存在返回 ErrNotFound。
-	// v0.5 迁移后由 GetCredentials 取代。
-	GetPassword(ctx context.Context, id string) (string, error)
+	// GetCredentials 返回凭据明文集合；不存在返回 ErrNotFound。
+	// 唯一允许读取 secret 的路径，仅用于构造远端客户端。
+	GetCredentials(ctx context.Context, id string) (Credentials, error)
 }

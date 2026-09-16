@@ -106,7 +106,7 @@ func newLogicalRemote(t *testing.T, srv *httptest.Server, endpointPath string) s
 		Config: source.Config{WebDAV: &source.WebDAVConfig{
 			Endpoint: srv.URL + endpointPath,
 		}},
-	}, "")
+	}, source.Credentials{})
 	if err != nil {
 		t.Fatalf("Factory.Create: %v", err)
 	}

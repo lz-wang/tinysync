@@ -38,10 +38,10 @@ func (r *RemoteRegistry) Type() Type {
 
 // Create 实现 RemoteFactory：按 Source 类型 dispatch；未注册的类型
 // 返回 ErrUnsupportedType。
-func (r *RemoteRegistry) Create(ctx context.Context, s Source, password string) (Remote, error) {
+func (r *RemoteRegistry) Create(ctx context.Context, s Source, credentials Credentials) (Remote, error) {
 	f, ok := r.factories[s.Type]
 	if !ok {
 		return nil, fmt.Errorf("%w: %q", ErrUnsupportedType, s.Type)
 	}
-	return f.Create(ctx, s, password)
+	return f.Create(ctx, s, credentials)
 }

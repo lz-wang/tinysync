@@ -51,9 +51,9 @@ func (f *stubFactory) Type() source.Type {
 	return source.TypeWebDAV
 }
 
-func (f *stubFactory) Create(ctx context.Context, s source.Source, password string) (source.Remote, error) {
+func (f *stubFactory) Create(ctx context.Context, s source.Source, credentials source.Credentials) (source.Remote, error) {
 	f.lastSource = s
-	f.lastPassword = password
+	f.lastPassword = credentials.WebDAV.Password
 	return f.remote, nil
 }
 
