@@ -191,9 +191,13 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 	r.occupancy[jobID] = occupantRun
 	r.mu.Unlock()
 	// 校验失败路径统一由此释放；run 发布成功后改由运行 goroutine 接管。
+	// remoteCtx 覆盖 Remote 创建与整个运行期：runCtx 是其子 context，
+	// 运行取消 / Shutdown 经传播链关闭有连接生命周期的 Remote（SFTP）。
+	remoteCtx, remoteCancel := context.WithCancel(context.Background())
 	starting := true
 	defer func() {
 		if starting {
+			remoteCancel()
 			r.releaseOccupancy(jobID)
 		}
 	}()
@@ -205,10 +209,7 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 	if !job.Enabled {
 		return "", fmt.Errorf("%w: %s", ErrJobDisabled, jobID)
 	}
-	// Enabled 检查在读配置链路完成，禁用 Source 不产生到远端的拨号；
-	// Remote 创建（凭据查询与协议 dispatch 均在 service 内）在 runCtx
-	// 发布之前，用独立 background context：运行取消语义由运行
-	// goroutine 的 runCtx 承担。
+	// Enabled 检查在读配置链路完成，禁用 Source 不产生到远端的拨号。
 	src, err := r.sources.Get(ctx, job.SourceID)
 	if err != nil {
 		return "", err
@@ -216,7 +217,10 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 	if !src.Enabled {
 		return "", fmt.Errorf("%w: %s", ErrSourceDisabled, job.SourceID)
 	}
-	_, remote, err := r.sources.OpenRemote(context.Background(), job.SourceID)
+	// Remote 创建（凭据查询与协议 dispatch 均在 service 内）挂到
+	// remoteCtx：有连接生命周期的协议在创建阶段即可被取消；runCtx
+	// 发布后作为其子 context，取消语义覆盖整个运行期。
+	_, remote, err := r.sources.OpenRemote(remoteCtx, job.SourceID)
 	if err != nil {
 		return "", fmt.Errorf("create remote for job %s: %w", jobID, err)
 	}
@@ -242,7 +246,7 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 	now := r.Now()
 	// cancel 先于发布创建：active 一旦可见，Shutdown 就一定能取到
 	// 取消函数，不存在 cancel 尚为 nil 的生命周期窗口。
-	runCtx, cancel := context.WithCancel(context.Background())
+	runCtx, cancel := context.WithCancel(remoteCtx)
 	run := &activeRun{
 		runID:        runID,
 		jobID:        jobID,
@@ -287,14 +291,18 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 		r.mu.Unlock()
 		r.wg.Done()
 		cancel()
+		remoteCancel()
 		return "", fmt.Errorf("persist run %s: %w", runID, err)
 	}
 
 	go func() {
 		defer r.wg.Done()
-		// 运行结束释放 Remote 连接（有连接生命周期的协议如 SFTP
-		// 不遗留会话）；关闭失败不影响本轮终态。
-		defer func() { _ = remote.Close() }()
+		// 运行结束释放 Remote 连接并收链（有连接生命周期的协议如
+		// SFTP 不遗留会话）；关闭失败不影响本轮终态。
+		defer func() {
+			_ = remote.Close()
+			remoteCancel()
+		}()
 		defer func() {
 			r.mu.Lock()
 			delete(r.active, jobID)

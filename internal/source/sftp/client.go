@@ -80,11 +80,34 @@ func (f *Factory) Create(ctx context.Context, s source.Source, credentials sourc
 		_ = client.Close()
 		return nil, fmt.Errorf("sftp open session on %s: %w", addr, err)
 	}
-	return &remote{
+
+	// RealPath 解析服务器侧真实 root：配置路径可能经 symlink / 挂载
+	// 呈现，root confinement 以解析后的真实路径为基准。
+	root, err := sftpClient.RealPath(path.Clean(cfg.RemoteRoot))
+	if err != nil {
+		_ = client.Close()
+		return nil, fmt.Errorf("resolve sftp remote root %s: %w", cfg.RemoteRoot, err)
+	}
+	if !path.IsAbs(root) {
+		_ = client.Close()
+		return nil, fmt.Errorf("%w: sftp remote root %s resolved to non-absolute %s", source.ErrInvalid, cfg.RemoteRoot, root)
+	}
+
+	r := &remote{
 		ssh:  client,
 		sftp: sftpClient,
-		root: path.Clean(cfg.RemoteRoot),
-	}, nil
+		root: root,
+	}
+	// ctx 取消（运行取消 / Shutdown）关闭 SSH 连接：阻塞中的 SFTP
+	// 读取随连接关闭立即退出。ctx 为 background（Done 返回 nil）时
+	// 不起 goroutine，避免泄漏。
+	if ctx.Done() != nil {
+		go func() {
+			<-ctx.Done()
+			_ = r.Close()
+		}()
+	}
+	return r, nil
 }
 
 // authMethod 按 auth_method 显式构造认证；不根据字段非空隐式推断。
@@ -131,6 +154,9 @@ func fingerprintCallback(expected string) ssh.HostKeyCallback {
 // dial 建立 SSH 连接：TCP dial 与握手分别限时，ctx 取消立即中断
 // （阻塞中的 dial / 握手随 runCtx 取消退出）。
 func dial(ctx context.Context, addr string, config *ssh.ClientConfig) (*ssh.Client, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	d := net.Dialer{Timeout: dialTimeout}
 	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
@@ -141,6 +167,17 @@ func dial(ctx context.Context, addr string, config *ssh.ClientConfig) (*ssh.Clie
 	} else if handshakeTimeout > 0 {
 		_ = conn.SetDeadline(time.Now().Add(handshakeTimeout))
 	}
+	// 握手阻塞期间 ctx 取消直接关闭连接（SetDeadline 只能覆盖
+	// 带 deadline 的取消）。
+	handshakeDone := make(chan struct{})
+	defer close(handshakeDone)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-handshakeDone:
+		}
+	}()
 	sshConn, chans, reqs, err := ssh.NewClientConn(conn, addr, config)
 	if err != nil {
 		_ = conn.Close()
@@ -163,13 +200,19 @@ type remote struct {
 var _ source.Remote = (*remote)(nil)
 
 // remoteAbs 把 Source-relative logical path 映射为远端绝对路径
-// （全部 path 语义，不用 filepath）。
-func (r *remote) remoteAbs(logicalPath string) string {
+// （全部 path 语义，不用 filepath），并双重防御 root escape：
+// logical path 经 ValidateLogicalPath 保证 clean，映射结果仍显式
+// 验证落在解析后的真实 root 之内。
+func (r *remote) remoteAbs(logicalPath string) (string, error) {
 	cleaned := path.Clean(logicalPath)
-	if cleaned == "/" {
-		return r.root
+	abs := r.root
+	if cleaned != "/" {
+		abs = r.root + cleaned
 	}
-	return r.root + cleaned
+	if abs != r.root && !strings.HasPrefix(abs, r.root+"/") {
+		return "", fmt.Errorf("%w: sftp path %q escapes remote root %q", source.ErrInvalid, logicalPath, r.root)
+	}
+	return abs, nil
 }
 
 // toLogical 把远端条目名转为 Source-relative logical path 并统一过
@@ -190,7 +233,11 @@ func (r *remote) Stat(ctx context.Context, logicalPath string) (source.FileInfo,
 	if err := ctx.Err(); err != nil {
 		return source.FileInfo{}, err
 	}
-	info, err := r.sftp.Lstat(r.remoteAbs(logicalPath))
+	abs, err := r.remoteAbs(logicalPath)
+	if err != nil {
+		return source.FileInfo{}, err
+	}
+	info, err := r.sftp.Lstat(abs)
 	if err != nil {
 		return source.FileInfo{}, wrapOp("stat", logicalPath, err)
 	}
@@ -204,7 +251,11 @@ func (r *remote) List(ctx context.Context, logicalDir string) ([]source.FileInfo
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	entries, err := r.sftp.ReadDir(r.remoteAbs(logicalDir))
+	abs, err := r.remoteAbs(logicalDir)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := r.sftp.ReadDir(abs)
 	if err != nil {
 		return nil, wrapOp("list", logicalDir, err)
 	}
@@ -244,7 +295,11 @@ func (r *remote) Open(ctx context.Context, logicalPath string) (io.ReadCloser, e
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	f, err := r.sftp.Open(r.remoteAbs(logicalPath))
+	abs, err := r.remoteAbs(logicalPath)
+	if err != nil {
+		return nil, err
+	}
+	f, err := r.sftp.Open(abs)
 	if err != nil {
 		return nil, wrapOp("open", logicalPath, err)
 	}
