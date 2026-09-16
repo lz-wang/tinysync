@@ -100,7 +100,7 @@ func startLogicalServer(t *testing.T, fs xnetdav.FileSystem, mountPrefix string)
 func newLogicalRemote(t *testing.T, srv *httptest.Server, endpointPath string) source.Remote {
 	t.Helper()
 	factory := NewFactory()
-	r, err := factory.Create(source.Source{
+	r, err := factory.Create(context.Background(), source.Source{
 		Name:     "test",
 		Type:     source.TypeWebDAV,
 		Endpoint: srv.URL + endpointPath,

@@ -37,12 +37,16 @@ func (b *blockingRemote) Open(ctx context.Context, path string) (io.ReadCloser, 
 	return nil, nil
 }
 
+func (b *blockingRemote) Close() error {
+	return nil
+}
+
 // stubFactory 是 source.RemoteFactory 的桩：返回构造时给定的 Remote。
 type stubFactory struct {
 	remote source.Remote
 }
 
-func (f stubFactory) Create(s source.Source, password string) (source.Remote, error) {
+func (f stubFactory) Create(ctx context.Context, s source.Source, password string) (source.Remote, error) {
 	return f.remote, nil
 }
 
@@ -354,6 +358,51 @@ func (e *runnerEnv) mustJobIn(t *testing.T, name, localRoot string) Job {
 		t.Fatalf("create job: %v", err)
 	}
 	return job
+}
+
+// closeTrackingRemote 包装 engineRemote 并记录 Close 调用次数。
+type closeTrackingRemote struct {
+	*engineRemote
+	mu    sync.Mutex
+	times int
+}
+
+func (c *closeTrackingRemote) Close() error {
+	c.mu.Lock()
+	c.times++
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *closeTrackingRemote) closeCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.times
+}
+
+// 运行结束后 Remote 必须被释放：有连接生命周期的协议（如 SFTP）
+// 不遗留会话。
+func TestRunnerClosesRemoteAfterRun(t *testing.T) {
+	remote := &closeTrackingRemote{
+		engineRemote: buildRemote(map[string]string{"/a.txt": "v1"}, nil),
+	}
+	env := newRunnerEnv(t, remote)
+	job := env.mustJob(t, "sync")
+
+	runID, err := env.runner.Start(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	status, err := env.runner.Wait(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if status.State != RunSucceeded {
+		t.Fatalf("run state = %s, want succeeded", status.State)
+	}
+	if n := remote.closeCount(); n != 1 {
+		t.Fatalf("remote close count = %d, want 1", n)
+	}
 }
 
 // 手动运行完成：状态推进到 succeeded，统计与本地文件正确。

@@ -36,11 +36,15 @@ type Remote interface {
 	Stat(ctx context.Context, path string) (FileInfo, error)
 	List(ctx context.Context, path string) ([]FileInfo, error)
 	Open(ctx context.Context, path string) (io.ReadCloser, error)
+	// Close 释放 Remote 持有的连接与会话。无持久会话的协议（如
+	// WebDAV）为显式空操作；有连接生命周期的协议（如 SFTP）必须
+	// 关闭底层连接，使阻塞中的读取随 ctx 取消或 Close 退出。
+	Close() error
 }
 
 // RemoteFactory 按 Source 配置构造远端客户端。
 type RemoteFactory interface {
-	// Create 用 Source 配置与密码明文构造 Remote；
-	// 协议类型不支持时返回 ErrUnsupportedType。
-	Create(s Source, password string) (Remote, error)
+	// Create 用 Source 配置与密码明文构造 Remote；ctx 用于可取消的
+	// 连接建立（如 SFTP dial）。协议类型不支持时返回 ErrUnsupportedType。
+	Create(ctx context.Context, s Source, password string) (Remote, error)
 }

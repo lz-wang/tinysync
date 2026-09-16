@@ -1,6 +1,7 @@
 package webdav
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -66,7 +67,7 @@ func (bs *basePathServer) endpoint() string {
 // newBasePathRemote 构造指向带前缀 endpoint 的 Remote。
 func newBasePathRemote(t *testing.T, bs *basePathServer) source.Remote {
 	factory := NewFactory()
-	r, err := factory.Create(source.Source{
+	r, err := factory.Create(context.Background(), source.Source{
 		Name:     "test",
 		Type:     source.TypeWebDAV,
 		Endpoint: bs.endpoint(),
@@ -216,7 +217,7 @@ func (ts *trailingSlashServer) paths() []string {
 func TestStatRootPreservesTrailingSlash(t *testing.T) {
 	ts := newTrailingSlashServer(t)
 	factory := NewFactory()
-	r, err := factory.Create(source.Source{
+	r, err := factory.Create(context.Background(), source.Source{
 		Name:     "test",
 		Type:     source.TypeWebDAV,
 		Endpoint: ts.server.URL + "/dav/user/",

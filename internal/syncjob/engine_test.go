@@ -58,6 +58,10 @@ func (e *engineRemote) Open(ctx context.Context, path string) (io.ReadCloser, er
 	return nil, errorsNew("no such remote file " + path)
 }
 
+func (e *engineRemote) Close() error {
+	return nil
+}
+
 // errorsNew 是 errors.New 的短别名，保持测试表格紧凑。
 func errorsNew(msg string) error { return &errString{msg} }
 

@@ -36,6 +36,10 @@ func (b *gateRemote) Open(ctx context.Context, path string) (io.ReadCloser, erro
 	return nil, nil
 }
 
+func (b *gateRemote) Close() error {
+	return nil
+}
+
 // staticCreds / staticFactory 提供固定的 Source 与远端。
 type staticCreds struct{}
 
@@ -49,7 +53,7 @@ func (staticCreds) GetPassword(ctx context.Context, id string) (string, error) {
 
 type staticFactory struct{ remote source.Remote }
 
-func (f staticFactory) Create(s source.Source, password string) (source.Remote, error) {
+func (f staticFactory) Create(ctx context.Context, s source.Source, password string) (source.Remote, error) {
 	return f.remote, nil
 }
 

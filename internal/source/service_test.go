@@ -36,6 +36,10 @@ func (r *stubRemote) Open(ctx context.Context, path string) (io.ReadCloser, erro
 	return nil, errors.New("not implemented")
 }
 
+func (r *stubRemote) Close() error {
+	return nil
+}
+
 // stubFactory 返回预设 Remote 并记录最近一次构造参数。
 type stubFactory struct {
 	remote       source.Remote
@@ -43,7 +47,7 @@ type stubFactory struct {
 	lastPassword string
 }
 
-func (f *stubFactory) Create(s source.Source, password string) (source.Remote, error) {
+func (f *stubFactory) Create(ctx context.Context, s source.Source, password string) (source.Remote, error) {
 	f.lastSource = s
 	f.lastPassword = password
 	return f.remote, nil

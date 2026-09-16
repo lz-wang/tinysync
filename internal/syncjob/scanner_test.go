@@ -97,6 +97,10 @@ func (f *fakeRemote) Open(ctx context.Context, path string) (io.ReadCloser, erro
 	return nil, errors.New("not implemented")
 }
 
+func (f *fakeRemote) Close() error {
+	return nil
+}
+
 // 递归扫描返回子树内全部文件（不含目录），嵌套层级完整。
 func TestScanRemoteRecursive(t *testing.T) {
 	remote := &fakeRemote{entries: map[string][]source.FileInfo{

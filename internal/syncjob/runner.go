@@ -215,7 +215,10 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 	if err != nil {
 		return "", err
 	}
-	remote, err := r.factory.Create(src, password)
+	// Remote 创建在 runCtx 发布之前，用独立 background context：运行
+	// 取消语义由运行 goroutine 的 runCtx 承担；v0.5 将把创建收回到
+	// SourceService.OpenRemote(runCtx)，使连接建立阶段同样可取消。
+	remote, err := r.factory.Create(context.Background(), src, password)
 	if err != nil {
 		return "", fmt.Errorf("create remote for job %s: %w", jobID, err)
 	}
@@ -291,6 +294,9 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 
 	go func() {
 		defer r.wg.Done()
+		// 运行结束释放 Remote 连接（有连接生命周期的协议如 SFTP
+		// 不遗留会话）；关闭失败不影响本轮终态。
+		defer func() { _ = remote.Close() }()
 		defer func() {
 			r.mu.Lock()
 			delete(r.active, jobID)

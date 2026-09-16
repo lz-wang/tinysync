@@ -41,6 +41,10 @@ func (r fakeJobRemote) Open(ctx context.Context, path string) (io.ReadCloser, er
 	return nil, errors.New("not implemented")
 }
 
+func (r fakeJobRemote) Close() error {
+	return nil
+}
+
 // gateRemote 的 List 阻塞在 gate 上，用于构造确定性的「运行中」窗口；
 // 释放后按预设返回结果。
 type gateRemote struct {
@@ -63,6 +67,10 @@ func (r *gateRemote) List(ctx context.Context, path string) ([]source.FileInfo, 
 
 func (r *gateRemote) Open(ctx context.Context, path string) (io.ReadCloser, error) {
 	return nil, errors.New("not implemented")
+}
+
+func (r *gateRemote) Close() error {
+	return nil
 }
 
 // newJobRouter 构造挂载真实 Source + Job 服务与 Runner 的路由，
@@ -515,6 +523,10 @@ func (r *contentRemote) Open(ctx context.Context, path string) (io.ReadCloser, e
 		return nil, errors.New("no such remote file " + path)
 	}
 	return io.NopCloser(strings.NewReader(c)), nil
+}
+
+func (r *contentRemote) Close() error {
+	return nil
 }
 
 // createJobWithSchedule 经 API 创建带 schedule 的 Job 并返回 ID 与响应体。

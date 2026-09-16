@@ -46,7 +46,9 @@ func NewFactory() *Factory {
 }
 
 // Create 实现 source.RemoteFactory；匿名访问不发送 Authorization 头。
-func (f *Factory) Create(s source.Source, password string) (source.Remote, error) {
+// WebDAV 基于 HTTP 无持久会话，ctx 当前仅用于接口一致性（连接建立
+// 无独立网络操作）。
+func (f *Factory) Create(ctx context.Context, s source.Source, password string) (source.Remote, error) {
 	if s.Type != source.TypeWebDAV {
 		return nil, fmt.Errorf("%w: %q", source.ErrUnsupportedType, s.Type)
 	}
@@ -176,6 +178,12 @@ func (r *remote) Open(ctx context.Context, path string) (io.ReadCloser, error) {
 		return nil, wrapOp("open", path, err)
 	}
 	return rc, nil
+}
+
+// Close 实现 source.Remote：WebDAV 基于 HTTP、无持久会话，
+// 连接复用由 http.Transport 管理，显式关闭为空操作。
+func (r *remote) Close() error {
+	return nil
 }
 
 // hrefToLogical 把服务器 href 的 decoded path 转换为 Source-relative

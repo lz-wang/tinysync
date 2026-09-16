@@ -140,7 +140,8 @@ func (s *Service) GetPassword(ctx context.Context, id string) (string, error) {
 
 // TestConnection 真正连接远端验证配置：对根路径执行 Stat（WebDAV 为
 // PROPFIND）。连接失败返回 OK=false 的结果与 nil 错误；Source 不存在
-// 或存储故障才返回错误。
+// 或存储故障才返回错误。Remote 的创建与探测共用同一超时窗口，结束后
+// 始终释放连接（有连接生命周期的协议不遗留会话）。
 func (s *Service) TestConnection(ctx context.Context, id string) (TestResult, error) {
 	src, err := s.repo.Get(ctx, id)
 	if err != nil {
@@ -150,14 +151,16 @@ func (s *Service) TestConnection(ctx context.Context, id string) (TestResult, er
 	if err != nil {
 		return TestResult{}, err
 	}
-	remote, err := s.factory.Create(src, password)
-	if err != nil {
-		return TestResult{}, err
-	}
 
 	start := s.Now()
 	testCtx, cancel := context.WithTimeout(ctx, testTimeout)
 	defer cancel()
+	remote, err := s.factory.Create(testCtx, src, password)
+	if err != nil {
+		return TestResult{}, err
+	}
+	// 关闭失败不影响测试结论；探测结果只由 Stat 决定。
+	defer func() { _ = remote.Close() }()
 	_, statErr := remote.Stat(testCtx, "/")
 	latency := s.Now().Sub(start).Milliseconds()
 	if statErr != nil {

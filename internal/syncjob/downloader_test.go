@@ -39,6 +39,10 @@ func (d *downloadRemote) Open(ctx context.Context, path string) (io.ReadCloser, 
 	return nil, fmt.Errorf("no such remote file %s", path)
 }
 
+func (d *downloadRemote) Close() error {
+	return nil
+}
+
 // errReader 读取到第 n 字节后报错，模拟传输中途断开。
 type errReader struct {
 	data   []byte

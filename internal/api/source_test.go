@@ -37,12 +37,16 @@ func (r fakeRemote) Open(ctx context.Context, path string) (io.ReadCloser, error
 	return nil, errors.New("not implemented")
 }
 
+func (r fakeRemote) Close() error {
+	return nil
+}
+
 // fakeFactory 返回预设 Remote。
 type fakeFactory struct {
 	remote source.Remote
 }
 
-func (f fakeFactory) Create(s source.Source, password string) (source.Remote, error) {
+func (f fakeFactory) Create(ctx context.Context, s source.Source, password string) (source.Remote, error) {
 	return f.remote, nil
 }
 
