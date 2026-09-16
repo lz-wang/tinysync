@@ -15,7 +15,7 @@ import (
 	"tinysync/internal/source"
 )
 
-// fakeS3 是 s3API 的内存实现：对象按 key 存储，List 按公共前缀模拟
+// fakeS3 是 API 的内存实现：对象按 key 存储，List 按公共前缀模拟
 // Delimiter 语义与分页。
 type fakeS3 struct {
 	objects map[string]fakeObject
@@ -177,8 +177,8 @@ func (e *notFoundErr) ErrorCode() string { return "NoSuchKey" }
 func (e *notFoundErr) HTTPStatusCode() int { return 404 }
 
 // newTestRemote 构造带 prefix 的测试 Remote。
-func newTestRemote(client s3API, prefix string) source.Remote {
-	return &remote{client: client, bucket: "backup", prefix: normalizePrefix(prefix)}
+func newTestRemote(client API, prefix string) source.Remote {
+	return NewRemoteWithAPI(client, "backup", prefix)
 }
 
 // List 按 prefix/Delimiter 合成一层文件与目录；marker 是目录不是文件。

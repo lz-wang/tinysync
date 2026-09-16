@@ -63,6 +63,7 @@ func (f *Factory) Create(ctx context.Context, s source.Source, credentials sourc
 	}, nil
 }
 
+
 // staticCredentialsProvider 提供 fixed 凭据集合。
 type staticCredentialsProvider struct {
 	creds aws.Credentials
@@ -82,21 +83,22 @@ func normalizePrefix(prefix string) string {
 	return prefix
 }
 
-// s3API 是 adapter 依赖的最小 S3 能力面；*s3.Client 天然实现，
-// 测试注入 fake（分页由 adapter 用 ContinuationToken 驱动，不依赖
-// paginator 具体类型）。
-type s3API interface {
+// API 是 adapter 依赖的最小 S3 能力面；*s3.Client 天然实现。分页由
+// adapter 以 ContinuationToken 驱动，不依赖 paginator 具体类型。
+// 导出供 e2e 协议矩阵注入进程内协议模拟（真实 S3 服务由 integration
+// gate 验证）。
+type API interface {
 	ListObjectsV2(ctx context.Context, params *s3.ListObjectsV2Input, optFns ...func(*s3.Options)) (*s3.ListObjectsV2Output, error)
 	HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
 	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
 }
 
 // 编译期断言：SDK client 满足能力面。
-var _ s3API = (*s3.Client)(nil)
+var _ API = (*s3.Client)(nil)
 
 // remote 是 source.Remote 的 S3 实现。
 type remote struct {
-	client s3API
+	client API
 	bucket string
 	// prefix 是 Source root 在 bucket 内的子前缀（空或以 / 结尾）。
 	prefix string
@@ -104,6 +106,12 @@ type remote struct {
 
 // 编译期断言。
 var _ source.Remote = (*remote)(nil)
+
+// NewRemoteWithAPI 用给定能力面构造 Remote：e2e 协议矩阵经它注入
+// 进程内 S3 协议模拟；生产路径经 Factory.Create 构造真实 SDK client。
+func NewRemoteWithAPI(api API, bucket, prefix string) source.Remote {
+	return &remote{client: api, bucket: bucket, prefix: normalizePrefix(prefix)}
+}
 
 // objectKey 把 Source-relative logical path 转为 bucket 内 object key。
 // 调用方保证 logicalPath 非 root。
