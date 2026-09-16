@@ -125,8 +125,8 @@ func TestIntegrationS3(t *testing.T) {
 	creds := source.Credentials{S3: &source.S3Credentials{SecretKey: secretKey}}
 
 	runCommonSyncScenario(t, matrixRemote{
-		name: "s3-real",
-		put:  write,
+		name:   "s3-real",
+		put:    write,
 		remove: remove,
 		openRemote: func() (source.Remote, error) {
 			return factory.Create(context.Background(), src, creds)

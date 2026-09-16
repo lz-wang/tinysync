@@ -16,13 +16,13 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/pkg/sftp"
-	xnetdav "golang.org/x/net/webdav"
 	"golang.org/x/crypto/ssh"
+	xnetdav "golang.org/x/net/webdav"
 
 	"tinysync/internal/source"
 	s3adapter "tinysync/internal/source/s3"
-	sourcesqlite "tinysync/internal/source/sqlite"
 	sftpadapter "tinysync/internal/source/sftp"
+	sourcesqlite "tinysync/internal/source/sqlite"
 	"tinysync/internal/source/webdav"
 	"tinysync/internal/syncjob"
 	jobsqlite "tinysync/internal/syncjob/sqlite"
@@ -191,7 +191,8 @@ func (f *s3Fixture) GetObject(ctx context.Context, params *s3.GetObjectInput, op
 
 type matrixNotFound struct{}
 
-func (e *matrixNotFound) Error() string       { return "NoSuchKey" }
+func (e *matrixNotFound) Error() string { return "NoSuchKey" }
+
 func (e *matrixNotFound) HTTPStatusCode() int { return 404 }
 
 func newS3Fixture(t *testing.T) matrixRemote {

@@ -21,6 +21,8 @@ GitHub Release 摘要一致。
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-16
+
 ### 新增
 
 - Source 支持多协议：在 WebDAV 之外新增 S3 与 SFTP 只读 Source，

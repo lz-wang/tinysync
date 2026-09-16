@@ -63,7 +63,6 @@ func (f *Factory) Create(ctx context.Context, s source.Source, credentials sourc
 	}, nil
 }
 
-
 // staticCredentialsProvider 提供 fixed 凭据集合。
 type staticCredentialsProvider struct {
 	creds aws.Credentials
