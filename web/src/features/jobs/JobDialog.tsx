@@ -47,7 +47,8 @@ function textToPatterns(text: string): string[] {
         .filter(line => line !== '')
 }
 
-// toDatetimeLocal 把 RFC3339 时间转为 datetime-local 输入值（本地时区）。
+// toDatetimeLocal 把 RFC3339 时间转为 datetime-local 输入值（本地
+// 时区，保留秒）：打开编辑器不丢秒精度，未改动保存不改变触发时刻。
 function toDatetimeLocal(value?: string): string {
     if (value === undefined || value === '') {
         return ''
@@ -57,7 +58,33 @@ function toDatetimeLocal(value?: string): string {
         return ''
     }
     const pad = (n: number): string => String(n).padStart(2, '0')
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+// scheduleEquals 比较两个调度配置的用户语义：once 比较绝对时刻
+//（毫秒精度表示差异如 …00Z 与 …00.000Z 不算变化），interval / cron
+// 比较配置值。仅语义变化时才在 PATCH 中携带 schedule，避免无意义
+// 的调度更新（interval 相位会随语义变更重置）。
+function scheduleEquals(a: ScheduleSpec, b: ScheduleSpec): boolean {
+    if (a.type !== b.type) {
+        return false
+    }
+    switch (a.type) {
+        case 'once': {
+            const ta = new Date(a.at ?? '').getTime()
+            const tb = new Date(b.at ?? '').getTime()
+            return ta === tb
+        }
+        case 'interval':
+            return (a.every ?? '') === (b.every ?? '')
+        case 'cron':
+            return (
+                (a.expression ?? '') === (b.expression ?? '') &&
+                (a.timezone ?? '') === (b.timezone ?? '')
+            )
+        default:
+            return true
+    }
 }
 
 // JobDialog 创建 / 编辑 Sync Job：Source、Root、Mode、Selector 与
@@ -192,7 +219,7 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
             if (enabled !== job.enabled) {
                 patch.enabled = enabled
             }
-            if (JSON.stringify(schedule) !== JSON.stringify(job.schedule)) {
+            if (!scheduleEquals(schedule, job.schedule)) {
                 patch.schedule = schedule
             }
             const updated = await updateJob(job.id, patch)
@@ -296,6 +323,7 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
                         <TextField
                             label="Run At"
                             type="datetime-local"
+                            slotProps={{ input: { inputProps: { step: 1 } } }}
                             value={onceAt}
                             onChange={e => setOnceAt(e.target.value)}
                             helperText="Missed runs execute once when the service is back"
