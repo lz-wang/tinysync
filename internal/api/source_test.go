@@ -96,14 +96,20 @@ func decodeJSON(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 	return body
 }
 
-// assertNoPassword 断言响应不含密码明文，也没有 password 明文字段。
-func assertNoPassword(t *testing.T, rec *httptest.ResponseRecorder) {
+// assertNoSecret 断言响应不含 secret 明文，也没有 credentials 明文字段：
+// 凭据状态只允许以 credential_state 布尔回显。
+func assertNoSecret(t *testing.T, rec *httptest.ResponseRecorder) {
 	t.Helper()
-	if strings.Contains(rec.Body.String(), "SUPER_SECRET") {
-		t.Errorf("response leaks password: %s", rec.Body.String())
+	for _, secret := range []string{"SUPER_SECRET", "NEW_SECRET", "TOP_SECRET_KEY", "PRIVATE_KEY_BODY"} {
+		if strings.Contains(rec.Body.String(), secret) {
+			t.Errorf("response leaks secret: %s", rec.Body.String())
+		}
 	}
 	var body map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err == nil {
+		if _, has := body["credentials"]; has {
+			t.Errorf("response has credentials field: %s", rec.Body.String())
+		}
 		if _, has := body["password"]; has {
 			t.Errorf("response has password field: %s", rec.Body.String())
 		}
@@ -111,7 +117,7 @@ func assertNoPassword(t *testing.T, rec *httptest.ResponseRecorder) {
 }
 
 // 完整生命周期：创建（含密码）→ 读取 → 列表 → 更新 → 删除，
-// 全程密码明文不出现在任何响应中。
+// 全程 secret 明文不出现在任何响应中。
 func TestSourceLifecycleAPI(t *testing.T) {
 	router := newSourceRouter(t, fakeRemote{})
 
@@ -119,22 +125,27 @@ func TestSourceLifecycleAPI(t *testing.T) {
 	rec := doJSON(t, router, "POST", "/api/v1/sources", `{
 		"name": "NAS WebDAV",
 		"type": "webdav",
-		"endpoint": "https://dav.example.com/files",
-		"username": "user",
-		"password": "SUPER_SECRET",
+		"config": {"endpoint": "https://dav.example.com/files", "username": "user"},
+		"credentials": {"password": "SUPER_SECRET"},
 		"enabled": true
 	}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("POST status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	assertNoPassword(t, rec)
+	assertNoSecret(t, rec)
 	created := decodeJSON(t, rec)
 	id, _ := created["id"].(string)
 	if id == "" {
 		t.Fatalf("created source has no id: %s", rec.Body.String())
 	}
-	if created["password_set"] != true {
-		t.Errorf("password_set = %v, want true", created["password_set"])
+	state, _ := created["credential_state"].(map[string]any)
+	davState, _ := state["webdav"].(map[string]any)
+	if davState == nil || davState["password_set"] != true {
+		t.Errorf("credential_state = %v, want webdav password_set true", created["credential_state"])
+	}
+	config, _ := created["config"].(map[string]any)
+	if config["endpoint"] != "https://dav.example.com/files" {
+		t.Errorf("config = %v, want endpoint echo", config)
 	}
 	if created["created_at"] == "" || created["updated_at"] == "" {
 		t.Errorf("missing timestamps: %s", rec.Body.String())
@@ -145,41 +156,46 @@ func TestSourceLifecycleAPI(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET status = %d", rec.Code)
 	}
-	assertNoPassword(t, rec)
+	assertNoSecret(t, rec)
 
 	// GET 列表。
 	rec = doJSON(t, router, "GET", "/api/v1/sources", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET list status = %d", rec.Code)
 	}
-	assertNoPassword(t, rec)
+	assertNoSecret(t, rec)
 	list := decodeJSON(t, rec)
 	sources, _ := list["sources"].([]any)
 	if len(sources) != 1 {
 		t.Fatalf("list length = %d, want 1", len(sources))
 	}
 
-	// PATCH：改名并替换密码。
+	// PATCH：改名并替换密码（credentials 三态：非空替换）。
 	rec = doJSON(t, router, "PATCH", "/api/v1/sources/"+id,
-		`{"name": "Renamed", "password": "NEW_SECRET"}`)
+		`{"name": "Renamed", "credentials": {"password": "NEW_SECRET"}}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PATCH status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	assertNoPassword(t, rec)
+	assertNoSecret(t, rec)
 	updated := decodeJSON(t, rec)
 	if updated["name"] != "Renamed" {
 		t.Errorf("patched name = %v, want Renamed", updated["name"])
 	}
-	if updated["password_set"] != true {
+	state, _ = updated["credential_state"].(map[string]any)
+	davState, _ = state["webdav"].(map[string]any)
+	if davState == nil || davState["password_set"] != true {
 		t.Error("password_set = false after replace, want true")
 	}
 
-	// PATCH：清除密码。
-	rec = doJSON(t, router, "PATCH", "/api/v1/sources/"+id, `{"password": ""}`)
+	// PATCH：清除密码（credentials 三态：空串清除）。
+	rec = doJSON(t, router, "PATCH", "/api/v1/sources/"+id,
+		`{"credentials": {"password": ""}}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PATCH clear status = %d", rec.Code)
 	}
-	if decodeJSON(t, rec)["password_set"] != false {
+	state, _ = decodeJSON(t, rec)["credential_state"].(map[string]any)
+	davState, _ = state["webdav"].(map[string]any)
+	if davState == nil || davState["password_set"] != false {
 		t.Error("password_set = true after clearing, want false")
 	}
 
@@ -194,19 +210,87 @@ func TestSourceLifecycleAPI(t *testing.T) {
 	}
 }
 
-// 非法输入返回 400 并带错误描述。
+// 三协议 payload 均可创建并按各自 config / credential_state 回显。
+func TestSourceCreateThreeProtocolsAPI(t *testing.T) {
+	router := newSourceRouter(t, fakeRemote{})
+
+	cases := []struct {
+		name       string
+		body       string
+		wantState  string
+		wantKey    string
+		wantConfig string
+	}{
+		{
+			name: "webdav",
+			body: `{"name": "dav", "type": "webdav",
+				"config": {"endpoint": "https://dav.example.com", "username": "u"},
+				"credentials": {"password": "SUPER_SECRET"}}`,
+			wantState:  "webdav",
+			wantKey:    "password_set",
+			wantConfig: "endpoint",
+		},
+		{
+			name: "s3",
+			body: `{"name": "s3", "type": "s3",
+				"config": {"region": "us-east-1", "bucket": "backup", "path_style": true,
+					"access_key": "AKID", "prefix": "tinysync"},
+				"credentials": {"secret_key": "TOP_SECRET_KEY"}}`,
+			wantState:  "s3",
+			wantKey:    "secret_key_set",
+			wantConfig: "bucket",
+		},
+		{
+			name: "sftp",
+			body: `{"name": "sftp", "type": "sftp",
+				"config": {"host": "nas.example.com", "port": 22, "username": "u",
+					"remote_root": "/srv/backups", "auth_method": "private_key",
+					"host_key_fingerprint": "SHA256:UC1Dk4I9LLQOV3B8eZ5FlrUUcbbNie4INffe2TDTz3k"},
+				"credentials": {"private_key": "PRIVATE_KEY_BODY", "private_key_passphrase": "pp"}}`,
+			wantState:  "sftp",
+			wantKey:    "private_key_set",
+			wantConfig: "remote_root",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := doJSON(t, router, "POST", "/api/v1/sources", tc.body)
+			if rec.Code != http.StatusCreated {
+				t.Fatalf("POST status = %d, body = %s", rec.Code, rec.Body.String())
+			}
+			assertNoSecret(t, rec)
+			created := decodeJSON(t, rec)
+			state, _ := created["credential_state"].(map[string]any)
+			group, _ := state[tc.wantState].(map[string]any)
+			if group == nil || group[tc.wantKey] != true {
+				t.Errorf("credential_state = %v, want %s.%s true", state, tc.wantState, tc.wantKey)
+			}
+			config, _ := created["config"].(map[string]any)
+			if _, has := config[tc.wantConfig]; !has {
+				t.Errorf("config = %v, want %s echo", config, tc.wantConfig)
+			}
+		})
+	}
+}
+
+// 非法输入返回 400 并带错误描述：type/config 不匹配、未知字段、
+// type 不可修改等契约错误在入口直接拒绝。
 func TestSourceCreateValidationAPI(t *testing.T) {
 	router := newSourceRouter(t, fakeRemote{})
 
 	for name, body := range map[string]string{
-		"bad type":     `{"name": "x", "type": "s3", "endpoint": "https://e.com"}`,
-		"bad endpoint": `{"name": "x", "type": "webdav", "endpoint": "https://u:p@e.com"}`,
-		"blank name":   `{"name": "  ", "type": "webdav", "endpoint": "https://e.com"}`,
-		"bad json":     `{`,
+		"unsupported type":     `{"name": "x", "type": "file", "config": {}}`,
+		"webdav with s3 creds": `{"name": "x", "type": "webdav", "config": {"endpoint": "https://e.com"}, "credentials": {"secret_key": "v"}}`,
+		"bad endpoint":         `{"name": "x", "type": "webdav", "config": {"endpoint": "https://u:p@e.com"}}`,
+		"blank name":           `{"name": "  ", "type": "webdav", "config": {"endpoint": "https://e.com"}}`,
+		"unknown config field": `{"name": "x", "type": "webdav", "config": {"endpoint": "https://e.com", "region": "x"}}`,
+		"unknown top field":    `{"name": "x", "type": "webdav", "config": {"endpoint": "https://e.com"}, "password": "v"}`,
+		"s3 missing secret":    `{"name": "x", "type": "s3", "config": {"region": "r", "bucket": "b", "access_key": "a"}}`,
+		"bad json":             `{`,
 	} {
 		rec := doJSON(t, router, "POST", "/api/v1/sources", body)
 		if rec.Code != http.StatusBadRequest {
-			t.Errorf("%s: status = %d, want 400", name, rec.Code)
+			t.Errorf("%s: status = %d, want 400, body = %s", name, rec.Code, rec.Body.String())
 		}
 		if !strings.Contains(rec.Body.String(), "error") {
 			t.Errorf("%s: body has no error field: %s", name, rec.Body.String())
@@ -214,10 +298,69 @@ func TestSourceCreateValidationAPI(t *testing.T) {
 	}
 }
 
+// PATCH 契约：type 不可修改（携带不同 type 400）、config 整组替换
+// 保留未提供字段、缺省保留、unknown field 400。
+func TestSourcePatchContractAPI(t *testing.T) {
+	router := newSourceRouter(t, fakeRemote{})
+
+	created := doJSON(t, router, "POST", "/api/v1/sources", `{
+		"name": "dav", "type": "webdav",
+		"config": {"endpoint": "https://dav.example.com", "username": "user"},
+		"credentials": {"password": "SUPER_SECRET"}
+	}`)
+	id, _ := decodeJSON(t, created)["id"].(string)
+
+	// 携带不同 type → 400。
+	rec := doJSON(t, router, "PATCH", "/api/v1/sources/"+id, `{"type": "s3"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("patch type = %d, want 400", rec.Code)
+	}
+	// 携带相同 type → 允许（客户端回显）。
+	rec = doJSON(t, router, "PATCH", "/api/v1/sources/"+id, `{"type": "webdav"}`)
+	if rec.Code != http.StatusOK {
+		t.Errorf("patch same type = %d, want 200", rec.Code)
+	}
+
+	// config 整组替换：endpoint 缺省会丢吗？——契约是「出现即替换」，
+	// 未提供 endpoint 将校验失败（400），不是静默保留。
+	rec = doJSON(t, router, "PATCH", "/api/v1/sources/"+id, `{"config": {"username": "u2"}}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("patch config replacing endpoint with blank = %d, want 400", rec.Code)
+	}
+
+	// config 整组替换：完整提供时生效。
+	rec = doJSON(t, router, "PATCH", "/api/v1/sources/"+id,
+		`{"config": {"endpoint": "https://other.example.com/dav", "username": "u2"}}`)
+	if rec.Code != http.StatusOK {
+		t.Errorf("patch full config = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	config := decodeJSON(t, rec)["config"].(map[string]any)
+	if config["endpoint"] != "https://other.example.com/dav" || config["username"] != "u2" {
+		t.Errorf("config after patch = %v", config)
+	}
+
+	// credentials 缺省 → 保留。
+	rec = doJSON(t, router, "PATCH", "/api/v1/sources/"+id, `{"name": "dav2"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch name only = %d", rec.Code)
+	}
+	state := decodeJSON(t, rec)["credential_state"].(map[string]any)
+	if state["webdav"].(map[string]any)["password_set"] != true {
+		t.Error("password_set lost by name-only patch, want preserved")
+	}
+
+	// unknown credentials field → 400。
+	rec = doJSON(t, router, "PATCH", "/api/v1/sources/"+id,
+		`{"credentials": {"secret_key": "v"}}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("patch credentials wrong group = %d, want 400", rec.Code)
+	}
+}
+
 // 重名创建返回 409。
 func TestSourceDuplicateNameAPI(t *testing.T) {
 	router := newSourceRouter(t, fakeRemote{})
-	body := `{"name": "NAS", "type": "webdav", "endpoint": "https://e.com"}`
+	body := `{"name": "NAS", "type": "webdav", "config": {"endpoint": "https://e.com"}}`
 	if rec := doJSON(t, router, "POST", "/api/v1/sources", body); rec.Code != http.StatusCreated {
 		t.Fatalf("first POST status = %d", rec.Code)
 	}
@@ -259,7 +402,7 @@ func TestSourceTestAPI(t *testing.T) {
 		{"failure", failRouter, false},
 	} {
 		rec := doJSON(t, tc.router, "POST", "/api/v1/sources", `{
-			"name": "NAS", "type": "webdav", "endpoint": "https://e.com"
+			"name": "NAS", "type": "webdav", "config": {"endpoint": "https://e.com"}
 		}`)
 		id, _ := decodeJSON(t, rec)["id"].(string)
 

@@ -97,7 +97,7 @@ func newJobRouter(t *testing.T, remote source.Remote) *gin.Engine {
 // createSourceViaAPI 用 API 创建 Source 并返回 ID。
 func createSourceViaAPI(t *testing.T, router *gin.Engine, name string, enabled bool) string {
 	t.Helper()
-	body := fmt.Sprintf(`{"name": %q, "type": "webdav", "endpoint": "https://dav.example.com", "enabled": %t}`,
+	body := fmt.Sprintf(`{"name": %q, "type": "webdav", "config": {"endpoint": "https://dav.example.com"}, "enabled": %t}`,
 		name, enabled)
 	rec := doJSON(t, router, "POST", "/api/v1/sources", body)
 	if rec.Code != http.StatusCreated {
@@ -463,13 +463,13 @@ func TestSourceEndpointChangeGuardAPI(t *testing.T) {
 		t.Fatalf("create job status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 
-	rec = doJSON(t, router, "PATCH", "/api/v1/sources/"+sourceID, `{"endpoint": "https://other.example.com/dav"}`)
+	rec = doJSON(t, router, "PATCH", "/api/v1/sources/"+sourceID, `{"config": {"endpoint": "https://other.example.com/dav"}}`)
 	if rec.Code != http.StatusConflict {
 		t.Errorf("endpoint change on referenced source = %d %s, want 409", rec.Code, rec.Body.String())
 	}
 
 	// 同值 PATCH（幂等更新）允许。
-	rec = doJSON(t, router, "PATCH", "/api/v1/sources/"+sourceID, `{"endpoint": "https://dav.example.com"}`)
+	rec = doJSON(t, router, "PATCH", "/api/v1/sources/"+sourceID, `{"config": {"endpoint": "https://dav.example.com"}}`)
 	if rec.Code != http.StatusOK {
 		t.Errorf("same-endpoint PATCH = %d %s, want 200", rec.Code, rec.Body.String())
 	}
@@ -484,7 +484,7 @@ func TestSourceEndpointChangeGuardAPI(t *testing.T) {
 	if rec := doJSON(t, router, "DELETE", "/api/v1/jobs/"+jobID, ""); rec.Code != http.StatusNoContent {
 		t.Fatalf("delete job = %d, want 204", rec.Code)
 	}
-	rec = doJSON(t, router, "PATCH", "/api/v1/sources/"+sourceID, `{"endpoint": "https://other.example.com/dav"}`)
+	rec = doJSON(t, router, "PATCH", "/api/v1/sources/"+sourceID, `{"config": {"endpoint": "https://other.example.com/dav"}}`)
 	if rec.Code != http.StatusOK {
 		t.Errorf("endpoint change after unreference = %d %s, want 200", rec.Code, rec.Body.String())
 	}

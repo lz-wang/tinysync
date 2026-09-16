@@ -1,7 +1,9 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -16,7 +18,7 @@ import (
 
 // registerSourceRoutes 注册 Source 管理端点。svc 为 nil 时跳过注册
 // （依赖缺失时由未知路径 404 兜底，避免生产静默降级之外的 panic）。
-// jobs 非 nil 时启用删除保护：被 Job 引用的 Source 返回 409，
+// jobs 非 nil 时启用引用保护：被 Job 引用的 Source 返回 409，
 // 数据库层 FK RESTRICT 作为并发路径的兜底。
 func registerSourceRoutes(group *gin.RouterGroup, svc *source.Service, jobs *syncjob.Service) {
 	if svc == nil {
@@ -47,70 +49,83 @@ func registerSourceRoutes(group *gin.RouterGroup, svc *source.Service, jobs *syn
 type sourceHandlers struct {
 	svc *source.Service
 	// refGuard 校验 Source 是否被 Job 引用；nil 表示不启用保护。
-	// 删除始终校验；修改 endpoint 时校验（防止 Mirror Job 下轮连接到
-	// 另一个合法远端后把全部 managed 文件误判为远端消失）。
+	// 删除始终校验；remote identity 变更时校验（防止 Mirror Job 下轮
+	// 连接到另一个合法远端后把全部 managed 文件误判为远端消失）。
 	refGuard func(ctx context.Context, sourceID string) error
 }
 
-// sourceDTO 是 Source 的 API 表示。刻意不含 password 字段：
-// 凭据状态只以 password_set 布尔暴露，杜绝序列化层泄漏。
+// sourceDTO 是 Source 的 API 表示：config 为非敏感协议配置单选组，
+// credential_state 只回显各 secret 是否设置。任何 secret 都不出现在
+// 响应中。
 type sourceDTO struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Type        string `json:"type"`
-	Endpoint    string `json:"endpoint"`
-	Username    string `json:"username"`
-	PasswordSet bool   `json:"password_set"`
-	Enabled     bool   `json:"enabled"`
-	CreatedAt   string `json:"created_at"`
-	UpdatedAt   string `json:"updated_at"`
+	ID              string                 `json:"id"`
+	Name            string                 `json:"name"`
+	Type            string                 `json:"type"`
+	Config          json.RawMessage        `json:"config"`
+	CredentialState source.CredentialState `json:"credential_state"`
+	Enabled         bool                   `json:"enabled"`
+	CreatedAt       string                 `json:"created_at"`
+	UpdatedAt       string                 `json:"updated_at"`
 }
 
-// toSourceDTO 转换领域对象，时间输出 RFC3339。当前 WebDAV-only
-// 契约：endpoint / username / password_set 从 typed config 与
-// credential state 提取（v0.5 API 将切换为 config / credentials
-// discriminated union）。
-func toSourceDTO(s source.Source) sourceDTO {
-	var endpoint, username string
-	var passwordSet bool
-	if s.Config.WebDAV != nil {
-		endpoint = s.Config.WebDAV.Endpoint
-		username = s.Config.WebDAV.Username
-	}
-	if s.CredentialState.WebDAV != nil {
-		passwordSet = s.CredentialState.WebDAV.PasswordSet
+// toSourceDTO 转换领域对象，时间输出 RFC3339，config 按协议序列化。
+func toSourceDTO(s source.Source) (sourceDTO, error) {
+	configJSON, err := marshalConfigForResponse(s.Type, s.Config)
+	if err != nil {
+		return sourceDTO{}, err
 	}
 	return sourceDTO{
-		ID:          s.ID,
-		Name:        s.Name,
-		Type:        string(s.Type),
-		Endpoint:    endpoint,
-		Username:    username,
-		PasswordSet: passwordSet,
-		Enabled:     s.Enabled,
-		CreatedAt:   s.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:   s.UpdatedAt.Format(time.RFC3339),
+		ID:              s.ID,
+		Name:            s.Name,
+		Type:            string(s.Type),
+		Config:          configJSON,
+		CredentialState: s.CredentialState,
+		Enabled:         s.Enabled,
+		CreatedAt:       s.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:       s.UpdatedAt.Format(time.RFC3339),
+	}, nil
+}
+
+// marshalConfigForResponse 把 typed config 序列化为响应 JSON。
+func marshalConfigForResponse(t source.Type, c source.Config) (json.RawMessage, error) {
+	var data any
+	switch t {
+	case source.TypeWebDAV:
+		data = c.WebDAV
+	case source.TypeS3:
+		data = c.S3
+	case source.TypeSFTP:
+		data = c.SFTP
+	default:
+		return nil, fmt.Errorf("unsupported source type %q", t)
 	}
+	b, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("marshal source config: %w", err)
+	}
+	return b, nil
 }
 
-// createSourceRequest 是创建请求体；Enabled 缺省为 true。
+// createSourceRequest 是创建请求体；config / credentials 按 type
+// 严格解码（拒绝未知字段与类型不符字段）。
 type createSourceRequest struct {
-	Name     string `json:"name"`
-	Type     string `json:"type"`
-	Endpoint string `json:"endpoint"`
-	Username string `json:"username"`
-	Password string `json:"password"`
-	Enabled  *bool  `json:"enabled"`
+	Name        string          `json:"name"`
+	Type        string          `json:"type"`
+	Enabled     *bool           `json:"enabled"`
+	Config      json.RawMessage `json:"config"`
+	Credentials json.RawMessage `json:"credentials"`
 }
 
-// updateSourceRequest 是更新请求体：nil 字段保留现有值；
-// password 语义为缺省保留、空串清除、非空替换。
+// updateSourceRequest 是更新请求体：nil 字段保留现有值。Type 不支持
+// 修改（携带 type 且与现有值不同返回 400）。config 出现即整个协议
+// config 替换；credentials 组内 secret 三态（缺省保留、空串清除、
+// 非空替换）。
 type updateSourceRequest struct {
-	Name     *string `json:"name"`
-	Endpoint *string `json:"endpoint"`
-	Username *string `json:"username"`
-	Password *string `json:"password"`
-	Enabled  *bool   `json:"enabled"`
+	Name        *string          `json:"name"`
+	Type        *string          `json:"type"`
+	Enabled     *bool            `json:"enabled"`
+	Config      json.RawMessage  `json:"config"`
+	Credentials *json.RawMessage `json:"credentials"`
 }
 
 // testResultDTO 是连接测试结果。连接失败也是成功完成的测试操作，
@@ -119,6 +134,138 @@ type testResultDTO struct {
 	OK        bool   `json:"ok"`
 	LatencyMS int64  `json:"latency_ms"`
 	Error     string `json:"error,omitempty"`
+}
+
+// strictDecode 用 DisallowUnknownFields 严格解码一个 JSON 子对象，
+// 拒绝未知字段（前端与后端契约拼写错误在 400 处直接暴露）。
+func strictDecode(raw json.RawMessage, target any) error {
+	if len(raw) == 0 {
+		return errors.New("payload is required")
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(target); err != nil {
+		return err
+	}
+	return nil
+}
+
+// decodeConfigPayload 按 type 严格解码 config 子对象。
+func decodeConfigPayload(t source.Type, raw json.RawMessage) (source.Config, error) {
+	switch t {
+	case source.TypeWebDAV:
+		var c source.WebDAVConfig
+		if err := strictDecode(raw, &c); err != nil {
+			return source.Config{}, fmt.Errorf("invalid webdav config: %v", err)
+		}
+		return source.Config{WebDAV: &c}, nil
+	case source.TypeS3:
+		var c source.S3Config
+		if err := strictDecode(raw, &c); err != nil {
+			return source.Config{}, fmt.Errorf("invalid s3 config: %v", err)
+		}
+		return source.Config{S3: &c}, nil
+	case source.TypeSFTP:
+		var c source.SFTPConfig
+		if err := strictDecode(raw, &c); err != nil {
+			return source.Config{}, fmt.Errorf("invalid sftp config: %v", err)
+		}
+		return source.Config{SFTP: &c}, nil
+	default:
+		return source.Config{}, fmt.Errorf("unsupported source type %q", t)
+	}
+}
+
+// decodeCredentialsPayload 按 type 严格解码 credentials 子对象为
+// 完整凭据集合（创建用：字段为值语义）。
+func decodeCredentialsPayload(t source.Type, raw json.RawMessage) (source.Credentials, error) {
+	switch t {
+	case source.TypeWebDAV:
+		var p struct {
+			Password *string `json:"password"`
+		}
+		if err := strictDecode(raw, &p); err != nil {
+			return source.Credentials{}, fmt.Errorf("invalid webdav credentials: %v", err)
+		}
+		creds := source.Credentials{WebDAV: &source.WebDAVCredentials{}}
+		if p.Password != nil {
+			creds.WebDAV.Password = *p.Password
+		}
+		return creds, nil
+	case source.TypeS3:
+		var p struct {
+			SecretKey *string `json:"secret_key"`
+		}
+		if err := strictDecode(raw, &p); err != nil {
+			return source.Credentials{}, fmt.Errorf("invalid s3 credentials: %v", err)
+		}
+		creds := source.Credentials{S3: &source.S3Credentials{}}
+		if p.SecretKey != nil {
+			creds.S3.SecretKey = *p.SecretKey
+		}
+		return creds, nil
+	case source.TypeSFTP:
+		var p struct {
+			Password             *string `json:"password"`
+			PrivateKey           *string `json:"private_key"`
+			PrivateKeyPassphrase *string `json:"private_key_passphrase"`
+		}
+		if err := strictDecode(raw, &p); err != nil {
+			return source.Credentials{}, fmt.Errorf("invalid sftp credentials: %v", err)
+		}
+		creds := source.Credentials{SFTP: &source.SFTPCredentials{}}
+		if p.Password != nil {
+			creds.SFTP.Password = *p.Password
+		}
+		if p.PrivateKey != nil {
+			creds.SFTP.PrivateKey = *p.PrivateKey
+		}
+		if p.PrivateKeyPassphrase != nil {
+			creds.SFTP.PrivateKeyPassphrase = *p.PrivateKeyPassphrase
+		}
+		return creds, nil
+	default:
+		return source.Credentials{}, fmt.Errorf("unsupported source type %q", t)
+	}
+}
+
+// decodeCredentialsUpdatePayload 按 type 严格解码 credentials 子对象
+// 为三态更新：nil 保留、空串清除、非空替换。
+func decodeCredentialsUpdatePayload(t source.Type, raw json.RawMessage) (*source.CredentialsUpdate, error) {
+	switch t {
+	case source.TypeWebDAV:
+		var p struct {
+			Password *string `json:"password"`
+		}
+		if err := strictDecode(raw, &p); err != nil {
+			return nil, fmt.Errorf("invalid webdav credentials: %v", err)
+		}
+		return &source.CredentialsUpdate{WebDAV: &source.WebDAVCredentialsUpdate{Password: p.Password}}, nil
+	case source.TypeS3:
+		var p struct {
+			SecretKey *string `json:"secret_key"`
+		}
+		if err := strictDecode(raw, &p); err != nil {
+			return nil, fmt.Errorf("invalid s3 credentials: %v", err)
+		}
+		return &source.CredentialsUpdate{S3: &source.S3CredentialsUpdate{SecretKey: p.SecretKey}}, nil
+	case source.TypeSFTP:
+		var p struct {
+			Password             *string `json:"password"`
+			PrivateKey           *string `json:"private_key"`
+			PrivateKeyPassphrase *string `json:"private_key_passphrase"`
+		}
+		if err := strictDecode(raw, &p); err != nil {
+			return nil, fmt.Errorf("invalid sftp credentials: %v", err)
+		}
+		return &source.CredentialsUpdate{SFTP: &source.SFTPCredentialsUpdate{
+			Password:             p.Password,
+			PrivateKey:           p.PrivateKey,
+			PrivateKeyPassphrase: p.PrivateKeyPassphrase,
+		}}, nil
+	default:
+		return nil, fmt.Errorf("unsupported source type %q", t)
+	}
 }
 
 // list GET /api/v1/sources。
@@ -130,44 +277,69 @@ func (h *sourceHandlers) list(c *gin.Context) {
 	}
 	dtos := make([]sourceDTO, 0, len(sources))
 	for _, s := range sources {
-		dtos = append(dtos, toSourceDTO(s))
+		dto, err := toSourceDTO(s)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+			return
+		}
+		dtos = append(dtos, dto)
 	}
 	c.JSON(http.StatusOK, gin.H{"sources": dtos})
 }
 
-// create POST /api/v1/sources。当前 WebDAV-only 契约：请求体按
-// WebDAV 扁平字段组装 typed config / credentials；其他 type 返回 400。
+// strictBind 严格解码请求体：顶层同样拒绝未知字段，前端与后端契约
+// 拼写错误在 400 处直接暴露。
+func strictBind(c *gin.Context, target any) bool {
+	dec := json.NewDecoder(c.Request.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(target); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return false
+	}
+	return true
+}
+
+// create POST /api/v1/sources。
 func (h *sourceHandlers) create(c *gin.Context) {
 	var req createSourceRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+	if !strictBind(c, &req) {
 		return
 	}
-	if source.Type(req.Type) != source.TypeWebDAV {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported source type"})
+	t := source.Type(req.Type)
+	config, err := decodeConfigPayload(t, req.Config)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+	var credentials source.Credentials
+	if req.Credentials != nil {
+		credentials, err = decodeCredentialsPayload(t, req.Credentials)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 	}
 	enabled := true
 	if req.Enabled != nil {
 		enabled = *req.Enabled
 	}
 	created, err := h.svc.Create(c.Request.Context(), source.CreateInput{
-		Name: req.Name,
-		Type: source.TypeWebDAV,
-		Config: source.Config{WebDAV: &source.WebDAVConfig{
-			Endpoint: req.Endpoint,
-			Username: req.Username,
-		}},
-		Credentials: source.Credentials{WebDAV: &source.WebDAVCredentials{
-			Password: req.Password,
-		}},
-		Enabled: enabled,
+		Name:        req.Name,
+		Type:        t,
+		Config:      config,
+		Credentials: credentials,
+		Enabled:     enabled,
 	})
 	if err != nil {
 		handleSourceError(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, toSourceDTO(created))
+	dto, err := toSourceDTO(created)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return
+	}
+	c.JSON(http.StatusCreated, dto)
 }
 
 // get GET /api/v1/sources/:id。
@@ -177,20 +349,24 @@ func (h *sourceHandlers) get(c *gin.Context) {
 		handleSourceError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, toSourceDTO(s))
+	dto, err := toSourceDTO(s)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return
+	}
+	c.JSON(http.StatusOK, dto)
 }
 
-// update PATCH /api/v1/sources/:id。被 Job 引用时允许改 name /
-// credentials / enabled，但拒绝修改 endpoint：新 endpoint 可能指向
-// 另一个合法远端，下轮完整扫描会把既有 managed 文件全部误判为
-// 远端消失，Mirror 将据其删除本地。更换 endpoint 的正确路径是
-// 新建 Source → Job 切换 SourceID（触发原子 metadata 重置）。
-// 当前 WebDAV-only 契约：endpoint / username 独立 PATCH，在适配层
-// 合并进 typed config 后整体提交。
+// update PATCH /api/v1/sources/:id。Type 创建后不可变：请求携带 type
+// 且与现有值不同返回 400。config 缺省保留，出现即整个协议 config
+// 替换；credentials 组内 secret 三态（缺省保留、空串清除、非空替换），
+// secret rotation 始终允许。config 中 remote identity 字段的变更与
+// endpoint 一致受引用保护（防止 Mirror Job 下轮把既有 managed 文件
+// 误判为远端消失）；更换远端的正确路径是新建 Source → Job 切换
+// SourceID（触发原子 metadata 重置）。
 func (h *sourceHandlers) update(c *gin.Context) {
 	var req updateSourceRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+	if !strictBind(c, &req) {
 		return
 	}
 	id := c.Param("id")
@@ -199,8 +375,8 @@ func (h *sourceHandlers) update(c *gin.Context) {
 		handleSourceError(c, err)
 		return
 	}
-	if current.Type != source.TypeWebDAV || current.Config.WebDAV == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported source type"})
+	if req.Type != nil && source.Type(*req.Type) != current.Type {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "source type cannot be changed"})
 		return
 	}
 
@@ -208,36 +384,41 @@ func (h *sourceHandlers) update(c *gin.Context) {
 		Name:    req.Name,
 		Enabled: req.Enabled,
 	}
-	if req.Endpoint != nil || req.Username != nil {
-		dav := *current.Config.WebDAV
-		if req.Endpoint != nil {
-			if h.refGuard != nil && strings.TrimSpace(*req.Endpoint) != dav.Endpoint {
-				if err := h.refGuard(c.Request.Context(), id); err != nil {
-					c.JSON(http.StatusConflict, gin.H{
-						"error": "source endpoint cannot be changed while referenced by sync jobs",
-					})
-					return
-				}
+	if req.Config != nil {
+		config, err := decodeConfigPayload(current.Type, req.Config)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if h.refGuard != nil && identityChanged(current, config) {
+			if err := h.refGuard(c.Request.Context(), id); err != nil {
+				c.JSON(http.StatusConflict, gin.H{
+					"error": "source remote identity cannot be changed while referenced by sync jobs",
+				})
+				return
 			}
-			dav.Endpoint = *req.Endpoint
 		}
-		if req.Username != nil {
-			dav.Username = *req.Username
-		}
-		input.Config = &source.Config{WebDAV: &dav}
+		input.Config = &config
 	}
-	if req.Password != nil {
-		pw := *req.Password
-		input.Credentials = &source.CredentialsUpdate{
-			WebDAV: &source.WebDAVCredentialsUpdate{Password: &pw},
+	if req.Credentials != nil {
+		credsUpdate, err := decodeCredentialsUpdatePayload(current.Type, *req.Credentials)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
 		}
+		input.Credentials = credsUpdate
 	}
 	updated, err := h.svc.Update(c.Request.Context(), id, input)
 	if err != nil {
 		handleSourceError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, toSourceDTO(updated))
+	dto, err := toSourceDTO(updated)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return
+	}
+	c.JSON(http.StatusOK, dto)
 }
 
 // delete DELETE /api/v1/sources/:id。仅删除本地 Source 配置，
@@ -284,4 +465,14 @@ func handleSourceError(c *gin.Context, err error) {
 	default:
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 	}
+}
+
+// identityChanged 判断 config 更新是否改变了 remote identity。
+// 当前保持既有安全语义（WebDAV endpoint）；S3 / SFTP identity 字段与
+// WebDAV username 的泛化由 RemoteIdentityEqual 统一承担。
+func identityChanged(current source.Source, next source.Config) bool {
+	if current.Type != source.TypeWebDAV || current.Config.WebDAV == nil || next.WebDAV == nil {
+		return false
+	}
+	return strings.TrimSpace(next.WebDAV.Endpoint) != current.Config.WebDAV.Endpoint
 }
