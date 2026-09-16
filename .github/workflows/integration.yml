@@ -1,0 +1,87 @@
+name: Protocol Integration
+
+# 可复用的协议 integration gate：真实 S3 服务（MinIO 容器）+ 真实
+# SSH/SFTP 协议栈，验证 adapter 与同一 Sync Engine 的真实端到端行为。
+# Build 与 Release workflow 共用本 workflow，避免维护两份 MinIO 装配；
+# 远端发布门禁因此与 main 的持续集成使用同一套 integration 证据。
+#
+# MinIO 以固定版本的 step 容器启动而不是 service container：service
+# container 拉取失败（如 Docker Hub 限流）无法重试，会让 gate 在未
+# 运行任何测试的情况下变红；step 方式允许 pull 重试，且固定版本保证
+# 行为可复现。in-process SFTP server 与 env 门控测试在无服务环境自动
+# 跳过，不影响常规 make check。
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  CGO_ENABLED: "0"
+
+jobs:
+  integration:
+    name: Protocol integration (MinIO + SFTP)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+
+      # 固定 MinIO 版本：跟随 latest 曾因镜像无法拉取让远端 gate 变红，
+      # 固定 tag 后 digest 可预期；pull 重试以吸收 Docker Hub 瞬时限流。
+      - name: Start MinIO
+        run: |
+          image="minio/minio:RELEASE.2025-04-22T22-12-26Z"
+          pulled=false
+          for attempt in 1 2 3; do
+            if docker pull "$image"; then
+              pulled=true
+              break
+            fi
+            echo "pull attempt ${attempt} failed, retrying..."
+            sleep $((attempt * 10))
+          done
+          if [ "${pulled}" != "true" ]; then
+            echo "Failed to pull ${image} after retries"
+            exit 1
+          fi
+          docker run -d --name minio \
+            -p 9000:9000 \
+            -e MINIO_ROOT_USER=tinysync \
+            -e MINIO_ROOT_PASSWORD=tinysync-secret \
+            --health-cmd "curl -f http://localhost:9000/minio/health/live" \
+            --health-interval 5s \
+            --health-timeout 5s \
+            --health-retries 20 \
+            "$image" server /data
+
+      - name: Wait for MinIO healthy
+        timeout-minutes: 3
+        run: |
+          for _ in $(seq 1 30); do
+            status="$(docker inspect -f '{{.State.Health.Status}}' minio)"
+            echo "minio health: ${status}"
+            if [ "${status}" = "healthy" ]; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs minio
+          exit 1
+
+      - name: Run protocol integration tests
+        env:
+          TINYSYNC_IT_S3_ENDPOINT: http://localhost:9000
+          TINYSYNC_IT_S3_REGION: us-east-1
+          TINYSYNC_IT_S3_ACCESS_KEY: tinysync
+          TINYSYNC_IT_S3_SECRET_KEY: tinysync-secret
+        run: make integration
+
+      - name: Stop MinIO
+        if: always()
+        run: docker rm -f minio

@@ -73,42 +73,12 @@ jobs:
           fail_ci_if_error: false
 
   # 协议 integration gate：真实 S3 服务（MinIO 容器）+ 真实 SSH/SFTP
-  # 协议栈，验证 adapter 与同一 Sync Engine 的真实端到端行为。
-  # in-process SFTP server 与 env 门控测试在无服务环境自动跳过，
-  # 不影响常规 make check。
+  # 协议栈。实现在 integration.yml 可复用 workflow 中，与 Release
+  # workflow 共用同一套装配与证据。
   integration:
     name: Protocol integration (MinIO + SFTP)
     needs: prepare
-    runs-on: ubuntu-latest
-    services:
-      minio:
-        image: minio/minio:latest
-        env:
-          MINIO_ROOT_USER: tinysync
-          MINIO_ROOT_PASSWORD: tinysync-secret
-        ports:
-          - 9000:9000
-        options: >-
-          --health-cmd "curl -f http://localhost:9000/minio/health/live"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version: "1.26.x"
-          check-latest: true
-
-      - name: Run protocol integration tests
-        env:
-          TINYSYNC_IT_S3_ENDPOINT: http://localhost:9000
-          TINYSYNC_IT_S3_REGION: us-east-1
-          TINYSYNC_IT_S3_ACCESS_KEY: tinysync
-          TINYSYNC_IT_S3_SECRET_KEY: tinysync-secret
-        run: make integration
+    uses: ./.github/workflows/integration.yml
 
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
@@ -230,7 +200,9 @@ jobs:
 
   notify:
     name: Pushover notification
-    needs: [prepare, test, build, smoke]
+    # integration 是 workflow 整体结论的一部分：通知必须如实反映
+    # protocol integration 的结果，不允许 gate 红了仍推送"构建成功"。
+    needs: [prepare, test, integration, build, smoke]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -247,9 +219,10 @@ jobs:
           fi
 
           TEST_RESULT="${{ needs.test.result }}"
+          INTEGRATION_RESULT="${{ needs.integration.result }}"
           BUILD_RESULT="${{ needs.build.result }}"
           SMOKE_RESULT="${{ needs.smoke.result }}"
-          if [[ "${TEST_RESULT}" == "success" && "${BUILD_RESULT}" == "success" && "${SMOKE_RESULT}" == "success" ]]; then
+          if [[ "${TEST_RESULT}" == "success" && "${INTEGRATION_RESULT}" == "success" && "${BUILD_RESULT}" == "success" && "${SMOKE_RESULT}" == "success" ]]; then
             PRIORITY="0"
             TITLE="TinySync 构建成功"
           else
@@ -260,6 +233,7 @@ jobs:
           MESSAGE=$(cat <<EOF
           <b>TinySync 构建通知</b>
           <u>测试结果</u>: ${TEST_RESULT}
+          <u>协议集成</u>: ${INTEGRATION_RESULT}
           <u>构建结果</u>: ${BUILD_RESULT}
           <u>三平台 Smoke</u>: ${SMOKE_RESULT}
           <u>版本</u>: <font color="#0000ff">${{ needs.prepare.outputs.version }}</font>

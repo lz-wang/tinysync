@@ -119,6 +119,14 @@ jobs:
       - name: Run release checks
         run: make ci
 
+  # 协议 integration gate 是发布门禁的一部分：main 集成变红时不可能
+  # 发布。实现与 Build workflow 共用（integration.yml），避免维护两份
+  # MinIO 装配。
+  integration:
+    name: Protocol integration (MinIO + SFTP)
+    needs: prepare
+    uses: ./.github/workflows/integration.yml
+
   smoke:
     name: Smoke ${{ matrix.os }}
     needs: prepare
@@ -170,7 +178,7 @@ jobs:
 
   publish:
     name: Publish GitHub Release and WebDAV mirror
-    needs: [prepare, test, smoke]
+    needs: [prepare, test, integration, smoke]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -249,7 +257,7 @@ jobs:
 
   notify:
     name: Pushover notification
-    needs: [prepare, test, smoke, publish]
+    needs: [prepare, test, integration, smoke, publish]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -265,9 +273,10 @@ jobs:
           fi
 
           TEST_RESULT="${{ needs.test.result }}"
+          INTEGRATION_RESULT="${{ needs.integration.result }}"
           SMOKE_RESULT="${{ needs.smoke.result }}"
           PUBLISH_RESULT="${{ needs.publish.result }}"
-          if [[ "${TEST_RESULT}" == "success" && "${SMOKE_RESULT}" == "success" && "${PUBLISH_RESULT}" == "success" ]]; then
+          if [[ "${TEST_RESULT}" == "success" && "${INTEGRATION_RESULT}" == "success" && "${SMOKE_RESULT}" == "success" && "${PUBLISH_RESULT}" == "success" ]]; then
             PRIORITY="0"
             TITLE="TinySync 发布成功"
           else
@@ -278,6 +287,7 @@ jobs:
           MESSAGE=$(cat <<EOF
           <b>TinySync 发布通知</b>
           <u>测试结果</u>: ${TEST_RESULT}
+          <u>协议集成</u>: ${INTEGRATION_RESULT}
           <u>三平台 Smoke</u>: ${SMOKE_RESULT}
           <u>GitHub Release</u>: ${PUBLISH_RESULT}
           <u>版本</u>: <font color="#0000ff">${RELEASE_TAG}</font>
