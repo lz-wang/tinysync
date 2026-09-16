@@ -52,9 +52,12 @@ registry 边界，`internal/syncjob` 无协议分支）、S3 read-only adapter
 confinement、symlink fail-fast、取消关闭连接）、REST discriminated
 config（严格解码、secret 三态、identity 修改保护泛化）、统一 logical
 path 校验、Web UI 多协议动态表单；三协议统一场景 E2E 证明同一
-Sync Engine 无协议分支，真实 MinIO integration gate 与多协议 native
-smoke 通过。本地验证 `make check` 全绿、`make build` 通过；发布门禁
-与发行验收未开始。
+Sync Engine 无协议分支，多协议 native smoke 通过。本地验证 `make
+check` 全绿、`make build` 通过，本地真实 MinIO integration 场景实测
+通过；远端 CI 的 integration gate 已改为固定版本 MinIO 的可复用
+workflow 并作为 Release 发布门禁（`minio/minio:latest` service
+container 拉取失败曾让远端 gate 未运行即变红），远端实际通过以
+推送后的 workflow 运行为准。发布门禁与发行验收未开始。
 
 ## 架构与边界
 

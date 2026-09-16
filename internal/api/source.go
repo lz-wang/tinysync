@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -136,7 +137,8 @@ type testResultDTO struct {
 }
 
 // strictDecode 用 DisallowUnknownFields 严格解码一个 JSON 子对象，
-// 拒绝未知字段（前端与后端契约拼写错误在 400 处直接暴露）。
+// 拒绝未知字段（前端与后端契约拼写错误在 400 处直接暴露）；再次
+// Decode 确认 payload 是单一 JSON 值，尾随数据一律拒绝。
 func strictDecode(raw json.RawMessage, target any) error {
 	if len(raw) == 0 {
 		return errors.New("payload is required")
@@ -145,6 +147,9 @@ func strictDecode(raw json.RawMessage, target any) error {
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(target); err != nil {
 		return err
+	}
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return errors.New("payload must contain exactly one JSON value")
 	}
 	return nil
 }
@@ -286,12 +291,17 @@ func (h *sourceHandlers) list(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"sources": dtos})
 }
 
-// strictBind 严格解码请求体：顶层同样拒绝未知字段，前端与后端契约
-// 拼写错误在 400 处直接暴露。
+// strictBind 严格解码请求体：顶层同样拒绝未知字段，并确认请求体是
+// 单一 JSON 值（尾随数据一律拒绝）；前端与后端契约拼写错误在 400
+// 处直接暴露。
 func strictBind(c *gin.Context, target any) bool {
 	dec := json.NewDecoder(c.Request.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(target); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return false
+	}
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return false
 	}

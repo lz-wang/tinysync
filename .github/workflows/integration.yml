@@ -64,9 +64,9 @@ jobs:
         timeout-minutes: 3
         run: |
           for _ in $(seq 1 30); do
-            status="$(docker inspect -f '{{.State.Health.Status}}' minio)"
-            echo "minio health: ${status}"
-            if [ "${status}" = "healthy" ]; then
+            health="$(docker inspect -f '{{.State.Health.Status}}' minio)"
+            echo "minio health: ${health}"
+            if [ "${health}" = "healthy" ]; then
               exit 0
             fi
             sleep 2

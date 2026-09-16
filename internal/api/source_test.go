@@ -462,6 +462,24 @@ func TestSourceTestFactoryFailureAPI(t *testing.T) {
 	}
 }
 
+// 严格解码收口：请求体与 config 子对象都必须是单一 JSON 值，首个
+// 值解码成功后的尾随数据不再被忽略（400）。
+func TestSourceStrictDecodeTrailingDataAPI(t *testing.T) {
+	router := newSourceRouter(t, fakeRemote{})
+
+	rec := doJSON(t, router, "POST", "/api/v1/sources",
+		`{"name": "NAS", "type": "webdav", "config": {"endpoint": "https://e.com"}} {"unexpected": true}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("trailing data after body = %d, want 400", rec.Code)
+	}
+
+	rec = doJSON(t, router, "POST", "/api/v1/sources",
+		`{"name": "NAS", "type": "webdav", "config": {"endpoint": "https://e.com"} {"trailing": 1}}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("trailing data inside config = %d, want 400", rec.Code)
+	}
+}
+
 // SPA fallback 不得吞掉未实现的 sources 子路径；错误方法 405。
 func TestSourceRoutingBoundaries(t *testing.T) {
 	router := newSourceRouter(t, fakeRemote{})

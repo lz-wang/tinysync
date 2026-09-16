@@ -265,16 +265,16 @@ Repository 之后只读写 JSON 字段
   "type": "s3",
   "config": { "...": "..." },
   "credential_state": {
-    "password_set": false,
-    "secret_key_set": true,
-    "private_key_set": false,
-    "private_key_passphrase_set": false
+    "s3": { "secret_key_set": true }
   },
   "enabled": true,
   "created_at": "...",
   "updated_at": "..."
 }
 ```
+
+`credential_state` 按协议分组（与 typed config 一致），只回显当前
+Source 类型对应分组内各 secret 是否设置。
 
 - **任何 secret 都不回显。**
 - 请求体拒绝未知字段与 type/config 不匹配（400）。
@@ -530,7 +530,10 @@ Copy remove、Mirror remove、history。要证明的是三协议经过同一个
   unchanged、update、selector、Copy remove、Mirror remove、history），
   scenario 零协议分支；`internal/syncjob` 无协议代码。
 - [x] Integration gate：真实 MinIO（SDK 全链路）+ 真实 SSH/SFTP 进程内
-  server 的 `make integration`，CI build workflow 注入 MinIO service。
+  server 的 `make integration`；本地 MinIO 场景实测通过。远端 CI 的
+  integration job 已改为固定版本 MinIO 的可复用 workflow（Build 与
+  Release 共用，Release publish 以其为门禁），远端实际通过以推送后
+  workflow 运行为准，不与本地验收混同。
 - [x] Native smoke：三协议 Source 创建、secret 不回显、跨重启持久化，
   WebDAV 原有场景不回退；已对 macOS 原生构建实测。
 - [x] `make check` 全绿；`make build` 通过（Web 嵌入资源变更）。
@@ -556,8 +559,9 @@ Copy remove、Mirror remove、history。要证明的是三协议经过同一个
   `internal/e2e/integration_test.go`（env 门控的真实 MinIO 场景）、
   `internal/storage/migrate_test.go`（v4→v5 专项）、
   `scripts/smoke.sh`（多协议 native smoke）。
-- CI：`.github/workflows/build.yml` integration job（MinIO service），
-  Makefile `integration` target。
+- CI：`.github/workflows/integration.yml` 可复用 workflow（固定版本
+  MinIO 的 step 容器，Build 与 Release 共用），Makefile `integration`
+  target。
 
 实现要点（与契约的对应关系）：
 
@@ -580,6 +584,10 @@ Copy remove、Mirror remove、history。要证明的是三协议经过同一个
 本地验收已完成（2026-09-16）：`make check` 全绿；`make build` 通过；
 三协议矩阵 E2E（真实 WebDAV/SFTP 协议栈 + S3 进程内模拟）全绿；
 真实 MinIO integration 场景实测通过；macOS 原生 smoke 全绿。
-`internal/syncjob` 无协议分支。发布相关项（Release workflow、六平台
-发行资产、WebDAV 镜像独立验收）在 tag `v0.5.0` 后按
-[构建与发布](../guides/release.md)执行，不属于本阶段代码 commit。
+`internal/syncjob` 无协议分支。远端 CI 的 integration 证据与本地
+验收区分记录：此前 `minio/minio:latest` service container 拉取失败
+导致远端 gate 未运行任何测试即变红，修复（固定版本、可重试拉取、
+作为 Release 发布门禁）后的远端实际通过以推送后的 workflow 运行为
+准。发布相关项（Release workflow、六平台发行资产、WebDAV 镜像独立
+验收）在 tag `v0.5.0` 后按[构建与发布](../guides/release.md)执行，
+不属于本阶段代码 commit。
