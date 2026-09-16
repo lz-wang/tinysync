@@ -14,8 +14,10 @@
 #	9. POST /api/v1/jobs/:id/run 异步启动（202），对不可达远端收敛为 failed
 #	10. 关闭进程并以同一 datadir 重启
 #	11. GET /api/v1/sources/:id 确认 Source（含密码标志）跨重启持久化
-#	12. Job 配置跨重启持久化，运行状态回到 idle（运行记录只存内存）
-#	13. SIGTERM 优雅退出（Windows 为强制清理）
+#	12. Job 配置跨重启持久化，运行历史持久化：状态保持 failed，
+#	    run_id / finished_at / error 与重启前一致
+#	13. GET /api/v1/runs/:run_id 确认运行摘要 API 可查询该持久化运行
+#	14. SIGTERM 优雅退出（Windows 为强制清理）
 #
 # 接口：scripts/smoke.sh <binary> <expected-version>
 
@@ -193,6 +195,11 @@ if [[ "${run_code}" != "202" ]]; then
 	cat run.json >&2
 	exit 1
 fi
+run_id=$(grep -o '"run_id":"run_[a-f0-9]*"' run.json | head -1 | cut -d '"' -f4)
+if [[ -z "${run_id}" ]]; then
+	echo "Error: no run id in response: $(cat run.json)" >&2
+	exit 1
+fi
 job_failed=0
 for _ in {1..30}; do
 	curl --fail --silent "${base_url}/api/v1/jobs/${job_id}/status" >status.json
@@ -207,7 +214,7 @@ if [[ "${job_failed}" != "1" ]]; then
 	cat status.json >&2
 	exit 1
 fi
-echo "[smoke] job run started (202) and converged to failed"
+echo "[smoke] job run started (202) and converged to failed: ${run_id}"
 
 # 10. 关闭进程并以同一 datadir 重启。
 stop_server
@@ -225,18 +232,55 @@ if grep -F 'S3cret-Smoke' source2.json >/dev/null; then
 fi
 echo "[smoke] source persisted across restart"
 
-# 12. Job 跨重启持久化：配置保留，运行状态回到 idle（运行记录只存内存）。
+# 12. Job 跨重启持久化：配置保留；运行历史持久化——状态保持 failed，
+#     run_id / finished_at / error 与重启前一致（历史不再只存内存）。
 curl --fail --silent "${base_url}/api/v1/jobs/${job_id}" >job2.json
 grep -F '"name":"Smoke Job"' job2.json >/dev/null
 grep -F '"mode":"copy"' job2.json >/dev/null
 grep -F "\"source_id\":\"${source_id}\"" job2.json >/dev/null
 curl --fail --silent "${base_url}/api/v1/jobs/${job_id}/status" >status2.json
-if ! grep -F '"state":"idle"' status2.json >/dev/null; then
-	echo "Error: job run state after restart should be idle" >&2
+if ! grep -F '"state":"failed"' status2.json >/dev/null; then
+	echo "Error: job run state after restart should stay failed (persistent history)" >&2
 	cat status2.json >&2
 	exit 1
 fi
-echo "[smoke] job persisted across restart, run state reset to idle"
+if ! grep -F "\"run_id\":\"${run_id}\"" status2.json >/dev/null; then
+	echo "Error: status after restart lost run id ${run_id}" >&2
+	cat status2.json >&2
+	exit 1
+fi
+if ! grep -F '"finished_at":"' status2.json >/dev/null; then
+	echo "Error: persisted run after restart has no finished_at" >&2
+	cat status2.json >&2
+	exit 1
+fi
+if ! grep -F '"error":"' status2.json >/dev/null; then
+	echo "Error: persisted run after restart has no error" >&2
+	cat status2.json >&2
+	exit 1
+fi
+echo "[smoke] job persisted across restart, failed run history intact"
+
+# 13. GET /api/v1/runs/:run_id：运行摘要 API 可查询该持久化运行。
+run_code=$(curl --fail --silent -o run2.json -w '%{http_code}' \
+	"${base_url}/api/v1/runs/${run_id}")
+if [[ "${run_code}" != "200" ]]; then
+	echo "Error: GET run after restart status ${run_code}, want 200" >&2
+	exit 1
+fi
+grep -F "\"id\":\"${run_id}\"" run2.json >/dev/null || {
+	echo "Error: run response has wrong id: $(cat run2.json)" >&2
+	exit 1
+}
+grep -F '"status":"failed"' run2.json >/dev/null || {
+	echo "Error: run response status is not failed: $(cat run2.json)" >&2
+	exit 1
+}
+grep -F "\"job_id\":\"${job_id}\"" run2.json >/dev/null || {
+	echo "Error: run response has wrong job id: $(cat run2.json)" >&2
+	exit 1
+}
+echo "[smoke] persistent run queryable via runs API"
 
 # 13. SIGTERM 优雅退出：POSIX 平台发 SIGTERM 并 wait 校验退出码（非 0 即失败）；
 # Windows 的 Git Bash kill 对原生进程不可靠，保留 server_pid 交给 cleanup
