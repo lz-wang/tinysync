@@ -21,6 +21,30 @@ GitHub Release 摘要一致。
 
 ## [Unreleased]
 
+### 新增
+
+- Source 支持多协议：在 WebDAV 之外新增 S3 与 SFTP 只读 Source，
+  三种协议共用同一个同步引擎、调度与运行历史。S3 支持自建服务
+  （显式 endpoint、path-style、bucket 内 prefix、分页列举、目录
+  占位对象），凭据只用 Source 自身的 access key / secret key；
+  SFTP 支持 password 与 private key（含 passphrase）两种显式认证
+  方式，host key 以 SHA256 fingerprint 严格校验，remote root 之外
+  的访问与 symlink 一律拒绝。
+- Source 配置按协议分为非敏感 `config` 与 secret `credentials`，
+  API 响应只回显 `credential_state` 布尔集合，secret 永不回显；
+  被同步任务引用的 Source 现在按协议完整保护 remote identity
+  （如 SFTP 的 host / port / remote root / host key fingerprint、
+  WebDAV 的 username），secret 轮换不受影响。
+- 跨协议统一 logical path 校验：包含反斜杠、dot segments、重复
+  分隔符或 NUL 的远端路径在协议边界整体失败，不再进入本地文件
+  映射（Mirror 在不完整扫描下不会删除）。
+- Web 界面支持创建 / 编辑三种协议的 Source：协议类型选择、按类型
+  动态表单、编辑时类型只读、secret 三态（保留 / 替换 / 清除）与
+  按协议的远端位置摘要。
+- v0.4 数据库升级时自动完成 schema 迁移：存量 WebDAV Source 的
+  endpoint / username / password 迁移到新的通用配置与凭据存储，
+  迁移前自动备份数据库，升级后同步行为不变。
+
 ## [0.4.0] - 2026-09-16
 
 ### 新增

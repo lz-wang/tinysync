@@ -5,12 +5,14 @@
 TinySync 是一个面向 HomeLab 的文件同步服务：单一 Go 二进制，内嵌 React Web UI，
 通过 REST API 管理同步源（Sources）与同步任务（Jobs）。
 
-> 当前开发版提供：持久化的 WebDAV Source 管理（创建、编辑、删除与连接测试），
-> 以及 WebDAV → 本地单向同步 Job——Copy / Mirror 模式、include / exclude
-> 过滤、原子下载与本地文件归属保护（Mirror 只删除本 Job 管理的文件）。
-> Job 支持自动调度（once / interval / cron，重叠自动跳过）、受控并发
-> （`--max-concurrent-jobs` / `--max-concurrent-transfers`）与持久化
-> 运行历史（每轮运行与文件级变更明细经 Web UI 与 REST 可查，重启不丢）。
+> 当前开发版提供：持久化的多协议 Source 管理（WebDAV / S3 / SFTP，
+> 创建、编辑、删除与连接测试），以及远端 → 本地单向同步 Job——
+> Copy / Mirror 模式、include / exclude 过滤、原子下载与本地文件
+> 归属保护（Mirror 只删除本 Job 管理的文件）。三种协议共用同一个
+> 同步引擎。Job 支持自动调度（once / interval / cron，重叠自动
+> 跳过）、受控并发（`--max-concurrent-jobs` /
+> `--max-concurrent-transfers`）与持久化运行历史（每轮运行与
+> 文件级变更明细经 Web UI 与 REST 可查，重启不丢）。
 >
 > **安全提示**：TinySync 尚未实现自身的认证与鉴权，Source / Job 管理
 > 与同步运行 API 无任何访问控制，请仅部署在可信的 HomeLab 网络中。
@@ -45,6 +47,74 @@ tinysync --version  # 打印版本号
 `--max-concurrent-jobs`（同时运行的同步 Job 数上限，默认 1）、
 `--max-concurrent-transfers`（同时进行的远端文件下载上限，默认 4）
 的默认值；命令行参数优先。
+
+## Sources：多协议同步源
+
+Source 配置按协议分为非敏感 `config` 与 secret `credentials` 两组；
+响应只回显 `credential_state` 布尔集合，任何 secret 永不回显。
+Type 创建后不可变。
+
+WebDAV：
+
+```bash
+curl -X POST http://127.0.0.1:9466/api/v1/sources \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "NAS",
+    "type": "webdav",
+    "config": {"endpoint": "https://nas.example.com:5006/dav", "username": "user"},
+    "credentials": {"password": "..."}
+  }'
+```
+
+S3 / MinIO（自建 S3 用显式 endpoint 与 path-style；凭据只用 Source 自身的
+static access key / secret key，不使用宿主机 ambient credential chain）：
+
+```bash
+curl -X POST http://127.0.0.1:9466/api/v1/sources \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "backup-s3",
+    "type": "s3",
+    "config": {
+      "endpoint": "https://s3.example.com",
+      "region": "us-east-1",
+      "bucket": "backup",
+      "prefix": "tinysync",
+      "path_style": true,
+      "access_key": "AKID..."
+    },
+    "credentials": {"secret_key": "..."}
+  }'
+```
+
+SFTP（host key 以 SHA256 fingerprint 严格校验，不支持跳过校验；
+symlink 不跟随，发现即失败）：
+
+```bash
+curl -X POST http://127.0.0.1:9466/api/v1/sources \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "nas-sftp",
+    "type": "sftp",
+    "config": {
+      "host": "nas.example.com",
+      "port": 22,
+      "username": "user",
+      "remote_root": "/srv/backups",
+      "auth_method": "private_key",
+      "host_key_fingerprint": "SHA256:UC1Dk4I9LLQOV3B8eZ5FlrUUcbbNie4INffe2TDTz3k"
+    },
+    "credentials": {"private_key": "...PEM...", "private_key_passphrase": "..."}
+  }'
+```
+
+被 Sync Job 引用的 Source 拒绝修改 remote identity（WebDAV 的
+endpoint + username、S3 的 endpoint / region / bucket / prefix /
+path-style、SFTP 的 host / port / username / remote_root / host key
+fingerprint），防止 Mirror 把既有本地文件误判为远端消失而删除；
+secret 轮换始终允许。更换远端的正确路径是新建 Source 后切换 Job 的
+source_id。
 
 ## 版本机制
 

@@ -503,12 +503,83 @@ Copy remove、Mirror remove、history。要证明的是三协议经过同一个
 | CI | `make check`、build、native smoke、protocol integration 全绿 |
 | Release | 六平台产物 / checksums、GitHub Release、WebDAV 镜像独立验收 |
 
+## 交付清单
+
+- [x] Remote 生命周期：`Remote.Close()`、`RemoteFactory.Create(ctx, ...)`，
+  TestConnection 纳入超时窗口并始终释放连接，Runner 运行结束释放 Remote。
+- [x] Remote Registry：协议 dispatch 只在注册表边界；`Service.OpenRemote`
+  集中凭据查询与协议创建，Runner 以 SourceGateway 替换凭据与 factory 依赖。
+- [x] 多协议模型：`TypeS3 / TypeSFTP`、Config / Credentials /
+  CredentialState 按 Type 单选，一致性校验与三态凭据更新。
+- [x] Migration 0005：`config_json / credentials_json` 通用持久化，
+  存量 WebDAV 一次性 backfill 后清空 legacy 列（真实 v4→v5 专项测试）。
+- [x] REST discriminated config：按 type 严格解码、拒绝未知字段、
+  PATCH secret 三态、Type 不可修改、secret 永不回显。
+- [x] `ValidateLogicalPath` 统一校验：scanner 二次校验 + adapter 出口校验。
+- [x] S3 adapter：AWS SDK Go v2、显式 static credentials、BaseEndpoint、
+  path-style、prefix、Delimiter 列一层、ContinuationToken 分页、
+  folder marker 目录化、file/dir collision fail whole scan、ETag opaque。
+- [x] SFTP adapter：`pkg/sftp` + `x/crypto/ssh`、password / private key
+  （含 passphrase）、SHA256 host key pin、remote root、RealPath
+  confinement、symlink fail-fast、ctx 取消关闭连接、并发 Open 验证。
+- [x] Remote identity 保护泛化：`RemoteIdentityEqual`，身份变更在有
+  Job 引用时 409，secret rotation 保持允许。
+- [x] Web UI：Type 选择器、三协议动态表单、编辑 Type readonly、
+  secret 三态、Location 摘要。
+- [x] 协议矩阵 E2E：三协议同一 `runCommonSyncScenario`（initial pull、
+  unchanged、update、selector、Copy remove、Mirror remove、history），
+  scenario 零协议分支；`internal/syncjob` 无协议代码。
+- [x] Integration gate：真实 MinIO（SDK 全链路）+ 真实 SSH/SFTP 进程内
+  server 的 `make integration`，CI build workflow 注入 MinIO service。
+- [x] Native smoke：三协议 Source 创建、secret 不回显、跨重启持久化，
+  WebDAV 原有场景不回退；已对 macOS 原生构建实测。
+- [x] `make check` 全绿；`make build` 通过（Web 嵌入资源变更）。
+
+## 实现记录
+
+实现路径：
+
+- 领域与注册：`internal/source`（`model.go`、`validation.go`、
+  `identity.go`、`registry.go`、`remote.go`、`repository.go`、`service.go`）。
+- 协议 adapter：`internal/source/s3`（AWS SDK Go v2，最小能力面
+  `API` + `NewRemoteWithAPI` 供矩阵注入模拟）、`internal/source/sftp`
+  （`pkg/sftp` + `x/crypto/ssh`）、`internal/source/webdav`（适配
+  typed config）。
+- 持久化：`internal/storage/migrations/0005_source_configs.sql`、
+  `internal/source/sqlite`（JSON encode/decode、SQL 推导
+  credential state、事务内三态凭据合并）。
+- REST：`internal/api/source.go`（严格解码、credential_state 回显、
+  identity 保护）。
+- Web UI：`web/src/api.ts`、`web/src/features/sources/SourceDialog.tsx`、
+  `web/src/pages/SourcesPage.tsx`。
+- 验证：`internal/e2e/protocol_matrix_test.go`（三协议统一场景）、
+  `internal/e2e/integration_test.go`（env 门控的真实 MinIO 场景）、
+  `internal/storage/migrate_test.go`（v4→v5 专项）、
+  `scripts/smoke.sh`（多协议 native smoke）。
+- CI：`.github/workflows/build.yml` integration job（MinIO service），
+  Makefile `integration` target。
+
+实现要点（与契约的对应关系）：
+
+- 协议 dispatch 只存在于 `RemoteRegistry` 一处；`internal/syncjob`
+  不出现任何协议分支（协议矩阵 E2E 佐证）。
+- secret 只经 `Credentials` / `CredentialsUpdate` 与 Repository
+  `GetCredentials` 流通；普通读取路径由 SQL 表达式推导 credential
+  state 布尔，永不取回 `credentials_json` 明文。
+- legacy `endpoint / username / password` 列为 schema tombstone
+  （0005 清空），事实来源唯一，待后续 schema compact 重建表移除。
+- S3 VersionID 未实现（避免每对象额外请求）；planner 降级
+  ETag+Size 已覆盖。Capability API 与 Range 维持不做。
+
 ## 完成标准
 
 > 同一个 Sync Engine 无需协议分支即可同步 WebDAV、S3 和 SFTP；
 > Source 配置、凭据、持久化、REST、Web UI、连接生命周期与 logical
 > path 均具备协议扩展能力。
 
-上述验收矩阵为可验证条件；发布相关项（Release workflow、发行资产、
-镜像验收）在 tag `v0.5.0` 后按[构建与发布](../guides/release.md)执行，
-不属于本阶段代码 commit。
+本地验收已完成（2026-09-16）：`make check` 全绿；`make build` 通过；
+三协议矩阵 E2E（真实 WebDAV/SFTP 协议栈 + S3 进程内模拟）全绿；
+真实 MinIO integration 场景实测通过；macOS 原生 smoke 全绿。
+`internal/syncjob` 无协议分支。发布相关项（Release workflow、六平台
+发行资产、WebDAV 镜像独立验收）在 tag `v0.5.0` 后按
+[构建与发布](../guides/release.md)执行，不属于本阶段代码 commit。

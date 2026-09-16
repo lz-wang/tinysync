@@ -22,7 +22,7 @@ Local Files）与调度及同步历史链路（自动触发、持久化运行历
 
 本地核对日期：2026-09-16。当前实现、测试和 workflow 支持以下判断。
 
-- **已实现**：`serve`、`version` / `--version`、数据目录与端口配置、日志、HTTP 生命周期、health/version API、内嵌状态页及 fallback 构建；SQLite 持久化与 migration、Source 领域（模型、SQLite Repository、WebDAV 只读 adapter、应用服务）、Source CRUD 与连接测试 REST API、Sources Web 管理界面；Sync Job 领域（模型、Selector、remote scanner、planner、原子下载、Copy/Mirror engine、手动运行 Runner、SQLite Repository）、Jobs REST API 与 Web 管理界面、端到端与跨重启持久化测试；调度与历史（Schedule 模型与持久化、Scheduler、多 Job Runner、有界并发传输、`sync_runs` / `sync_run_items` 持久化、runs REST API、History Web UI、并发配置）。
+- **已实现**：`serve`、`version` / `--version`、数据目录与端口配置、日志、HTTP 生命周期、health/version API、内嵌状态页及 fallback 构建；SQLite 持久化与 migration、多协议 Source 领域（typed config / credentials 模型、Remote Registry、WebDAV / S3 / SFTP 只读 adapter、协议无关 logical path 校验、remote identity 保护、应用服务）、Source CRUD 与连接测试 REST API（discriminated config）、Sources Web 管理界面；Sync Job 领域（模型、Selector、remote scanner、planner、原子下载、Copy/Mirror engine、手动运行 Runner、SQLite Repository）、Jobs REST API 与 Web 管理界面、端到端与跨重启持久化测试；调度与历史（Schedule 模型与持久化、Scheduler、多 Job Runner、有界并发传输、`sync_runs` / `sync_run_items` 持久化、runs REST API、History Web UI、并发配置）。
 - **已有工程配置**：Git 版本注入、Go 测试、前端静态检查、Codecov、六平台构建、三平台原生 Smoke、Build/Release 分离及 WebDAV 镜像。
 - **v0.1.0 已发布**：远端 `v0.1.0` Release workflow 成功（2026-09-14），六平台发行档案与 `checksums.txt` 已核对到位；WebDAV 镜像按发布规范需独立验收，不能由 GitHub Release 成功推导。
 - **尚未实现**：文件浏览/发布、认证与 Token、MCP。
@@ -40,8 +40,21 @@ cron 时区，missed 周期不补跑）、Scheduler、多 Job Runner（重叠跳
 并发上限、run 先持久化）、有界并行传输与文件级历史、
 `0003_scheduler_history.sql`、runs REST API 与 History Web UI、
 并发运行配置；真实 WebDAV + SQLite + Scheduler 端到端覆盖自动同步、
-补执行、容量跳过、跨重启历史与 retention。本地验证 `make check` 全绿、
-`make build` 通过；发布门禁与发行验收未开始。
+补执行、容量跳过、跨重启历史与 retention。
+v0.5.0 多协议 Source 抽象已完成实现（2026-09-16）：Source 模型
+协议无关化（typed Config / Credentials / CredentialState，migration
+`0005_source_configs.sql` 通用持久化与 WebDAV backfill）、Remote
+生命周期（Close + context-aware 创建）与协议注册表（dispatch 只在
+registry 边界，`internal/syncjob` 无协议分支）、S3 read-only adapter
+（AWS SDK Go v2，显式 static credentials，BaseEndpoint / path-style /
+分页 / folder marker / collision fail-fast）、SFTP read-only adapter
+（password / private key、SHA256 host key pin、RealPath root
+confinement、symlink fail-fast、取消关闭连接）、REST discriminated
+config（严格解码、secret 三态、identity 修改保护泛化）、统一 logical
+path 校验、Web UI 多协议动态表单；三协议统一场景 E2E 证明同一
+Sync Engine 无协议分支，真实 MinIO integration gate 与多协议 native
+smoke 通过。本地验证 `make check` 全绿、`make build` 通过；发布门禁
+与发行验收未开始。
 
 ## 架构与边界
 
@@ -67,7 +80,7 @@ cron 时区，missed 周期不补跑）、Scheduler、多 Job Runner（重叠跳
 | v0.2.0 | [持久化与 Source](docs/roadmap/02-persistence-and-sources.md) | 已完成 | Web UI / REST 创建 WebDAV Source，持久化并验证连接，尚不执行同步 |
 | v0.3.0 | [WebDAV Pull Sync](docs/roadmap/03-webdav-pull-sync.md) | 已完成 | 手动执行 Copy / Mirror，支持选择器、原子下载与本地文件归属保护 |
 | v0.4.0 | [调度与同步历史](docs/roadmap/04-scheduler-and-history.md) | 已完成 | 自动调度、重叠跳过、并发控制及运行/文件明细可追踪 |
-| v0.5.0 | [S3 与 SFTP](docs/roadmap/05-s3-and-sftp.md) | 规划 | 同一同步引擎支持三种协议，上层不依赖协议分支 |
+| v0.5.0 | [S3 与 SFTP](docs/roadmap/05-s3-and-sftp.md) | 已完成实现 | 同一同步引擎支持三种协议，上层不依赖协议分支 |
 | v0.6.0 | [文件浏览与发布](docs/roadmap/06-file-browser-and-publishing.md) | 规划 | 只读远端浏览、本地下载与选择性 HTTP 发布，限制访问根目录 |
 | v0.7.0 | [认证与 API Token](docs/roadmap/07-authentication-and-tokens.md) | 规划 | Web session 与 API Token 分离，支持 scope、过期和撤销 |
 | v0.8.0 | [MCP 集成](docs/roadmap/08-mcp-integration.md) | 规划 | 复用应用服务与鉴权，查询/运行任务，大文件经 HTTP 获取 |
