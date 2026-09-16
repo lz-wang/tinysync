@@ -16,7 +16,14 @@ import {
     Typography,
 } from '@mui/material'
 import { useCallback, useEffect, useState } from 'react'
-import { listSources, type SourceResponse, testSource } from '../api'
+import {
+    listSources,
+    type S3Config,
+    type SFTPConfig,
+    type SourceResponse,
+    testSource,
+    type WebDAVConfig,
+} from '../api'
 import DeleteSourceDialog from '../features/sources/DeleteSourceDialog'
 import SourceDialog from '../features/sources/SourceDialog'
 
@@ -193,7 +200,8 @@ function SourceTable({
     if (sources.length === 0) {
         return (
             <Typography variant="body2" color="text.secondary">
-                No sources configured yet. Click “Add Source” to connect a WebDAV server.
+                No sources configured yet. Click “Add Source” to connect a WebDAV, S3 or SFTP
+                server.
             </Typography>
         )
     }
@@ -204,8 +212,8 @@ function SourceTable({
                     <TableRow>
                         <TableCell>Name</TableCell>
                         <TableCell>Type</TableCell>
-                        <TableCell>Endpoint</TableCell>
-                        <TableCell align="right">Password</TableCell>
+                        <TableCell>Location</TableCell>
+                        <TableCell align="right">Credential</TableCell>
                         <TableCell align="right">Enabled</TableCell>
                         <TableCell>Connection</TableCell>
                         <TableCell align="right">Actions</TableCell>
@@ -217,11 +225,9 @@ function SourceTable({
                             <TableCell>{source.name}</TableCell>
                             <TableCell>{source.type}</TableCell>
                             <TableCell sx={{ fontFamily: 'monospace' }}>
-                                {source.endpoint}
+                                {locationSummary(source)}
                             </TableCell>
-                            <TableCell align="right">
-                                {source.password_set ? 'Configured' : 'Anonymous'}
-                            </TableCell>
+                            <TableCell align="right">{credentialSummary(source)}</TableCell>
                             <TableCell align="right">
                                 <Chip
                                     label={source.enabled ? 'On' : 'Off'}
@@ -263,6 +269,54 @@ function SourceTable({
             </Table>
         </TableContainer>
     )
+}
+
+// locationSummary 按协议生成远端位置摘要。SourceConfig 是按 type
+// 判别的 union，前端以 type 显式选择配置形态。
+function locationSummary(source: SourceResponse): string {
+    const config = source.config
+    switch (source.type) {
+        case 'webdav': {
+            const cfg = config as WebDAVConfig
+            return cfg.endpoint ?? ''
+        }
+        case 's3': {
+            const cfg = config as S3Config
+            const host = urlHost(cfg.endpoint ?? '')
+            const prefix = cfg.prefix ? `/${cfg.prefix}` : ''
+            return `${host}/${cfg.bucket}${prefix}`
+        }
+        case 'sftp': {
+            const cfg = config as SFTPConfig
+            return `${cfg.host}:${cfg.port ?? 22}${cfg.remote_root}`
+        }
+    }
+}
+
+// urlHost 从 endpoint URL 提取 host（含端口）；无 URL 时回退原文。
+function urlHost(endpoint: string): string {
+    if (endpoint === '') {
+        return 'aws'
+    }
+    try {
+        return new URL(endpoint).host
+    } catch {
+        return endpoint
+    }
+}
+
+// credentialSummary 汇总各协议 secret 状态。
+function credentialSummary(source: SourceResponse): string {
+    const state = source.credential_state
+    const configured =
+        (state.webdav?.password_set ?? false) ||
+        (state.s3?.secret_key_set ?? false) ||
+        (state.sftp?.password_set ?? false) ||
+        (state.sftp?.private_key_set ?? false)
+    if (!configured) {
+        return source.type === 'webdav' ? 'Anonymous' : 'Not set'
+    }
+    return 'Configured'
 }
 
 function TestCell({ state }: { state: TestState | undefined }) {

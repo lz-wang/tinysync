@@ -10,15 +10,60 @@ export interface VersionResponse {
     version: string
 }
 
-// SourceResponse 是 Source 的 API 表示；绝不包含密码，
-// 凭据状态只以 password_set 暴露。
+// SourceType 是 Source 支持的协议类型；创建后不可变。
+export type SourceType = 'webdav' | 's3' | 'sftp'
+
+// WebDAVConfig 是 WebDAV 的非敏感配置。
+export interface WebDAVConfig {
+    endpoint: string
+    username: string
+}
+
+// S3Config 是 S3 的非敏感配置；endpoint 缺省表示 AWS 默认 endpoint。
+export interface S3Config {
+    endpoint?: string
+    region: string
+    bucket: string
+    prefix?: string
+    path_style?: boolean
+    access_key: string
+}
+
+// SFTPAuthMethod 是 SFTP 认证方式，显式声明不推断。
+export type SFTPAuthMethod = 'password' | 'private_key'
+
+// SFTPConfig 是 SFTP 的非敏感配置。
+export interface SFTPConfig {
+    host: string
+    port?: number
+    username: string
+    remote_root: string
+    auth_method: SFTPAuthMethod
+    host_key_fingerprint: string
+}
+
+// SourceConfig 是按 type 判别的协议配置（请求与响应均为扁平单选对象）。
+export type SourceConfig = WebDAVConfig | S3Config | SFTPConfig
+
+// CredentialState 回显各 secret 是否设置；任何 secret 不回显明文。
+export interface CredentialState {
+    webdav?: { password_set: boolean }
+    s3?: { secret_key_set: boolean }
+    sftp?: {
+        password_set: boolean
+        private_key_set: boolean
+        private_key_passphrase_set: boolean
+    }
+}
+
+// SourceResponse 是 Source 的 API 表示；绝不包含 secret 明文，
+// 凭据状态只以 credential_state 布尔暴露。
 export interface SourceResponse {
     id: string
     name: string
-    type: string
-    endpoint: string
-    username: string
-    password_set: boolean
+    type: SourceType
+    config: SourceConfig
+    credential_state: CredentialState
     enabled: boolean
     created_at: string
     updated_at: string
@@ -37,23 +82,40 @@ export interface TestSourceResponse {
     error?: string
 }
 
+// 各协议 secret 请求体（创建：值语义；更新：三态，undefined 保留、
+// 空串清除、非空替换）。
+export interface WebDAVCredentials {
+    password?: string
+}
+
+export interface S3Credentials {
+    secret_key?: string
+}
+
+export interface SFTPCredentials {
+    password?: string
+    private_key?: string
+    private_key_passphrase?: string
+}
+
+// SourceCredentials 按 type 单选的 secret 组。
+export type SourceCredentials = WebDAVCredentials | S3Credentials | SFTPCredentials
+
 // CreateSourceInput 对应 POST /api/v1/sources 请求体。
 export interface CreateSourceInput {
     name: string
-    type: string
-    endpoint: string
-    username: string
-    password: string
-    enabled: boolean
+    type: SourceType
+    config: SourceConfig
+    credentials?: SourceCredentials
+    enabled?: boolean
 }
 
 // UpdateSourceInput 对应 PATCH 请求体：undefined 字段保留现有值；
-// password 语义为 undefined 保留、空串清除、非空替换。
+// config 提供时整个协议 config 替换；credentials 组内 secret 三态。
 export interface UpdateSourceInput {
     name?: string
-    endpoint?: string
-    username?: string
-    password?: string
+    config?: SourceConfig
+    credentials?: SourceCredentials
     enabled?: boolean
 }
 
