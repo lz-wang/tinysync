@@ -585,9 +585,11 @@ Copy remove、Mirror remove、history。要证明的是三协议经过同一个
 三协议矩阵 E2E（真实 WebDAV/SFTP 协议栈 + S3 进程内模拟）全绿；
 真实 MinIO integration 场景实测通过；macOS 原生 smoke 全绿。
 `internal/syncjob` 无协议分支。远端 CI 的 integration 证据与本地
-验收区分记录：此前 `minio/minio:latest` service container 拉取失败
-导致远端 gate 未运行任何测试即变红，修复（固定版本、可重试拉取、
-作为 Release 发布门禁）后的远端实际通过以推送后的 workflow 运行为
-准。发布相关项（Release workflow、六平台发行资产、WebDAV 镜像独立
-验收）在 tag `v0.5.0` 后按[构建与发布](../guides/release.md)执行，
-不属于本阶段代码 commit。
+验收区分记录：GitHub-hosted runner 匿名拉取 Docker Hub 的
+`minio/minio` 持续被拒曾让远端 gate 未运行任何测试即变红；改用
+官方 Quay 镜像并固定可复用 workflow 的检出 ref（Build 用
+github.sha、Release 用发布 tag）后，远端 integration 实际执行并
+通过（run 35124990299，2026-09-17）。发布验收已完成（2026-09-17）：
+tag `v0.5.0` 指向 ce23f03，Release workflow run 35163690638 成功，
+六平台发行档与 `checksums.txt` 核对到位，WebDAV 镜像与 Pushover
+通知独立验收通过。
