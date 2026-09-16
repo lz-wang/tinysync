@@ -69,22 +69,55 @@ func toScheduleDTO(s syncjob.Schedule) *scheduleDTO {
 }
 
 // scheduleFromDTO 把请求体中的调度配置转为领域对象；nil 透传表示
-// 「未提供」。字段合法性由 Service 校验。
-func scheduleFromDTO(dto *scheduleDTO) *syncjob.Schedule {
+// 「未提供」。discriminated union 严格校验：不属于该类型的互斥字段
+// 一律报错——拼错类型或多传字段必须显式暴露，而不是被静默丢弃。
+// 字段取值合法性仍由 Service 校验。
+func scheduleFromDTO(dto *scheduleDTO) (*syncjob.Schedule, error) {
 	if dto == nil {
-		return nil
+		return nil, nil
+	}
+	hasAt := dto.At != ""
+	hasEvery := dto.Every != ""
+	hasExpression := dto.Expression != ""
+	hasTimezone := dto.Timezone != ""
+	reject := func(reason string) (*syncjob.Schedule, error) {
+		return nil, fmt.Errorf("schedule %q: %s", dto.Type, reason)
 	}
 	s := syncjob.Schedule{Type: syncjob.ScheduleType(dto.Type)}
 	switch s.Type {
+	case syncjob.ScheduleManual:
+		if hasAt || hasEvery || hasExpression || hasTimezone {
+			return reject("manual schedule takes no scheduling fields")
+		}
 	case syncjob.ScheduleOnce:
+		if !hasAt {
+			return reject("once schedule requires \"at\" (RFC3339)")
+		}
+		if hasEvery || hasExpression || hasTimezone {
+			return reject("once schedule takes no every / expression / timezone")
+		}
 		s.Value = dto.At
 	case syncjob.ScheduleInterval:
+		if !hasEvery {
+			return reject("interval schedule requires \"every\" (Go duration)")
+		}
+		if hasAt || hasExpression || hasTimezone {
+			return reject("interval schedule takes no at / expression / timezone")
+		}
 		s.Value = dto.Every
 	case syncjob.ScheduleCron:
+		if !hasExpression {
+			return reject("cron schedule requires \"expression\" (5-field)")
+		}
+		if hasAt || hasEvery {
+			return reject("cron schedule takes no at / every")
+		}
 		s.Value = dto.Expression
 		s.Timezone = dto.Timezone
+	default:
+		return reject("unknown schedule type")
 	}
-	return &s
+	return &s, nil
 }
 
 // jobDTO 是 Sync Job 的 API 表示。Include / Exclude 恒为数组（nil 归一），
@@ -231,6 +264,11 @@ func (h *jobHandlers) create(c *gin.Context) {
 	if req.Enabled != nil {
 		enabled = *req.Enabled
 	}
+	schedule, err := scheduleFromDTO(req.Schedule)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	created, err := h.svc.Create(c.Request.Context(), syncjob.CreateInput{
 		Name:       req.Name,
 		SourceID:   req.SourceID,
@@ -240,7 +278,7 @@ func (h *jobHandlers) create(c *gin.Context) {
 		Include:    req.Include,
 		Exclude:    req.Exclude,
 		Enabled:    enabled,
-		Schedule:   scheduleFromDTO(req.Schedule),
+		Schedule:   schedule,
 	})
 	if err != nil {
 		handleJobError(c, err)
@@ -276,6 +314,11 @@ func (h *jobHandlers) update(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
+	schedule, err := scheduleFromDTO(req.Schedule)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	input := syncjob.UpdateInput{
 		Name:       req.Name,
 		SourceID:   req.SourceID,
@@ -284,7 +327,7 @@ func (h *jobHandlers) update(c *gin.Context) {
 		Include:    req.Include,
 		Exclude:    req.Exclude,
 		Enabled:    req.Enabled,
-		Schedule:   scheduleFromDTO(req.Schedule),
+		Schedule:   schedule,
 	}
 	if req.Mode != nil {
 		mode := syncjob.Mode(*req.Mode)

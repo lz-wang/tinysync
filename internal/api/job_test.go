@@ -579,6 +579,51 @@ func TestJobScheduleAPI(t *testing.T) {
 	}
 }
 
+// schedule discriminated union 严格校验：不属于该类型的互斥字段、
+// 缺失的必填字段与未知类型一律 400，而不是被静默丢弃或归一。
+func TestJobScheduleUnionStrictnessAPI(t *testing.T) {
+	router := newJobRouter(t, fakeJobRemote{})
+	sourceID := createSourceViaAPI(t, router, "NAS", true)
+	id, _ := createJobWithSchedule(t, router, "Union", sourceID, `{"type": "interval", "every": "30m"}`)
+
+	cases := []struct {
+		name     string
+		schedule string
+	}{
+		{"manual with expression", `{"type": "manual", "expression": "0 3 * * *"}`},
+		{"once with timezone", `{"type": "once", "at": "2026-09-20T03:00:00Z", "timezone": "Asia/Singapore"}`},
+		{"once missing at", `{"type": "once"}`},
+		{"interval with expression", `{"type": "interval", "every": "30m", "expression": "0 3 * * *"}`},
+		{"cron missing expression", `{"type": "cron", "timezone": "UTC"}`},
+		{"unknown type", `{"type": "fortnightly", "every": "30m"}`},
+	}
+	for _, tc := range cases {
+		body := `{"name": "Renamed", "schedule": ` + tc.schedule + `}`
+		if rec := doJSON(t, router, "PATCH", "/api/v1/jobs/"+id, body); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: PATCH status = %d %s, want 400", tc.name, rec.Code, rec.Body.String())
+		}
+	}
+	// 被 400 拒绝的 PATCH 不改变现有配置。
+	got := decodeJSON(t, doJSON(t, router, "GET", "/api/v1/jobs/"+id, ""))
+	schedule, _ := got["schedule"].(map[string]any)
+	if schedule["type"] != "interval" || schedule["every"] != "30m" {
+		t.Errorf("schedule after rejected PATCHes = %v, want interval 30m kept", schedule)
+	}
+	if got["name"] == "Renamed" {
+		t.Errorf("name after rejected PATCHes = %v, want unchanged", got["name"])
+	}
+}
+
+// GET /api/v1/runs/:id/items 对不存在的 run 返回 404：明细为空的
+// 真实 run 与不存在的 run 语义可区分。
+func TestRunItemsUnknownRunAPI(t *testing.T) {
+	router := newJobRouter(t, fakeJobRemote{})
+	rec := doJSON(t, router, "GET", "/api/v1/runs/run_missing/items", "")
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("items of unknown run = %d %s, want 404", rec.Code, rec.Body.String())
+	}
+}
+
 // interval Job 的 status 附带 next_run_at；manual Job 不输出。
 func TestJobStatusNextRunAPI(t *testing.T) {
 	router := newJobRouter(t, fakeJobRemote{})

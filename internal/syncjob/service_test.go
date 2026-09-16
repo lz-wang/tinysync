@@ -521,6 +521,69 @@ func TestCreateAndUpdateSchedule(t *testing.T) {
 	}
 }
 
+// 同值 interval PATCH 保留相位基准：语义未变的调度更新不重置 anchor
+// （否则在 00:00/06:00/12:00 触发的 Job 被 10:23 的一次无关 PATCH 挪到
+// 16:23）；语义变化（改周期）与切换类型仍按「变更即重设」处理。
+func TestUpdateSameIntervalKeepsAnchor(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+
+	input := env.validInput(t, "anchor")
+	input.Schedule = &syncjob.Schedule{Type: syncjob.ScheduleInterval, Value: "6h"}
+	job, err := env.service.Create(ctx, input)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if job.Schedule.AnchorAt == nil || !job.Schedule.AnchorAt.Equal(env.now) {
+		t.Fatalf("created anchor = %v, want fixed clock %v", job.Schedule.AnchorAt, env.now)
+	}
+
+	// 推进时钟后发同值 PATCH（等价时长写法）：anchor 保留。
+	env.now = env.now.Add(2 * time.Hour)
+	sameValue := syncjob.Schedule{Type: syncjob.ScheduleInterval, Value: "360m"}
+	same, err := env.service.Update(ctx, job.ID, syncjob.UpdateInput{Schedule: &sameValue})
+	if err != nil {
+		t.Fatalf("Update same interval: %v", err)
+	}
+	if same.Schedule.AnchorAt == nil || !same.Schedule.AnchorAt.Equal(env.now.Add(-2*time.Hour)) {
+		t.Errorf("anchor after same-value PATCH = %v, want kept %v", same.Schedule.AnchorAt, env.now.Add(-2*time.Hour))
+	}
+
+	// 无关字段 PATCH 也不触碰 anchor。
+	renamed, err := env.service.Update(ctx, job.ID, syncjob.UpdateInput{Name: &job.Name})
+	if err != nil {
+		t.Fatalf("Update name: %v", err)
+	}
+	if renamed.Schedule.AnchorAt == nil || !renamed.Schedule.AnchorAt.Equal(env.now.Add(-2*time.Hour)) {
+		t.Errorf("anchor after unrelated PATCH = %v, want kept", renamed.Schedule.AnchorAt)
+	}
+
+	// 改变周期：语义变化，anchor 重置为当前固定时钟。
+	longer := syncjob.Schedule{Type: syncjob.ScheduleInterval, Value: "12h"}
+	reset, err := env.service.Update(ctx, job.ID, syncjob.UpdateInput{Schedule: &longer})
+	if err != nil {
+		t.Fatalf("Update changed interval: %v", err)
+	}
+	if reset.Schedule.AnchorAt == nil || !reset.Schedule.AnchorAt.Equal(env.now) {
+		t.Errorf("anchor after changed interval = %v, want reset to %v", reset.Schedule.AnchorAt, env.now)
+	}
+
+	// 切换 once 再切回 interval：anchor 按新变更重设。
+	env.now = env.now.Add(1 * time.Hour)
+	once := syncjob.Schedule{Type: syncjob.ScheduleOnce, Value: env.now.Add(time.Hour).Format(time.RFC3339)}
+	if _, err := env.service.Update(ctx, job.ID, syncjob.UpdateInput{Schedule: &once}); err != nil {
+		t.Fatalf("Update to once: %v", err)
+	}
+	back := syncjob.Schedule{Type: syncjob.ScheduleInterval, Value: "6h"}
+	recreated, err := env.service.Update(ctx, job.ID, syncjob.UpdateInput{Schedule: &back})
+	if err != nil {
+		t.Fatalf("Update back to interval: %v", err)
+	}
+	if recreated.Schedule.AnchorAt == nil || !recreated.Schedule.AnchorAt.Equal(env.now) {
+		t.Errorf("anchor after type switch back = %v, want reset to %v", recreated.Schedule.AnchorAt, env.now)
+	}
+}
+
 // seedManaged 直接向 managed repo 写一条记录，供释放语义断言使用。
 func seedManaged(t *testing.T, env *testEnv, jobID string) {
 	t.Helper()

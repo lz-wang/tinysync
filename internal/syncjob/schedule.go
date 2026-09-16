@@ -105,6 +105,32 @@ func (s Schedule) Normalized() Schedule {
 	return out
 }
 
+// IntentEqual 判断两个 schedule 的用户语义是否一致：Type / Timezone
+// 相同，且 once 比较绝对时刻、interval 比较周期时长、cron / manual
+// 比较归一后的表达式。Service 以此识别「同值 PATCH」——语义未变的
+// 调度更新不重置 interval 的相位基准。输入应已通过 Validate；无法
+// 解析的值一律视为不相等。
+func (s Schedule) IntentEqual(other Schedule) bool {
+	if s.Type != other.Type ||
+		strings.TrimSpace(s.Timezone) != strings.TrimSpace(other.Timezone) {
+		return false
+	}
+	switch s.Type {
+	case ScheduleManual:
+		return true
+	case ScheduleOnce:
+		a, errA := s.OnceAt()
+		b, errB := other.OnceAt()
+		return errA == nil && errB == nil && a.Equal(b)
+	case ScheduleInterval:
+		a, errA := s.IntervalEvery()
+		b, errB := other.IntervalEvery()
+		return errA == nil && errB == nil && a == b
+	default: // ScheduleCron
+		return strings.TrimSpace(s.Value) == strings.TrimSpace(other.Value)
+	}
+}
+
 // OnceAt 解析 once 的触发时间。
 func (s Schedule) OnceAt() (time.Time, error) {
 	at, err := time.Parse(time.RFC3339, strings.TrimSpace(s.Value))

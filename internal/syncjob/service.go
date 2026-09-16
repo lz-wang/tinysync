@@ -174,18 +174,23 @@ func (s *Service) Update(ctx context.Context, id string, input UpdateInput) (Job
 		updated.Enabled = *input.Enabled
 	}
 	if input.Schedule != nil {
-		// schedule 原子替换：整体校验归一后覆盖。interval 的相位基准
-		// 随变更重设；其他类型不携带 anchor。
+		// schedule 原子替换：整体校验归一后覆盖。语义变化时 interval
+		// 的相位基准随变更重设（anchor = now）；语义未变的同值更新
+		// 保留现有 anchor，不被无关的 PATCH 重置相位。其他类型不携带
+		// anchor。
 		if err := input.Schedule.Validate(); err != nil {
 			return Job{}, err
 		}
-		updated.Schedule = input.Schedule.Normalized()
-		if updated.Schedule.Type == ScheduleInterval {
+		normalized := input.Schedule.Normalized()
+		if current.Schedule.IntentEqual(normalized) {
+			normalized.AnchorAt = current.Schedule.AnchorAt
+		} else if normalized.Type == ScheduleInterval {
 			anchor := s.Now()
-			updated.Schedule.AnchorAt = &anchor
+			normalized.AnchorAt = &anchor
 		} else {
-			updated.Schedule.AnchorAt = nil
+			normalized.AnchorAt = nil
 		}
+		updated.Schedule = normalized
 	}
 	// 校验合并后的最终 pattern 集合：与 Create 一致，配置入口即拒绝
 	// 非法 pattern（mapping 未变时不触碰 managed metadata）。

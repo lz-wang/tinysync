@@ -517,7 +517,12 @@ func (r *Runner) GetRun(ctx context.Context, runID string) (RunRecord, error) {
 }
 
 // ListRunItems 分页查询 run 的文件级明细，total 为该 run 明细总数。
+// 先确认 run 存在：明细为空的 run 与不存在的 run 必须可区分
+// （不存在返回 ErrRunUnknown，与 /runs/:id 的资源语义一致）。
 func (r *Runner) ListRunItems(ctx context.Context, runID string, limit, offset int) ([]RunItem, int, error) {
+	if _, err := r.history.Get(ctx, runID); err != nil {
+		return nil, 0, err
+	}
 	return r.history.Items(ctx, runID, limit, offset)
 }
 
