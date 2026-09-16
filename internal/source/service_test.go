@@ -40,9 +40,11 @@ func (r *stubRemote) Close() error {
 	return nil
 }
 
-// stubFactory 返回预设 Remote 并记录最近一次构造参数。
+// stubFactory 返回预设 Remote 并记录最近一次构造参数；createErr 非 nil
+// 时 Create 失败（模拟 dial / 认证 / host key 等创建阶段故障）。
 type stubFactory struct {
 	remote       source.Remote
+	createErr    error
 	lastSource   source.Source
 	lastPassword string
 }
@@ -52,6 +54,9 @@ func (f *stubFactory) Type() source.Type {
 }
 
 func (f *stubFactory) Create(ctx context.Context, s source.Source, credentials source.Credentials) (source.Remote, error) {
+	if f.createErr != nil {
+		return nil, f.createErr
+	}
 	f.lastSource = s
 	f.lastPassword = credentials.WebDAV.Password
 	return f.remote, nil
@@ -307,5 +312,30 @@ func TestServiceTestConnectionUnknownID(t *testing.T) {
 	svc, _ := newTestService(t, &stubRemote{})
 	if _, err := svc.TestConnection(context.Background(), "src_missing"); !errors.Is(err, source.ErrNotFound) {
 		t.Errorf("TestConnection unknown = %v, want ErrNotFound", err)
+	}
+}
+
+// Factory 创建阶段失败（SFTP 的 dial、认证、host key 校验、超时全部
+// 发生在 Create 内）也是测试的结论：返回 OK=false 的结果与 nil 错误，
+// 不作为操作失败传播（REST 契约只对存储故障返回 5xx）。
+func TestServiceTestConnectionFactoryFailureReturnsResult(t *testing.T) {
+	svc, factory := newTestService(t, &stubRemote{})
+	factory.createErr = errors.New("sftp dial 127.0.0.1:22: connection refused")
+	ctx := context.Background()
+
+	created, err := svc.Create(ctx, validInput())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	result, err := svc.TestConnection(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("TestConnection returned error: %v", err)
+	}
+	if result.OK {
+		t.Error("result.OK = true, want false")
+	}
+	if result.Error != factory.createErr.Error() {
+		t.Errorf("result.Error = %q, want factory error", result.Error)
 	}
 }

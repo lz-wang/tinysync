@@ -122,10 +122,10 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 }
 
 // OpenRemote 按 ID 读取 Source 并构造其远端客户端：凭据查询与协议
-// dispatch 集中在此一条链路，Runner、Connection Test 与未来 MCP /
-// browser 复用同一入口，不各自接触凭据或 factory。调用方负责在用毕
-// 后 Close 返回的 Remote。返回 Source 供调用方执行 Enabled 等策略
-// 检查；凭据明文不经过该入口以外的任何路径。
+// dispatch 集中在此一条链路，Runner 与未来 MCP / browser 复用同一
+// 入口，不各自接触凭据或 factory。调用方负责在用毕后 Close 返回的
+// Remote。返回 Source 供调用方执行 Enabled 等策略检查；凭据明文不
+// 经过该入口以外的任何路径。
 func (s *Service) OpenRemote(ctx context.Context, id string) (Source, Remote, error) {
 	src, err := s.repo.Get(ctx, id)
 	if err != nil {
@@ -144,15 +144,27 @@ func (s *Service) OpenRemote(ctx context.Context, id string) (Source, Remote, er
 
 // TestConnection 真正连接远端验证配置：对根路径执行 Stat（WebDAV 为
 // PROPFIND）。连接失败返回 OK=false 的结果与 nil 错误；Source 不存在
-// 或存储故障才返回错误。Remote 的创建纳入同一超时窗口，结束后始终
-// 释放连接（有连接生命周期的协议不遗留会话）。
+// 或存储故障才返回错误。两类失败以 Remote 创建为界区分：Repository
+// 读取失败是存储故障（返回错误）；factory 失败是测试的结论——SFTP
+// 等协议的 dial、认证、host key 校验全部发生在 Create 内，与 Stat
+// 失败同样归入 OK=false，不作为操作失败传播。Remote 的创建与探测
+// 纳入同一超时窗口，结束后始终释放连接（有连接生命周期的协议不
+// 遗留会话）。
 func (s *Service) TestConnection(ctx context.Context, id string) (TestResult, error) {
 	start := s.Now()
 	testCtx, cancel := context.WithTimeout(ctx, testTimeout)
 	defer cancel()
-	_, remote, err := s.OpenRemote(testCtx, id)
+	src, err := s.repo.Get(ctx, id)
 	if err != nil {
 		return TestResult{}, err
+	}
+	creds, err := s.repo.GetCredentials(ctx, id)
+	if err != nil {
+		return TestResult{}, err
+	}
+	remote, err := s.factory.Create(testCtx, src, creds)
+	if err != nil {
+		return TestResult{OK: false, LatencyMS: s.Now().Sub(start).Milliseconds(), Error: err.Error()}, nil
 	}
 	// 关闭失败不影响测试结论；探测结果只由 Stat 决定。
 	defer func() { _ = remote.Close() }()

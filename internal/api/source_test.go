@@ -41,9 +41,11 @@ func (r fakeRemote) Close() error {
 	return nil
 }
 
-// fakeFactory 返回预设 Remote。
+// fakeFactory 返回预设 Remote；createErr 非 nil 时 Create 失败（模拟
+// dial / 认证 / host key 等创建阶段故障）。
 type fakeFactory struct {
-	remote source.Remote
+	remote    source.Remote
+	createErr error
 }
 
 func (f fakeFactory) Type() source.Type {
@@ -51,11 +53,20 @@ func (f fakeFactory) Type() source.Type {
 }
 
 func (f fakeFactory) Create(ctx context.Context, s source.Source, credentials source.Credentials) (source.Remote, error) {
+	if f.createErr != nil {
+		return nil, f.createErr
+	}
 	return f.remote, nil
 }
 
 // newSourceRouter 构造挂载真实 Source 服务的路由。
 func newSourceRouter(t *testing.T, remote source.Remote) *gin.Engine {
+	t.Helper()
+	return newSourceRouterWithFactory(t, fakeFactory{remote: remote})
+}
+
+// newSourceRouterWithFactory 用指定 factory 构造路由。
+func newSourceRouterWithFactory(t *testing.T, factory fakeFactory) *gin.Engine {
 	t.Helper()
 	dataDir := t.TempDir()
 	db, err := storage.Open(dataDir)
@@ -66,7 +77,7 @@ func newSourceRouter(t *testing.T, remote source.Remote) *gin.Engine {
 	if err := storage.Migrate(context.Background(), db, dataDir); err != nil {
 		t.Fatalf("storage.Migrate: %v", err)
 	}
-	svc := source.NewService(sqlite.New(db), fakeFactory{remote: remote})
+	svc := source.NewService(sqlite.New(db), factory)
 	return NewRouter(testWebFS(), Dependencies{Sources: svc})
 }
 
@@ -423,6 +434,31 @@ func TestSourceTestAPI(t *testing.T) {
 		if tc.wantOK && body["error"] != nil {
 			t.Errorf("%s: unexpected error %v", tc.name, body["error"])
 		}
+	}
+}
+
+// Factory 创建阶段失败（dial / 认证 / host key / 超时）沿用既有 REST
+// 契约：200 + ok=false，而不是落 handleSourceError 默认分支的 500。
+func TestSourceTestFactoryFailureAPI(t *testing.T) {
+	router := newSourceRouterWithFactory(t, fakeFactory{
+		createErr: errors.New("sftp dial 127.0.0.1:22: connection refused"),
+	})
+
+	rec := doJSON(t, router, "POST", "/api/v1/sources", `{
+		"name": "NAS", "type": "webdav", "config": {"endpoint": "https://e.com"}
+	}`)
+	id, _ := decodeJSON(t, rec)["id"].(string)
+
+	rec = doJSON(t, router, "POST", "/api/v1/sources/"+id+"/test", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("test status = %d, want 200", rec.Code)
+	}
+	body := decodeJSON(t, rec)
+	if body["ok"] != false {
+		t.Errorf("ok = %v, want false", body["ok"])
+	}
+	if body["error"] == nil {
+		t.Error("missing error message")
 	}
 }
 
