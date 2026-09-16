@@ -157,6 +157,41 @@ func TestScanRemoteFailsIncomplete(t *testing.T) {
 	}
 }
 
+// ScanRemote 对 adapter 返回的条目做跨协议 logical path 二次校验：
+// 反斜杠、dot segments、重复分隔符等不可移植路径整体失败扫描，
+// 不进入本地 filepath 映射（Mirror 在完整扫描失败时不会删除）。
+func TestScanRemoteRejectsInvalidLogicalPaths(t *testing.T) {
+	for name, bad := range map[string]string{
+		"backslash":       `/photos\file.txt`,
+		"dot-dot":         "/photos/../file.txt",
+		"dot segment":     "/photos/./file.txt",
+		"duplicate slash": "/photos//file.txt",
+		"trailing slash":  "/photos/file.txt/",
+		"relative entry":  "photos/file.txt",
+	} {
+		t.Run(name, func(t *testing.T) {
+			remote := &fakeRemote{entries: map[string][]source.FileInfo{
+				"/photos": {{Path: bad}},
+			}}
+			files, err := ScanRemote(context.Background(), remote, "/photos")
+			if err == nil {
+				t.Fatalf("ScanRemote with %q = %v files, want error", bad, files)
+			}
+			if !errors.Is(err, source.ErrInvalid) {
+				t.Errorf("error = %v, want ErrInvalid", err)
+			}
+		})
+	}
+
+	// logical path 合法但越出 RemoteRoot：由既有边界检查拒绝。
+	remote := &fakeRemote{entries: map[string][]source.FileInfo{
+		"/photos": {{Path: "/other/file.txt"}},
+	}}
+	if _, err := ScanRemote(context.Background(), remote, "/photos"); !errors.Is(err, ErrInvalid) {
+		t.Errorf("ScanRemote escaping entry = %v, want ErrInvalid", err)
+	}
+}
+
 // resolveLocalTarget 把 / 分隔的相对路径安全解析到 LocalRoot 之下，
 // 拒绝 .. 逃逸与绝对注入。
 func TestResolveLocalTarget(t *testing.T) {

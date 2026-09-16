@@ -336,6 +336,34 @@ func applyCredentialsUpdate(t Type, current CredentialState, update *Credentials
 	}
 }
 
+// ValidateLogicalPath 校验协议无关的 Source-relative logical path：
+// "/" 表示 Source root；条目必须是 "/x/y" 形式的绝对路径，目录不带
+// 尾随分隔符。统一拒绝 dot segments、重复分隔符（经 clean 规则）、
+// 反斜杠与 NUL——S3 object key 允许 "foo\bar.txt"，进入本地
+// filepath 后在 Unix 与 Windows 上语义不同，必须在协议边界拒绝。
+// 任何 adapter 返回的 FileInfo.Path 都必须通过本校验。
+func ValidateLogicalPath(p string) error {
+	if p == "" {
+		return fmt.Errorf("%w: logical path is empty", ErrInvalid)
+	}
+	if !strings.HasPrefix(p, "/") {
+		return fmt.Errorf("%w: logical path %q must be absolute", ErrInvalid, p)
+	}
+	if strings.ContainsRune(p, '\\') {
+		return fmt.Errorf("%w: logical path %q must not contain backslash", ErrInvalid, p)
+	}
+	if strings.ContainsRune(p, '\x00') {
+		return fmt.Errorf("%w: logical path %q must not contain NUL", ErrInvalid, p)
+	}
+	if p != "/" && strings.HasSuffix(p, "/") {
+		return fmt.Errorf("%w: logical path %q must not end with /", ErrInvalid, p)
+	}
+	if p != "/" && path.Clean(p) != p {
+		return fmt.Errorf("%w: logical path %q is not clean", ErrInvalid, p)
+	}
+	return nil
+}
+
 // ValidateCreateInput 校验创建输入的全部必填与格式约束；config 与
 // credentials 基于归一化后的形态校验，与持久化值一致。
 func ValidateCreateInput(input CreateInput) error {

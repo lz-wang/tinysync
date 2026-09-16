@@ -70,6 +70,11 @@ func scanDir(ctx context.Context, remote source.Remote, remoteRoot, dirLogical s
 		return fmt.Errorf("scan %s: %w", dirLogical, err)
 	}
 	for _, entry := range entries {
+		// 跨协议 logical path 统一校验：拒绝反斜杠、NUL、dot segments
+		// 与重复分隔符（防御异常远端把不可移植 key 送进本地 filepath）。
+		if err := source.ValidateLogicalPath(entry.Path); err != nil {
+			return err
+		}
 		// 每个条目都验证落在 RemoteRoot 之内（防御异常服务器 href）。
 		if _, err := remoteRelPath(remoteRoot, entry.Path); err != nil {
 			return err

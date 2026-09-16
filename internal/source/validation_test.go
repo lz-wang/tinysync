@@ -368,6 +368,45 @@ func TestValidateCreateInput(t *testing.T) {
 	}
 }
 
+// TestValidateLogicalPath 校验跨协议 logical path 规则：绝对、clean、
+// 无反斜杠 / NUL / 尾随分隔符；反斜杠必须拒绝以保证跨平台本地映射
+// 语义一致。
+func TestValidateLogicalPath(t *testing.T) {
+	valid := []string{"/", "/a", "/a/b.txt", "/docs/my file 中文.txt"}
+	for _, p := range valid {
+		if err := ValidateLogicalPath(p); err != nil {
+			t.Errorf("ValidateLogicalPath(%q) = %v, want nil", p, err)
+		}
+	}
+
+	invalid := []struct {
+		path   string
+		reason string
+	}{
+		{"", "empty"},
+		{"relative/path", "relative"},
+		{"a", "relative"},
+		{"/a/../b", "dot-dot segment"},
+		{"/a/./b", "dot segment"},
+		{"/a//b", "duplicate separator"},
+		{"/a/", "trailing separator"},
+		{`/a\b`, "backslash"},
+		{"a\\b", "relative with backslash"},
+		{"/a\x00b", "NUL"},
+		{"/a/b/", "trailing separator on nested"},
+	}
+	for _, tt := range invalid {
+		err := ValidateLogicalPath(tt.path)
+		if err == nil {
+			t.Errorf("ValidateLogicalPath(%q) = nil, want error (%s)", tt.path, tt.reason)
+			continue
+		}
+		if !errors.Is(err, ErrInvalid) {
+			t.Errorf("ValidateLogicalPath(%q) error = %v, want ErrInvalid", tt.path, err)
+		}
+	}
+}
+
 func ptrS3(c S3Config) *S3Config { return &c }
 
 func ptrSFTP(c SFTPConfig) *SFTPConfig { return &c }

@@ -217,10 +217,14 @@ func hrefToLogical(prefix, href string) (string, error) {
 }
 
 // toFileInfo 转换为协议无关的 FileInfo：href 剥离 endpoint 前缀得到
-// logical path，指纹填充 Size / ModifiedAt / ETag（Checksum 与 Version 留空）。
+// logical path（统一经 ValidateLogicalPath 校验），指纹填充
+// Size / ModifiedAt / ETag（Checksum 与 Version 留空）。
 func (r *remote) toFileInfo(info webdav.FileInfo) (source.FileInfo, error) {
 	logical, err := hrefToLogical(r.hrefPrefix, info.Path)
 	if err != nil {
+		return source.FileInfo{}, err
+	}
+	if err := source.ValidateLogicalPath(logical); err != nil {
 		return source.FileInfo{}, err
 	}
 	return source.FileInfo{
