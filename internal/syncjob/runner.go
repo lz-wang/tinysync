@@ -251,7 +251,10 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 	r.mu.Unlock()
 
 	// run row 必须在 goroutine 启动前同步写入成功：不允许出现已经开始
-	// 修改本地文件、却没有任何历史 run ID 的状态。失败则回收 slot。
+	// 修改本地文件、却没有任何历史 run ID 的状态。失败则回收发布时
+	// 预留的全部资源——active / 协调位 / WaitGroup 名额（goroutine
+	// 尚未启动，Done 必须在此补齐，否则 wg 永不归零，Shutdown 只能
+	// 靠超时返回）。
 	err = r.history.Insert(ctx, RunRecord{
 		ID:           runID,
 		JobID:        jobID,
@@ -265,6 +268,7 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 		delete(r.active, jobID)
 		delete(r.occupancy, jobID)
 		r.mu.Unlock()
+		r.wg.Done()
 		cancel()
 		return "", fmt.Errorf("persist run %s: %w", runID, err)
 	}

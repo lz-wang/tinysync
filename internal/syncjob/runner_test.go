@@ -579,6 +579,37 @@ func TestRunnerRejectsStartAfterShutdown(t *testing.T) {
 	}
 }
 
+// run row 落库失败时，发布时预留的 WaitGroup 名额被正确释放：
+// 否则 wg 永不归零，后续任何 Shutdown 都只能靠超时返回。
+func TestRunnerStartInsertFailureReleasesWaitGroup(t *testing.T) {
+	env := newRunnerEnv(t, buildRemote(map[string]string{"/a.txt": "v1"}, nil))
+	job := env.mustJob(t, "insert-fail")
+	ctx := context.Background()
+
+	env.history.insertErr = errorsNew("disk I/O error")
+	if _, err := env.runner.Start(ctx, job.ID); err == nil {
+		t.Fatal("Start with insert failure = nil error, want error")
+	}
+	env.history.insertErr = nil
+
+	// 协调位已释放：故障后可正常再次启动。
+	runID, err := env.runner.Start(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("Start after failed start: %v", err)
+	}
+	if final, err := env.runner.Wait(ctx, runID); err != nil || final.State != RunSucceeded {
+		t.Errorf("retry run = %+v (%v), want succeeded", final, err)
+	}
+
+	// 泄漏回归：此时唯一的在途名额是失败 Start 未释放的残留——
+	// Shutdown 必须立即返回 nil（若 wg 泄漏将阻塞到超时）。
+	shutdownCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := env.runner.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown after failed start = %v, want nil (immediately)", err)
+	}
+}
+
 // once occurrence 产生 run 即消费（succeeded 与 skipped 都算）：消费
 // 状态写入 Job 本身，与可裁剪的运行历史解耦。
 func TestRunnerOnceConsumptionMarkedOnJob(t *testing.T) {
