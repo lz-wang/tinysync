@@ -74,12 +74,15 @@ func (s *Scheduler) Stop() {
 // tick 处理内存游标窗口 (from, now] 内到期的 occurrence：命中即经
 // Runner.StartScheduled 触发（overlap / 容量不足时由 Runner 记 skipped），
 // 窗口外不回看。抽出为独立方法以便固定时钟直接测试。
+//
+// 游标只在成功读取并处理完全部 Job 后推进：List 失败或处理中断时保持
+// 不动，下一个 tick 重扫同一窗口，不会因一次内部失败吞掉 occurrence；
+// 重复扫描由持久化的 occurrence 消费记录挡住（见下）。
 func (s *Scheduler) tick(ctx context.Context) {
 	s.mu.Lock()
 	from := s.cursor
-	now := s.Now()
-	s.cursor = now
 	s.mu.Unlock()
+	now := s.Now()
 
 	jobs, err := s.repo.List(ctx)
 	if err != nil {
@@ -108,22 +111,23 @@ func (s *Scheduler) tick(ctx context.Context) {
 		if !due {
 			continue
 		}
-		// once 不受窗口限制（错过也要执行一次），因此用持久化历史
-		// 做 occurrence 消费判定；interval / cron 由游标窗口保证幂等。
-		if trigger == TriggerOnce {
-			consumed, err := s.history.HasRunFor(ctx, job.ID, trigger, occurrence)
-			if err != nil {
-				logging.Errorf("scheduler check once consumption for job %s: %v", job.ID, err)
-				continue
-			}
-			if consumed {
-				continue
-			}
+		// occurrence 消费以持久化历史判定（含 skipped）：once 错过
+		// 仍要补执行一次的幂等依据；interval / cron 借此在游标因
+		// 内部失败回退重扫时不会重复触发同一 occurrence。
+		consumed, err := s.history.HasRunFor(ctx, job.ID, trigger, occurrence)
+		if err != nil {
+			logging.Errorf("scheduler check occurrence consumption for job %s: %v", job.ID, err)
+			continue
+		}
+		if consumed {
+			continue
 		}
 		if _, err := s.runner.StartScheduled(ctx, job.ID, trigger, occurrence); err != nil {
-			// 禁用等校验失败只记日志：本轮 occurrence 已随游标消费，
-			// 不阻塞后续 Job。
+			// 禁用等校验失败只记日志：不阻塞后续 Job。
 			logging.Errorf("scheduled run for job %s: %v", job.ID, err)
 		}
 	}
+	s.mu.Lock()
+	s.cursor = now
+	s.mu.Unlock()
 }

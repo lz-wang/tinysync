@@ -117,9 +117,10 @@ func (r *memJobRepo) CountBySource(ctx context.Context, sourceID string) (int, e
 
 // memRunRepo 是 RunRepository 的内存实现（Runner 测试专用）。
 type memRunRepo struct {
-	mu    sync.Mutex
-	runs  map[string]RunRecord
-	order []string
+	mu     sync.Mutex
+	runs   map[string]RunRecord
+	order  []string
+	prunes int
 }
 
 func newMemRunRepo() *memRunRepo {
@@ -245,7 +246,12 @@ func (m *memRunRepo) FailStaleRunning(ctx context.Context, finishedAt time.Time,
 	return n, nil
 }
 
-func (m *memRunRepo) PruneRetention(ctx context.Context, keepPerJob int) error { return nil }
+func (m *memRunRepo) PruneRetention(ctx context.Context, keepPerJob int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.prunes++
+	return nil
+}
 
 // runnerEnv 聚合 Runner 测试环境。
 type runnerEnv struct {
@@ -476,6 +482,33 @@ func TestRunnerMutationGuard(t *testing.T) {
 		t.Errorf("BeginMutation after run finished = %v, want success", err)
 	}
 	env.runner.EndMutation(job.ID)
+}
+
+// skipped run 与正常执行走同一条容量回收路径：长时间 overlap 的 Job
+// 频繁产生 skipped 记录时，历史同样被 prune，不会无限堆积。
+func TestRunnerSkippedRunPrunesRetention(t *testing.T) {
+	release := make(chan struct{})
+	env := newRunnerEnv(t, &blockingRemote{release: release})
+	job := env.mustJob(t, "prune")
+	ctx := context.Background()
+
+	if _, err := env.runner.Start(ctx, job.ID); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	occ := time.Unix(1757879400, 0).UTC()
+	if _, err := env.runner.StartScheduled(ctx, job.ID, TriggerInterval, occ); err != nil {
+		t.Fatalf("StartScheduled: %v", err)
+	}
+	env.history.mu.Lock()
+	prunes := env.history.prunes
+	env.history.mu.Unlock()
+	if prunes == 0 {
+		t.Error("PruneRetention was not called after skipped run")
+	}
+	close(release)
+	if err := env.runner.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
 }
 
 // 调度触发的 overlap 与容量不足不排队：记录 skipped run（occurrence

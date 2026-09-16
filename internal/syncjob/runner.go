@@ -325,14 +325,20 @@ func (r *Runner) execute(ctx context.Context, job Job, remote source.Remote, run
 	if err := r.history.Finalize(ctx, final); err != nil {
 		logging.Errorf("finalize run %s: %v", run.runID, err)
 	}
-	// prune 使用独立 context：运行取消（如 Shutdown）后仍要回收历史容量。
+	r.pruneHistory(ctx)
+}
+
+// pruneHistory 在 run 终态落库后回收每 Job 的历史容量（保留最近
+// RetentionRunsPerJob 条）。使用独立 context：运行取消（如 Shutdown）
+// 后仍要完成清理，防止长期运行的 Job 无限膨胀。
+func (r *Runner) pruneHistory(ctx context.Context) {
 	if err := r.history.PruneRetention(context.WithoutCancel(ctx), RetentionRunsPerJob); err != nil {
 		logging.Errorf("prune run history: %v", err)
 	}
 }
 
 // recordSkipped 记录调度触发的 skipped run：occurrence 已消费，
-// 不排队、不执行。
+// 不排队、不执行；终态落库后与正常执行走同一条容量回收路径。
 func (r *Runner) recordSkipped(ctx context.Context, job Job, trigger RunTrigger, scheduledFor time.Time, reason string) {
 	id, err := newRunID()
 	if err != nil {
@@ -352,7 +358,9 @@ func (r *Runner) recordSkipped(ctx context.Context, job Job, trigger RunTrigger,
 	}
 	if err := r.history.Insert(ctx, run); err != nil {
 		logging.Errorf("record skipped run for job %s: %v", job.ID, err)
+		return
 	}
+	r.pruneHistory(ctx)
 }
 
 // BeginMutation 原子占用 Job 的协调位，与执行链（start → 运行结束）

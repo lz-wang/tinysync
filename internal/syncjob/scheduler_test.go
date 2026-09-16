@@ -2,11 +2,25 @@ package syncjob
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"tinysync/internal/source"
 )
+
+// failingListRepo 注入 List 失败，测试调度器对读取故障的处理。
+type failingListRepo struct {
+	*memJobRepo
+	err error
+}
+
+func (r *failingListRepo) List(ctx context.Context) ([]Job, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	return r.memJobRepo.List(ctx)
+}
 
 // schedulerBase 是调度测试的固定基准时间。
 var schedulerBase = time.Unix(1757879400, 0).UTC()
@@ -266,6 +280,47 @@ func TestSchedulerIgnoresManualAndDisabled(t *testing.T) {
 	env.tickTo(t, schedulerBase.Add(time.Hour))
 	if got := env.runCount(t, manual.ID) + env.runCount(t, disabled.ID); got != 0 {
 		t.Errorf("scheduled runs = %d, want 0", got)
+	}
+}
+
+// List 失败不推进游标：occurrence 不会因一次内部读取失败被吞掉；
+// 恢复后重扫同一窗口补上触发。游标回退重扫时，持久化的 occurrence
+// 消费记录保证同一 occurrence 不重复触发。
+func TestSchedulerListFailureKeepsCursor(t *testing.T) {
+	env := newSchedulerEnv(t, buildRemote(map[string]string{"/a.txt": "v1"}, nil))
+	anchor := schedulerBase
+	job := env.mustScheduledJob(t, "keep", Schedule{
+		Type:     ScheduleInterval,
+		Value:    "30m",
+		AnchorAt: &anchor,
+	})
+	ctx := context.Background()
+
+	failing := &failingListRepo{memJobRepo: env.repo}
+	env.scheduler.repo = failing
+
+	// 边界后首个 tick 恰逢 List 失败：不触发，游标保持。
+	failing.err = errors.New("sqlite busy")
+	env.tickTo(t, anchor.Add(30*time.Minute+time.Second))
+	if got := env.runCount(t, job.ID); got != 0 {
+		t.Fatalf("runs after failed tick = %d, want 0", got)
+	}
+
+	// 恢复后下个 tick 重扫同一窗口，补上本轮触发。
+	failing.err = nil
+	env.tickTo(t, anchor.Add(30*time.Minute+2*time.Second))
+	if got := env.runCount(t, job.ID); got != 1 {
+		t.Fatalf("runs after recovery tick = %d, want 1", got)
+	}
+
+	// 游标回退重扫（如再次故障后的重复窗口）不重复触发同一 occurrence。
+	env.restartAt(anchor.Add(time.Second))
+	env.tickTo(t, anchor.Add(30*time.Minute+3*time.Second))
+	if got := env.runCount(t, job.ID); got != 1 {
+		t.Fatalf("runs after cursor rewind rescan = %d, want 1 (occurrence consumed)", got)
+	}
+	if err := env.runner.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
 	}
 }
 
