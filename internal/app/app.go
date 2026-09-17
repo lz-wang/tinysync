@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"tinysync/internal/api"
+	"tinysync/internal/auth"
+	authsqlite "tinysync/internal/auth/sqlite"
 	"tinysync/internal/browser"
 	"tinysync/internal/config"
 	"tinysync/internal/logging"
@@ -44,6 +46,17 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 	// 取消信号中断，保证退出行为与数据库状态确定。
 	if err := storage.Migrate(context.Background(), db, cfg.DataDir); err != nil {
 		return fmt.Errorf("migrate database: %w", err)
+	}
+
+	// 认证边界：serve 强制要求已初始化管理员密码，不提供绕过开关；
+	// 未初始化时拒绝启动，由 operator 经 CLI 完成 bootstrap。
+	authService := auth.NewService(authsqlite.NewRepository(db))
+	configured, err := authService.AdminConfigured(context.Background())
+	if err != nil {
+		return fmt.Errorf("check admin credential: %w", err)
+	}
+	if !configured {
+		return fmt.Errorf("authentication is not initialized; run `tinysync auth set-password --datadir %s`", cfg.DataDir)
 	}
 
 	// 启动恢复：进程异常退出遗留的 running 记录收敛为 failed，

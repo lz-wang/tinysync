@@ -4,12 +4,36 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
 
+	"tinysync/internal/auth"
+	authsqlite "tinysync/internal/auth/sqlite"
 	"tinysync/internal/config"
+	"tinysync/internal/storage"
 )
+
+// bootstrapAdmin 在数据目录完成 migration 并初始化管理员密码：
+// v0.7 起 serve 在 admin 未初始化时拒绝启动，测试环境用它满足
+// 启动前置条件。
+func bootstrapAdmin(t *testing.T, dataDir string) {
+	t.Helper()
+	ctx := context.Background()
+	db, err := storage.Open(dataDir)
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(ctx, db, dataDir); err != nil {
+		t.Fatalf("storage.Migrate: %v", err)
+	}
+	svc := auth.NewService(authsqlite.NewRepository(db))
+	if err := svc.SetAdminPassword(ctx, "bootstrap-password-123"); err != nil {
+		t.Fatalf("bootstrap admin password: %v", err)
+	}
+}
 
 // Run 在 ctx 已取消时应立即返回 nil（优雅关闭视为成功）。
 // 数据库在临时目录打开，不触碰真实同步数据。
@@ -19,6 +43,7 @@ func TestRunReturnsOnCanceledContext(t *testing.T) {
 
 	cfg := config.Default()
 	cfg.DataDir = t.TempDir()
+	bootstrapAdmin(t, cfg.DataDir)
 
 	done := make(chan error, 1)
 	go func() {
@@ -32,6 +57,20 @@ func TestRunReturnsOnCanceledContext(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run did not return after context cancellation")
+	}
+}
+
+// 管理员密码未初始化时 Run 拒绝启动：认证边界没有绕过开关。
+func TestRunFailsWhenAuthNotInitialized(t *testing.T) {
+	cfg := config.Default()
+	cfg.DataDir = t.TempDir()
+
+	err := Run(context.Background(), cfg, fstest.MapFS{})
+	if err == nil {
+		t.Fatal("Run without initialized admin = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "authentication is not initialized") {
+		t.Errorf("error = %v, want mention \"authentication is not initialized\"", err)
 	}
 }
 
