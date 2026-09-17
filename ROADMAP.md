@@ -116,7 +116,7 @@ Release workflow run 35228820113 成功（2026-09-17），六平台发行档
 | v0.4.0 | [调度与同步历史](docs/roadmap/04-scheduler-and-history.md) | 已完成 | 自动调度、重叠跳过、并发控制及运行/文件明细可追踪 |
 | v0.5.0 | [S3 与 SFTP](docs/roadmap/05-s3-and-sftp.md) | 已完成实现 | 同一同步引擎支持三种协议，上层不依赖协议分支 |
 | v0.6.0 | [文件浏览与发布](docs/roadmap/06-file-browser-and-publishing.md) | 已发布 | 只读远端浏览、本地下载与选择性 HTTP 发布，限制访问根目录 |
-| v0.7.0 | [认证与 API Token](docs/roadmap/07-authentication-and-tokens.md) | 规划 | Web session 与 API Token 分离，支持 scope、过期和撤销 |
+| v0.7.0 | [认证与 API Token](docs/roadmap/07-authentication-and-tokens.md) | 规划 | 单一 Local Admin + Web Session + scoped API Token，REST default-deny 与 CSRF 防护 |
 | v0.8.0 | [MCP 集成](docs/roadmap/08-mcp-integration.md) | 规划 | 复用应用服务与鉴权，查询/运行任务，大文件经 HTTP 获取 |
 | v0.9.0 | [可靠性与运维](docs/roadmap/09-hardening-and-operations.md) | 规划 | 恢复、安全、协议兼容、跨平台、性能及回归验证具备证据 |
 | v1.0.0 | [单节点稳定版](docs/roadmap/10-stable-release.md) | 规划 | 多协议端到端同步、升级/恢复及完整质量门禁通过 |
