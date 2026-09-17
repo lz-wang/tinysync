@@ -10,8 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gin-gonic/gin"
-
 	"tinysync/internal/source"
 	"tinysync/internal/source/sqlite"
 	"tinysync/internal/storage"
@@ -60,13 +58,13 @@ func (f fakeFactory) Create(ctx context.Context, s source.Source, credentials so
 }
 
 // newSourceRouter 构造挂载真实 Source 服务的路由。
-func newSourceRouter(t *testing.T, remote source.Remote) *gin.Engine {
+func newSourceRouter(t *testing.T, remote source.Remote) testRouter {
 	t.Helper()
 	return newSourceRouterWithFactory(t, fakeFactory{remote: remote})
 }
 
 // newSourceRouterWithFactory 用指定 factory 构造路由。
-func newSourceRouterWithFactory(t *testing.T, factory fakeFactory) *gin.Engine {
+func newSourceRouterWithFactory(t *testing.T, factory fakeFactory) testRouter {
 	t.Helper()
 	dataDir := t.TempDir()
 	db, err := storage.Open(dataDir)
@@ -78,23 +76,7 @@ func newSourceRouterWithFactory(t *testing.T, factory fakeFactory) *gin.Engine {
 		t.Fatalf("storage.Migrate: %v", err)
 	}
 	svc := source.NewService(sqlite.New(db), factory)
-	return NewRouter(testWebFS(), Dependencies{Sources: svc})
-}
-
-// doJSON 执行 JSON 请求并返回 recorder。
-func doJSON(t *testing.T, router *gin.Engine, method, path string, body string) *httptest.ResponseRecorder {
-	t.Helper()
-	var reader io.Reader
-	if body != "" {
-		reader = strings.NewReader(body)
-	}
-	req := httptest.NewRequest(method, path, reader)
-	if body != "" {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-	return rec
+	return newTestAuth(t, db, Dependencies{Sources: svc})
 }
 
 // decodeJSON 解码响应体为对象。
@@ -406,7 +388,7 @@ func TestSourceTestAPI(t *testing.T) {
 
 	for _, tc := range []struct {
 		name   string
-		router *gin.Engine
+		router testRouter
 		wantOK bool
 	}{
 		{"success", okRouter, true},

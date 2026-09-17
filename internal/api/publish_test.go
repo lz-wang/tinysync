@@ -12,8 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gin-gonic/gin"
-
 	"tinysync/internal/publish"
 	publishsqlite "tinysync/internal/publish/sqlite"
 	"tinysync/internal/source"
@@ -25,7 +23,7 @@ import (
 // publishEnv 是发布 API 测试环境：真实 SQLite 持久化 + 临时
 // LocalRoot，managed 记录可编程。
 type publishEnv struct {
-	router  *gin.Engine
+	router  testRouter
 	svc     *publish.Service
 	jobRepo *memFileJobRepo
 	managed *memFileManagedRepo
@@ -68,7 +66,7 @@ func newPublishEnv(t *testing.T) *publishEnv {
 	svc := source.NewService(sqlite.New(db), fakeFactory{})
 	jobs := syncjob.NewService(jobRepo, nil, dataDir)
 	policies := publish.NewService(publishsqlite.NewRepository(db), jobs, managedRepo)
-	router := NewRouter(testWebFS(), Dependencies{
+	router := newTestAuth(t, db, Dependencies{
 		Sources: svc, Jobs: jobs, Publish: policies,
 	})
 	return &publishEnv{

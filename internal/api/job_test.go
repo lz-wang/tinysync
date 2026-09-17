@@ -75,7 +75,7 @@ func (r *gateRemote) Close() error {
 
 // newJobRouter 构造挂载真实 Source + Job 服务与 Runner 的路由，
 // 全部共享同一临时 SQLite。
-func newJobRouter(t *testing.T, remote source.Remote) *gin.Engine {
+func newJobRouter(t *testing.T, remote source.Remote) testRouter {
 	t.Helper()
 	dataDir := t.TempDir()
 	db, err := storage.Open(dataDir)
@@ -91,11 +91,11 @@ func newJobRouter(t *testing.T, remote source.Remote) *gin.Engine {
 	managedRepo := jobsqlite.NewManagedRepository(db)
 	jobSvc := syncjob.NewService(jobRepo, sourceSvc, dataDir)
 	runner := syncjob.NewRunner(jobRepo, managedRepo, sourceSvc, jobsqlite.NewRunRepository(db))
-	return NewRouter(testWebFS(), Dependencies{Sources: sourceSvc, Jobs: jobSvc, Runner: runner})
+	return newTestAuth(t, db, Dependencies{Sources: sourceSvc, Jobs: jobSvc, Runner: runner})
 }
 
 // createSourceViaAPI 用 API 创建 Source 并返回 ID。
-func createSourceViaAPI(t *testing.T, router *gin.Engine, name string, enabled bool) string {
+func createSourceViaAPI(t *testing.T, router testRouter, name string, enabled bool) string {
 	t.Helper()
 	body := fmt.Sprintf(`{"name": %q, "type": "webdav", "config": {"endpoint": "https://dav.example.com"}, "enabled": %t}`,
 		name, enabled)
@@ -126,7 +126,7 @@ func jobPayload(t *testing.T, name, sourceID, mode string, enabled bool) (string
 }
 
 // waitForRunState 轮询 status 直到进入期望状态，返回最终响应。
-func waitForRunState(t *testing.T, router *gin.Engine, jobID string, want ...syncjob.RunState) map[string]any {
+func waitForRunState(t *testing.T, router testRouter, jobID string, want ...syncjob.RunState) map[string]any {
 	t.Helper()
 	wantStr := make([]string, 0, len(want))
 	for _, w := range want {
@@ -540,7 +540,7 @@ func (r *contentRemote) Close() error {
 }
 
 // createJobWithSchedule 经 API 创建带 schedule 的 Job 并返回 ID 与响应体。
-func createJobWithSchedule(t *testing.T, router *gin.Engine, name, sourceID, scheduleJSON string) (string, map[string]any) {
+func createJobWithSchedule(t *testing.T, router testRouter, name, sourceID, scheduleJSON string) (string, map[string]any) {
 	t.Helper()
 	payload, _ := jobPayload(t, name, sourceID, "copy", true)
 	body := strings.TrimSuffix(payload, "}") + `,"schedule": ` + scheduleJSON + `}`

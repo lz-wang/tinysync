@@ -15,8 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gin-gonic/gin"
-
 	"tinysync/internal/browser"
 	"tinysync/internal/source"
 	"tinysync/internal/source/sqlite"
@@ -137,7 +135,7 @@ func (r *fileRemote) Close() error {
 
 // newFileRouter 构造带 Source 服务与 Remote Browser 的路由，返回
 // router 与已存在的 Source ID。
-func newFileRouter(t *testing.T, remote *fileRemote) (*gin.Engine, string) {
+func newFileRouter(t *testing.T, remote *fileRemote) (testRouter, string) {
 	t.Helper()
 	dataDir := t.TempDir()
 	db, err := storage.Open(dataDir)
@@ -159,7 +157,7 @@ func newFileRouter(t *testing.T, remote *fileRemote) (*gin.Engine, string) {
 		t.Fatalf("create source: %v", err)
 	}
 	files := browser.NewRemoteService(svc)
-	return NewRouter(testWebFS(), Dependencies{Sources: svc, Browser: files}), src.ID
+	return newTestAuth(t, db, Dependencies{Sources: svc, Browser: files}), src.ID
 }
 
 // 目录列表返回 path / entries / next_cursor 结构。
@@ -321,7 +319,7 @@ func TestRemoteFilesDownload(t *testing.T) {
 
 // localFilesEnv 是本地文件 API 测试环境：真实临时目录 + 内存 Job。
 type localFilesEnv struct {
-	router *gin.Engine
+	router testRouter
 	jobID  string
 	root   string
 }
@@ -362,7 +360,7 @@ func newLocalFilesEnv(t *testing.T) *localFilesEnv {
 	jobs := syncjob.NewService(jobRepo, nil, dataDir)
 	files := browser.NewRemoteService(svc)
 	local := browser.NewLocalService(jobs, managedRepo)
-	router := NewRouter(testWebFS(), Dependencies{Sources: svc, Jobs: jobs, Runner: nil, Browser: files, LocalFiles: local})
+	router := newTestAuth(t, db, Dependencies{Sources: svc, Jobs: jobs, Runner: nil, Browser: files, LocalFiles: local})
 	return &localFilesEnv{router: router, jobID: job.ID, root: root}
 }
 

@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"tinysync/internal/api"
+	"tinysync/internal/auth"
+	authsqlite "tinysync/internal/auth/sqlite"
 	"tinysync/internal/browser"
 	"tinysync/internal/publish"
 	publishsqlite "tinysync/internal/publish/sqlite"
@@ -40,9 +42,11 @@ func (f bridgedFactory) Create(ctx context.Context, s source.Source, credentials
 
 // browserEnv 是完整 HTTP 浏览/发布环境。
 type browserEnv struct {
-	t         *testing.T
-	router    http.Handler
-	db        *sql.DB
+	t       *testing.T
+	router  http.Handler
+	session *http.Cookie
+	db      *sql.DB
+
 	dataDir   string
 	jobRepo   *jobsqlite.Repository
 	managed   *jobsqlite.ManagedRepository
@@ -86,7 +90,18 @@ func newBrowserEnv(t *testing.T, fixture matrixRemote) *browserEnv {
 	localFiles := browser.NewLocalService(jobs, managed)
 	policies := publish.NewService(publishsqlite.NewRepository(db), jobs, managed)
 
+	// v0.7 起管理 API default-deny：为 E2E 路由装配认证服务并登录。
+	authService := auth.NewService(authsqlite.NewRepository(db))
+	if err := authService.SetAdminPassword(context.Background(), "e2e-admin-password"); err != nil {
+		t.Fatalf("set admin password: %v", err)
+	}
+	_, rawSession, err := authService.Login(context.Background(), "e2e-admin-password")
+	if err != nil {
+		t.Fatalf("e2e login: %v", err)
+	}
+
 	router := api.NewRouter(fstest.MapFS{}, api.Dependencies{
+		Auth:       authService,
 		Sources:    sources,
 		Jobs:       jobs,
 		Runner:     runner,
@@ -97,6 +112,7 @@ func newBrowserEnv(t *testing.T, fixture matrixRemote) *browserEnv {
 	return &browserEnv{
 		t:         t,
 		router:    router,
+		session:   &http.Cookie{Name: "tinysync_session", Value: rawSession},
 		db:        db,
 		dataDir:   dataDir,
 		jobRepo:   jobRepo,
@@ -146,11 +162,20 @@ func (e *browserEnv) sync() {
 	}
 }
 
+// serve 注入会话 cookie 后执行请求（管理端点需登录态；
+// /published/* 公开端点带 cookie 无副作用）。
+func (e *browserEnv) serve(w http.ResponseWriter, req *http.Request) {
+	if e.session != nil {
+		req.AddCookie(e.session)
+	}
+	e.router.ServeHTTP(w, req)
+}
+
 // get 执行 GET 请求并返回 recorder。
 func (e *browserEnv) get(path string) *httptest.ResponseRecorder {
 	e.t.Helper()
 	w := httptest.NewRecorder()
-	e.router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+	e.serve(w, httptest.NewRequest(http.MethodGet, path, nil))
 	return w
 }
 
@@ -162,7 +187,7 @@ func (e *browserEnv) doJSON(method, path, body string) *httptest.ResponseRecorde
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	e.router.ServeHTTP(w, req)
+	e.serve(w, req)
 	return w
 }
 
@@ -419,12 +444,12 @@ func TestLocalBrowserConfinement(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, base+"/files/download?path=/managed.txt", nil)
 	req.Header.Set("Range", "bytes=0-6")
 	w = httptest.NewRecorder()
-	e.router.ServeHTTP(w, req)
+	e.serve(w, req)
 	if w.Code != http.StatusPartialContent || w.Body.String() != "managed" {
 		t.Errorf("range = %d %q, want 206 \"managed\"", w.Code, w.Body.String())
 	}
 	w = httptest.NewRecorder()
-	e.router.ServeHTTP(w, httptest.NewRequest(http.MethodHead, base+"/files/download?path=/managed.txt", nil))
+	e.serve(w, httptest.NewRequest(http.MethodHead, base+"/files/download?path=/managed.txt", nil))
 	if w.Code != http.StatusOK || w.Body.Len() != 0 {
 		t.Errorf("HEAD = %d body %d", w.Code, w.Body.Len())
 	}
@@ -516,12 +541,12 @@ func TestPublishLifecycle(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, url, nil)
 	req.Header.Set("Range", "bytes=7-")
 	w = httptest.NewRecorder()
-	e.router.ServeHTTP(w, req)
+	e.serve(w, req)
 	if w.Code != http.StatusPartialContent || w.Body.String() != "content" {
 		t.Errorf("range = %d %q, want 206 \"content\"", w.Code, w.Body.String())
 	}
 	w = httptest.NewRecorder()
-	e.router.ServeHTTP(w, httptest.NewRequest(http.MethodHead, url, nil))
+	e.serve(w, httptest.NewRequest(http.MethodHead, url, nil))
 	if w.Code != http.StatusOK || w.Body.Len() != 0 {
 		t.Errorf("HEAD = %d body %d", w.Code, w.Body.Len())
 	}

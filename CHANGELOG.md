@@ -27,6 +27,12 @@ GitHub Release 摘要一致。
   重置管理员密码（支持 `--password-stdin` 自动化输入），重置会
   立即废弃全部已有 Web Session；`serve` 在管理员密码未初始化时
   拒绝启动。
+- REST API 引入认证：除 health / version / 登录与 `/published`
+  公开文件外，所有 `/api/v1` 端点默认拒绝匿名访问（401）；Web
+  端通过登录建立 HttpOnly Session Cookie（7 天绝对过期、
+  SameSite=Strict、HTTPS 下自动 Secure），新增会话查询与登出
+  接口（`/api/v1/auth/login|session|logout`），跨源变更请求与
+  URL 传参凭据一律拒绝。
 
 ## [0.6.0] - 2026-09-17
 

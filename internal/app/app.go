@@ -101,6 +101,7 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 	policies := publish.NewService(publishsqlite.NewRepository(db), jobs, managedRepo)
 
 	server := api.NewServer(cfg, webFS, api.Dependencies{
+		Auth:       authService,
 		Sources:    sources,
 		Jobs:       jobs,
 		Runner:     runner,

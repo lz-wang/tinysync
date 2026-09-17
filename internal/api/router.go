@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"tinysync/internal/auth"
 	"tinysync/internal/browser"
 	"tinysync/internal/buildinfo"
 	"tinysync/internal/publish"
@@ -18,7 +19,9 @@ import (
 )
 
 // NewRouter 构建全部路由：
-//   - /api/v1/* 只注册真实端点，未知 API 路径 404，不被 SPA fallback 吞掉；
+//   - /api/v1/* 分两层：public（health / version / login）与
+//     protected（default-deny，经 authMiddleware 认证）；
+//   - /published/*path 显式公开注册，不落入 SPA fallback；
 //   - 其余路径由 NoRoute 承接：命中嵌入文件按静态资源服务
 //     （assets 带 immutable 缓存），未命中回退 index.html（前端路由深链接）；
 //     带扩展名的资源路径缺失时 404，不误回 index.html。
@@ -35,11 +38,17 @@ func NewRouter(webFS fs.FS, deps Dependencies) *gin.Engine {
 	{
 		api.GET("/health", handleHealth)
 		api.GET("/version", handleVersion)
-		registerSourceRoutes(api, deps.Sources, deps.Jobs)
-		registerJobRoutes(api, deps.Jobs, deps.Runner)
-		registerRemoteFileRoutes(api, deps.Browser)
-		registerLocalFileRoutes(api, deps.LocalFiles)
-		registerPublishRoutes(api, deps.Publish)
+		registerAuthRoutes(api, deps.Auth)
+	}
+	// 受保护 API：default-deny。Auth 为 nil 时中间件 fail closed（500）。
+	protected := router.Group("/api/v1", authMiddleware(deps.Auth))
+	{
+		registerSessionRoutes(protected, deps.Auth)
+		registerSourceRoutes(protected, deps.Sources, deps.Jobs)
+		registerJobRoutes(protected, deps.Jobs, deps.Runner)
+		registerRemoteFileRoutes(protected, deps.Browser)
+		registerLocalFileRoutes(protected, deps.LocalFiles)
+		registerPublishRoutes(protected, deps.Publish)
 	}
 	// /published/*path 显式注册：公开服务不落入 SPA fallback。
 	registerPublicServingRoutes(router, deps.Publish)
@@ -49,6 +58,9 @@ func NewRouter(webFS fs.FS, deps Dependencies) *gin.Engine {
 
 // Dependencies 是 API 层依赖的应用服务集合。
 type Dependencies struct {
+	// Auth 是认证应用服务；为 nil 时受保护端点 fail closed（500），
+	// 绝不退化为匿名访问。
+	Auth *auth.Service
 	// Sources 是 Source 应用服务（REST / Web UI / MCP 共用）。
 	Sources *source.Service
 	// Jobs 是 Sync Job 应用服务；为 nil 时不注册 Job 端点，
