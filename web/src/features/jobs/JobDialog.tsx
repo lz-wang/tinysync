@@ -398,6 +398,8 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
                 open={pickerOpen}
                 onClose={() => setPickerOpen(false)}
                 onPick={path => setRemoteRoot(path)}
+                boundSourceId={sourceId}
+                initialPath={remoteRoot}
             />
         </Dialog>
     )

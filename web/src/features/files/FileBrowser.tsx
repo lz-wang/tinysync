@@ -68,9 +68,10 @@ function splitBreadcrumb(path: string): Array<{ name: string; path: string }> {
 
 // FileBrowser 是共享的目录浏览器：breadcrumb 导航、虚拟化列表、
 // cursor 驱动的增量分页与下载。load 由调用方注入（Remote / Local
-// 各自指向自己的 API）；onPathChange 在导航发生时通知外部当前目录
-// （picker 场景跟踪选中路径）；downloadURL 表示该条目是否可下载
-// （symlink / other 由组件内部判定）。
+// 各自指向自己的 API）；onPathChange 在目录变化时通知外部当前路径
+//（目录导航与 namespace 重置回根，picker 场景据此跟踪选中路径）；
+// downloadURL 表示该条目是否可下载（symlink / other 由组件内部判
+// 定）。
 export default function FileBrowser({
     load,
     downloadURL,
@@ -96,8 +97,12 @@ export default function FileBrowser({
     const [error, setError] = useState<string | null>(null)
     // scrollParentRef 供虚拟列表与「接近末尾续拉」判定使用。
     const scrollParentRef = useRef<HTMLDivElement | null>(null)
-    // loadingRef 镜像 loading，供滚动回调读取最新值。
+    // loadingRef 镜像 loading，供滚动回调读取最新值并阻止并发续拉。
     const loadingRef = useRef(false)
+    // generationRef 是请求代数：namespace（load 变化）或目录被切换时
+    // 递增使在途请求失效——旧 Source / 旧目录的迟到响应不得污染新
+    // 视图（响应会填充旧数据，而 download 链接已指向新 namespace）。
+    const generationRef = useRef(0)
 
     const loadPage = useCallback(
         async (target: string, cursor: string | null) => {
@@ -107,37 +112,59 @@ export default function FileBrowser({
             loadingRef.current = true
             setLoading(true)
             setError(null)
+            const generation = generationRef.current
             try {
                 const page = await load(target, cursor)
+                if (generation !== generationRef.current) {
+                    return
+                }
                 setPath(target)
                 setEntries(prev => (cursor === null ? page.entries : [...prev, ...page.entries]))
                 setNextCursor(page.nextCursor)
             } catch (err) {
+                if (generation !== generationRef.current) {
+                    return
+                }
                 setError(err instanceof Error ? err.message : String(err))
             } finally {
-                loadingRef.current = false
-                setLoading(false)
+                // 失效请求不触碰 loading 状态：复位已由触发切换的一
+                // 方完成，这里复位会让并发中的新请求失去防重入保护。
+                if (generation === generationRef.current) {
+                    loadingRef.current = false
+                    setLoading(false)
+                }
             }
         },
         [load],
     )
 
-    // 目录切换（含 load 变化，如切换 Source / Job）：reset 累积页与
-    // cursor 并回到根目录。
-    useEffect(() => {
+    // invalidateView 使在途请求失效并解锁 loading，随后发起的请求不
+    // 会被旧请求的在途状态挡住。
+    const invalidateView = useCallback(() => {
+        generationRef.current += 1
+        loadingRef.current = false
         setEntries([])
         setNextCursor('')
+    }, [])
+
+    // 目录切换（含 load 变化，如切换 Source / Job）：reset 累积页与
+    // cursor 并回到根目录；先使旧请求失效，避免首个必要请求被旧
+    // loading 状态丢弃。浏览位置属于旧 namespace，同步通知外部回到
+    // 根——Source 切换触发的重载不经过 openDirectory，不通知会让
+    // picker 场景确认按钮返回旧 namespace 的路径。
+    useEffect(() => {
+        invalidateView()
         void loadPage('/', null)
-    }, [loadPage])
+        onPathChange?.('/')
+    }, [invalidateView, loadPage, onPathChange])
 
     const openDirectory = useCallback(
         (target: string) => {
-            setEntries([])
-            setNextCursor('')
+            invalidateView()
             void loadPage(target, null)
             onPathChange?.(target)
         },
-        [loadPage, onPathChange],
+        [invalidateView, loadPage, onPathChange],
     )
 
     const rowVirtualizer = useVirtualizer({
