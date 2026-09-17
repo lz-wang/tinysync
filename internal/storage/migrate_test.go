@@ -859,3 +859,139 @@ func TestMigrateV5ToV6AddsPublishedFiles(t *testing.T) {
 		t.Fatalf("backup files = %v, want one tinysync-v5-* entry", entries)
 	}
 }
+
+// TestMigrateV6ToV7AddsAuthentication：v6 库升级到 v7 后新增认证
+// 三表（admin_credentials / web_sessions / api_tokens），既有
+// sources / jobs / runs / published 数据完整保留，备份停留在 v6。
+func TestMigrateV6ToV7AddsAuthentication(t *testing.T) {
+	dataDir := t.TempDir()
+	db, err := Open(dataDir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	// 用真实的 0001-0006 schema 构造 v6 形态的库。
+	v6FS := fstest.MapFS{}
+	for _, name := range []string{
+		"0001_sources.sql", "0002_sync_jobs.sql",
+		"0003_scheduler_history.sql", "0004_once_consumption.sql",
+		"0005_source_configs.sql", "0006_published_files.sql",
+	} {
+		data, err := fs.ReadFile(migrationFS, "migrations/"+name)
+		if err != nil {
+			t.Fatalf("read embedded %s: %v", name, err)
+		}
+		v6FS["migrations/"+name] = &fstest.MapFile{Data: data}
+	}
+	if err := migrate(ctx, db, dataDir, v6FS); err != nil {
+		t.Fatalf("build v6 database: %v", err)
+	}
+	assertVersion(t, db, 6)
+
+	// 存量数据：Source、Job、运行历史与发布策略。
+	if _, err := db.Exec(`INSERT INTO sources
+		(id, name, type, endpoint, username, password,
+		 config_json, credentials_json, enabled, created_at, updated_at)
+		VALUES ('src_a', 'nas', 'webdav', '', '', '',
+		 '{"endpoint":"https://example.com/dav/","username":"user"}', '{}', 1, 1, 1)`); err != nil {
+		t.Fatalf("insert source: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO sync_jobs
+		(id, name, source_id, remote_root, local_root, mode,
+		 include_patterns, exclude_patterns, enabled,
+		 schedule_type, schedule_value, schedule_timezone,
+		 once_consumed_for, created_at, updated_at)
+		VALUES ('job_a', 'photos', 'src_a', '/photos', '/tmp/backup', 'copy',
+		 '[]', '[]', 1, 'manual', '', '', NULL, 1, 1)`); err != nil {
+		t.Fatalf("insert job: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO sync_runs
+		(id, job_id, trigger_type, scheduled_for, status, started_at)
+		VALUES ('run_a', 'job_a', 'manual', NULL, 'succeeded', 1)`); err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO published_files
+		(id, local_path, public_path, enabled, expires_at, created_at, updated_at)
+		VALUES ('pub_a', '/tmp/a.txt', '/a.txt', 1, NULL, 1, 1)`); err != nil {
+		t.Fatalf("insert published file: %v", err)
+	}
+
+	if err := Migrate(ctx, db, dataDir); err != nil {
+		t.Fatalf("Migrate v6->v7: %v", err)
+	}
+	assertVersion(t, db, embeddedLatestVersion(t))
+
+	// 既有业务记录完整无损。
+	var jobName string
+	if err := db.QueryRow("SELECT name FROM sync_jobs WHERE id = 'job_a'").Scan(&jobName); err != nil {
+		t.Fatalf("query job after upgrade: %v", err)
+	}
+	if jobName != "photos" {
+		t.Errorf("job name after upgrade = %q, want photos", jobName)
+	}
+	var runStatus string
+	if err := db.QueryRow("SELECT status FROM sync_runs WHERE id = 'run_a'").Scan(&runStatus); err != nil {
+		t.Fatalf("query run after upgrade: %v", err)
+	}
+	if runStatus != "succeeded" {
+		t.Errorf("run status = %q, want succeeded", runStatus)
+	}
+	var publicPath string
+	if err := db.QueryRow("SELECT public_path FROM published_files WHERE id = 'pub_a'").Scan(&publicPath); err != nil {
+		t.Fatalf("query published file after upgrade: %v", err)
+	}
+	if publicPath != "/a.txt" {
+		t.Errorf("public_path = %q, want /a.txt", publicPath)
+	}
+
+	// admin_credentials：singleton 单例生效。
+	if _, err := db.Exec(`INSERT INTO admin_credentials
+		(singleton, password_hash, created_at, updated_at)
+		VALUES (1, '$argon2id$v=19$m=19456,t=2,p=1$salt$hash', 1, 1)`); err != nil {
+		t.Fatalf("insert admin credential: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO admin_credentials
+		(singleton, password_hash, created_at, updated_at)
+		VALUES (2, '$argon2id$second', 1, 1)`); err == nil {
+		t.Fatal("insert second admin row = nil, want CHECK violation")
+	}
+
+	// web_sessions：session_hash 唯一。
+	if _, err := db.Exec(`INSERT INTO web_sessions
+		(id, session_hash, created_at, expires_at)
+		VALUES ('ses_a', x'aa', 1, 2)`); err != nil {
+		t.Fatalf("insert web session: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO web_sessions
+		(id, session_hash, created_at, expires_at)
+		VALUES ('ses_b', x'aa', 1, 2)`); err == nil {
+		t.Fatal("insert duplicate session_hash = nil, want UNIQUE violation")
+	}
+
+	// api_tokens：可空列生效，token_hash 唯一。
+	if _, err := db.Exec(`INSERT INTO api_tokens
+		(id, name, prefix, token_hash, scopes_json, created_at,
+		 expires_at, last_used_at, revoked_at)
+		VALUES ('tok_a', 'automation', 'ts_abcd1234', x'bb', '["read"]', 1,
+		 NULL, NULL, NULL)`); err != nil {
+		t.Fatalf("insert api token: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO api_tokens
+		(id, name, prefix, token_hash, scopes_json, created_at,
+		 expires_at, last_used_at, revoked_at)
+		VALUES ('tok_b', 'other', 'ts_cdef5678', x'bb', '["run"]', 1,
+		 NULL, NULL, NULL)`); err == nil {
+		t.Fatal("insert duplicate token_hash = nil, want UNIQUE violation")
+	}
+
+	// 升级备份存在且停留在 v6。
+	entries, err := os.ReadDir(filepath.Join(dataDir, backupsDirName))
+	if err != nil {
+		t.Fatalf("read backups dir: %v", err)
+	}
+	if len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), "tinysync-v6-") {
+		t.Fatalf("backup files = %v, want one tinysync-v6-* entry", entries)
+	}
+}
