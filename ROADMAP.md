@@ -15,8 +15,9 @@ Pull 表示同步方向；Copy / Mirror 表示远端删除后的本地保留策�
 Web UI、REST API、MCP 复用应用服务层；Source、Job 与 Publish Policy 分别建模。
 其中 Remote Source 管理链路（持久化、WebDAV 只读访问与连接测试）、
 WebDAV Pull Sync 同步链路（Sync Job → Selector → Sync Engine →
-Local Files）与调度及同步历史链路（自动触发、持久化运行历史、
-并发控制）已实现；发布、认证与 MCP 尚未实现。
+Local Files）、调度及同步历史链路（自动触发、持久化运行历史、
+并发控制）与文件浏览及发布链路（Remote / Local 浏览、Publish
+Policy、`/published/*path` 公开 serving）已实现；认证与 MCP 尚未实现。
 
 ## 当前状态与优先级
 
@@ -75,10 +76,15 @@ managed 强制、生命周期与 Job 解耦、`0006_published_files.sql`
 published-files CRUD、`/published/*path` 公开 serving，disabled /
 过期 / 缺失一律 404、Range / HEAD / no-store）、Files Web UI
 （Remote / Local / Published 三视图、虚拟化列表与增量分页、
-Remote Root 目录选择器）。三协议同步 E2E 零回归；本地验证
-`make check` / `make build` 全绿，真实 MinIO integration 实测
-通过，新增三协议远端浏览与发布生命周期 E2E 覆盖 confinement
-与安全语义。
+Remote Root 目录选择器）。三协议同步 E2E 零回归。发布前收尾：
+filesafe 新增 `LstatWithinRoot` / `OpenCanonicalRegularFile` 加固
+Local Stat 父目录 symlink 逃逸与 Published canonical 路径 serving
+的 post-publish symlink 替换防御，Local 下载与公开 serving 收口到
+共享 `ServeFileContent`；Remote Root 选择器绑定 Job Source 并消除
+浏览器的 stale response；发布 API 严格 JSON 解码、远端下载对 0 字
+节文件输出 `Content-Length: 0`。本地验证 `make check` / `make
+build` 全绿，真实 MinIO integration 实测通过（含 ContinuationToken
+多页 browser 分页），E2E 覆盖 confinement 与安全语义。
 
 ## 架构与边界
 
