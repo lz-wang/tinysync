@@ -5,24 +5,30 @@
 #
 #	1. tinysync --version 与预期版本一致
 #	2. tinysync version 与预期版本一致
-#	3. 启动 tinysync serve（临时 datadir、独立端口）
-#	4. GET /api/v1/health 轮询至就绪且 "status":"ok"
-#	5. GET / 返回 WebUI（<title>TinySync</title>）
-#	6. POST /api/v1/sources 按 config/credentials 契约创建 WebDAV
-#	   Source，响应不含密码明文、credential_state 正确
-#	6b. 创建 S3 Source（config 单选组 + secret_key），secret 不回显
-#	6c. 创建 SFTP Source（含 auth_method 与 host key fingerprint）
-#	7. GET /api/v1/sources 列表可见三个 Source 且不含 secret，
-#	   tinysync.db 已创建
-#	8. POST /api/v1/jobs 创建引用 WebDAV Source 的 Copy Job
-#	9. POST /api/v1/jobs/:id/run 异步启动（202），对不可达远端收敛为 failed
-#	10. 关闭进程并以同一 datadir 重启
-#	11. 三协议 Source 跨重启持久化：config / credential_state 保持，
-#	    secret 不回显
-#	12. Job 配置跨重启持久化，运行历史持久化：状态保持 failed，
+#	3. 全新 datadir 上 serve 必须 fail-fast 拒绝启动（v0.7 认证边界：
+#	   未初始化 admin 不提供匿名模式）
+#	4. tinysync auth set-password --password-stdin 完成 admin bootstrap
+#	5. 启动 tinysync serve（同一 datadir、独立端口）
+#	6. GET /api/v1/health 公开可读，轮询至就绪且 "status":"ok"
+#	7. default-deny：匿名 GET /api/v1/sources 一律 401
+#	8. 登录：错误密码统一 401；正确密码 200 + Set-Cookie 保存
+#	   cookie.jar，后续全部管理 API 携带会话
+#	9. GET / 返回 WebUI（<title>TinySync</title>）
+#	10. POST /api/v1/sources 按 config/credentials 契约创建 WebDAV
+#	    Source，响应不含密码明文、credential_state 正确
+#	10b. 创建 S3 Source（config 单选组 + secret_key），secret 不回显
+#	10c. 创建 SFTP Source（含 auth_method 与 host key fingerprint）
+#	11. GET /api/v1/sources 列表可见三个 Source 且不含 secret，
+#	    tinysync.db 已创建
+#	12. POST /api/v1/jobs 创建引用 WebDAV Source 的 Copy Job
+#	13. POST /api/v1/jobs/:id/run 异步启动（202），对不可达远端收敛为 failed
+#	14. 关闭进程并以同一 datadir 重启
+#	15. 原 session 跨重启仍有效（cookie.jar 直接复用）；三协议 Source
+#	    跨重启持久化：config / credential_state 保持，secret 不回显
+#	16. Job 配置跨重启持久化，运行历史持久化：状态保持 failed，
 #	    run_id / finished_at / error 与重启前一致
-#	13. GET /api/v1/runs/:run_id 确认运行摘要 API 可查询该持久化运行
-#	14. SIGTERM 优雅退出（Windows 为强制清理）
+#	17. GET /api/v1/runs/:run_id 确认运行摘要 API 可查询该持久化运行
+#	18. SIGTERM 优雅退出（Windows 为强制清理）
 #
 # 接口：scripts/smoke.sh <binary> <expected-version>
 
@@ -39,6 +45,9 @@ if [[ ! -f "${binary_input}" ]]; then
 	echo "Error: smoke binary does not exist: ${binary_input}" >&2
 	exit 2
 fi
+
+# smoke 密码满足最小策略（12+ 字符），仅存在于本次 smoke 临时目录。
+smoke_password='Smoke-Admin-Password-123'
 
 binary_dir=$(cd "$(dirname "${binary_input}")" && pwd -P)
 binary="${binary_dir}/$(basename "${binary_input}")"
@@ -88,7 +97,7 @@ start_server() {
 	server_pid=$!
 }
 
-# wait_ready 轮询 /api/v1/health 直至就绪；失败时输出 serve 日志。
+# wait_ready 轮询公开的 /api/v1/health 直至就绪；失败时输出 serve 日志。
 wait_ready() {
 	local log_file=$1
 	for _ in {1..30}; do
@@ -123,19 +132,94 @@ if [[ "${sub_version}" != "${expected_version}" ]]; then
 fi
 echo "[smoke] version subcommand"
 
-# 3-4. 启动 serve 并等待就绪（临时 datadir，避免污染工作目录）。
+# 3. 全新 datadir：serve 必须 fail-fast 拒绝启动，绝不退化为匿名
+#    管理模式（v0.7 认证边界）。
+"${binary}" serve --datadir "${datadir}" --port "${port}" >uninit.log 2>&1 &
+uninit_pid=$!
+uninit_exited=0
+for _ in {1..30}; do
+	if ! kill -0 "${uninit_pid}" >/dev/null 2>&1; then
+		uninit_exited=1
+		break
+	fi
+	sleep 1
+done
+if [[ "${uninit_exited}" != "1" ]]; then
+	if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
+		taskkill.exe //IM "$(basename "${binary}")" //T //F >/dev/null 2>&1 || true
+	else
+		kill -TERM "${uninit_pid}" >/dev/null 2>&1 || true
+	fi
+	echo "Error: serve on uninitialized datadir did not fail fast" >&2
+	cat uninit.log >&2
+	exit 1
+fi
+uninit_rc=0
+wait "${uninit_pid}" >/dev/null 2>&1 || uninit_rc=$?
+if [[ "${uninit_rc}" -eq 0 ]]; then
+	echo "Error: serve on uninitialized datadir exited 0, want failure" >&2
+	cat uninit.log >&2
+	exit 1
+fi
+if ! grep -F 'authentication is not initialized' uninit.log >/dev/null; then
+	echo "Error: uninitialized serve did not report missing admin credential" >&2
+	cat uninit.log >&2
+	exit 1
+fi
+echo "[smoke] uninitialized serve rejected (exit ${uninit_rc})"
+
+# 4. auth set-password --password-stdin：完成 admin bootstrap（该命令
+#    自身完成 migration，幂等于 serve 已建的 schema 之上）。
+printf '%s\n' "${smoke_password}" |
+	"${binary}" auth set-password --datadir "${datadir}" --password-stdin
+echo "[smoke] admin password initialized"
+
+# 5-6. 启动 serve 并等待就绪；health 公开可读（无需凭据）。
 start_server serve.log
 wait_ready serve.log
-echo "[smoke] health ok"
+echo "[smoke] health ok (public)"
 
-# 5. WebUI 首页可访问且标题正确。
+# 7. default-deny：匿名访问管理 API 一律 401。
+anon_code=$(curl --silent -o anon.json -w '%{http_code}' "${base_url}/api/v1/sources")
+if [[ "${anon_code}" != "401" ]]; then
+	echo "Error: anonymous GET sources status ${anon_code}, want 401 (default-deny)" >&2
+	cat anon.json >&2
+	exit 1
+fi
+echo "[smoke] default-deny enforced"
+
+# 8. 登录：错误密码统一 401；正确密码建立 Web Session 并保存
+#    cookie.jar，后续管理 API 全部携带。
+login_code=$(curl --silent -o login_bad.json -w '%{http_code}' \
+	-H 'Content-Type: application/json' \
+	--data '{"password":"totally-wrong-pass"}' \
+	"${base_url}/api/v1/auth/login")
+if [[ "${login_code}" != "401" ]]; then
+	echo "Error: wrong password login status ${login_code}, want 401" >&2
+	exit 1
+fi
+curl --fail --silent -c cookie.jar \
+	-H 'Content-Type: application/json' \
+	--data "{\"password\":\"${smoke_password}\"}" \
+	"${base_url}/api/v1/auth/login" >login.json
+grep -F '"expires_at"' login.json >/dev/null || {
+	echo "Error: login response missing expires_at: $(cat login.json)" >&2
+	exit 1
+}
+if grep -F "${smoke_password}" login.json >/dev/null; then
+	echo "Error: login response echoes password" >&2
+	exit 1
+fi
+echo "[smoke] login ok, session cookie saved"
+
+# 9. WebUI 首页可访问且标题正确（静态资源公开，认证由前端路由承担）。
 curl --fail --silent "${base_url}/" >index.html
 grep -F '<title>TinySync</title>' index.html >/dev/null
 echo "[smoke] web"
 
-# 6. POST /api/v1/sources：按 config / credentials 契约创建带密码的
-#    WebDAV Source。不做真实连接测试（协议行为由 Go httptest 覆盖）。
-curl --fail --silent \
+# 10. POST /api/v1/sources：按 config / credentials 契约创建带密码的
+#     WebDAV Source。不做真实连接测试（协议行为由 Go httptest 覆盖）。
+curl --fail --silent -b cookie.jar \
 	-H 'Content-Type: application/json' \
 	--data '{"name":"Smoke WebDAV","type":"webdav","config":{"endpoint":"http://127.0.0.1:1/dav","username":"smoke"},"credentials":{"password":"S3cret-Smoke"}}' \
 	"${base_url}/api/v1/sources" >source.json
@@ -159,8 +243,8 @@ if [[ -z "${source_id}" ]]; then
 fi
 echo "[smoke] webdav source created: ${source_id}"
 
-# 6b. S3 Source：config 单选组 + secret_key；secret 不回显。
-curl --fail --silent \
+# 10b. S3 Source：config 单选组 + secret_key；secret 不回显。
+curl --fail --silent -b cookie.jar \
 	-H 'Content-Type: application/json' \
 	--data '{"name":"Smoke S3","type":"s3","config":{"region":"us-east-1","bucket":"smoke-bucket","path_style":true,"access_key":"AKID-SMOKE"},"credentials":{"secret_key":"S3cret-Key"}}' \
 	"${base_url}/api/v1/sources" >source_s3.json
@@ -176,8 +260,8 @@ fi
 s3_id=$(grep -o '"id":"src_[a-f0-9]*"' source_s3.json | head -1 | cut -d '"' -f4)
 echo "[smoke] s3 source created: ${s3_id}"
 
-# 6c. SFTP Source：显式 auth_method + SHA256 host key fingerprint。
-curl --fail --silent \
+# 10c. SFTP Source：显式 auth_method + SHA256 host key fingerprint。
+curl --fail --silent -b cookie.jar \
 	-H 'Content-Type: application/json' \
 	--data '{"name":"Smoke SFTP","type":"sftp","config":{"host":"127.0.0.1","port":22,"username":"smoke","remote_root":"/srv/smoke","auth_method":"password","host_key_fingerprint":"SHA256:UC1Dk4I9LLQOV3B8eZ5FlrUUcbbNie4INffe2TDTz3k"},"credentials":{"password":"S3cret-FTP"}}' \
 	"${base_url}/api/v1/sources" >source_sftp.json
@@ -193,8 +277,8 @@ fi
 sftp_id=$(grep -o '"id":"src_[a-f0-9]*"' source_sftp.json | head -1 | cut -d '"' -f4)
 echo "[smoke] sftp source created: ${sftp_id}"
 
-# 7. GET 列表可见三个 Source 且不含 secret；数据库文件已创建。
-curl --fail --silent "${base_url}/api/v1/sources" >sources.json
+# 11. GET 列表可见三个 Source 且不含 secret；数据库文件已创建。
+curl --fail --silent -b cookie.jar "${base_url}/api/v1/sources" >sources.json
 grep -F "${source_id}" sources.json >/dev/null
 grep -F "${s3_id}" sources.json >/dev/null
 grep -F "${sftp_id}" sources.json >/dev/null
@@ -210,11 +294,11 @@ if [[ ! -f "${datadir}/tinysync.db" ]]; then
 fi
 echo "[smoke] sources list ok (3 protocols), database file ok"
 
-# 8. POST /api/v1/jobs：创建引用该 Source 的 Copy Job。
-#    local_root 用相对路径（cwd 已是 smoke_root），由服务端归一为绝对路径，
-#    避免 Windows 下 JSON 内嵌 MSYS 路径的转歧义。
+# 12. POST /api/v1/jobs：创建引用该 Source 的 Copy Job。
+#     local_root 用相对路径（cwd 已是 smoke_root），由服务端归一为绝对路径，
+#     避免 Windows 下 JSON 内嵌 MSYS 路径的转歧义。
 mkdir -p local
-curl --fail --silent \
+curl --fail --silent -b cookie.jar \
 	-H 'Content-Type: application/json' \
 	--data "{\"name\":\"Smoke Job\",\"source_id\":\"${source_id}\",\"remote_root\":\"/\",\"local_root\":\"local\",\"mode\":\"copy\",\"enabled\":true}" \
 	"${base_url}/api/v1/jobs" >job.json
@@ -230,8 +314,8 @@ if [[ -z "${job_id}" ]]; then
 fi
 echo "[smoke] job created: ${job_id}"
 
-# 9. POST run：远端不可达（127.0.0.1:1），运行应异步启动并收敛为 failed。
-run_code=$(curl --fail --silent -o run.json -w '%{http_code}' -X POST \
+# 13. POST run：远端不可达（127.0.0.1:1），运行应异步启动并收敛为 failed。
+run_code=$(curl --fail --silent -b cookie.jar -o run.json -w '%{http_code}' -X POST \
 	"${base_url}/api/v1/jobs/${job_id}/run")
 if [[ "${run_code}" != "202" ]]; then
 	echo "Error: run status ${run_code}, want 202" >&2
@@ -245,7 +329,7 @@ if [[ -z "${run_id}" ]]; then
 fi
 job_failed=0
 for _ in {1..30}; do
-	curl --fail --silent "${base_url}/api/v1/jobs/${job_id}/status" >status.json
+	curl --fail --silent -b cookie.jar "${base_url}/api/v1/jobs/${job_id}/status" >status.json
 	if grep -F '"state":"failed"' status.json >/dev/null; then
 		job_failed=1
 		break
@@ -259,22 +343,22 @@ if [[ "${job_failed}" != "1" ]]; then
 fi
 echo "[smoke] job run started (202) and converged to failed: ${run_id}"
 
-# 10. 关闭进程并以同一 datadir 重启。
+# 14. 关闭进程并以同一 datadir 重启。
 stop_server
 start_server serve2.log
 wait_ready serve2.log
 echo "[smoke] server restarted"
 
-# 11. 三协议 Source 跨重启持久化：config 与 credential_state 保持，
-#     secret 不回显。
-curl --fail --silent "${base_url}/api/v1/sources/${source_id}" >source2.json
+# 15. 原 session 跨重启仍有效（cookie.jar 直接复用即可访问管理 API）；
+#     三协议 Source 持久化：config 与 credential_state 保持，secret 不回显。
+curl --fail --silent -b cookie.jar "${base_url}/api/v1/sources/${source_id}" >source2.json
 grep -F '"name":"Smoke WebDAV"' source2.json >/dev/null
 grep -F '"webdav":{"password_set":true}' source2.json >/dev/null
 grep -F '"endpoint":"http://127.0.0.1:1/dav"' source2.json >/dev/null
-curl --fail --silent "${base_url}/api/v1/sources/${s3_id}" >source2_s3.json
+curl --fail --silent -b cookie.jar "${base_url}/api/v1/sources/${s3_id}" >source2_s3.json
 grep -F '"s3":{"secret_key_set":true}' source2_s3.json >/dev/null
 grep -F '"bucket":"smoke-bucket"' source2_s3.json >/dev/null
-curl --fail --silent "${base_url}/api/v1/sources/${sftp_id}" >source2_sftp.json
+curl --fail --silent -b cookie.jar "${base_url}/api/v1/sources/${sftp_id}" >source2_sftp.json
 grep -F '"sftp":{"password_set":true,"private_key_set":false,"private_key_passphrase_set":false}' source2_sftp.json >/dev/null
 grep -F '"remote_root":"/srv/smoke"' source2_sftp.json >/dev/null
 for secret in 'S3cret-Smoke' 'S3cret-Key' 'S3cret-FTP'; do
@@ -285,15 +369,15 @@ for secret in 'S3cret-Smoke' 'S3cret-Key' 'S3cret-FTP'; do
 		fi
 	done
 done
-echo "[smoke] three-protocol sources persisted across restart"
+echo "[smoke] session survives restart, three-protocol sources persisted"
 
-# 12. Job 跨重启持久化：配置保留；运行历史持久化——状态保持 failed，
+# 16. Job 跨重启持久化：配置保留；运行历史持久化——状态保持 failed，
 #     run_id / finished_at / error 与重启前一致（历史不再只存内存）。
-curl --fail --silent "${base_url}/api/v1/jobs/${job_id}" >job2.json
+curl --fail --silent -b cookie.jar "${base_url}/api/v1/jobs/${job_id}" >job2.json
 grep -F '"name":"Smoke Job"' job2.json >/dev/null
 grep -F '"mode":"copy"' job2.json >/dev/null
 grep -F "\"source_id\":\"${source_id}\"" job2.json >/dev/null
-curl --fail --silent "${base_url}/api/v1/jobs/${job_id}/status" >status2.json
+curl --fail --silent -b cookie.jar "${base_url}/api/v1/jobs/${job_id}/status" >status2.json
 if ! grep -F '"state":"failed"' status2.json >/dev/null; then
 	echo "Error: job run state after restart should stay failed (persistent history)" >&2
 	cat status2.json >&2
@@ -301,23 +385,20 @@ if ! grep -F '"state":"failed"' status2.json >/dev/null; then
 fi
 if ! grep -F "\"run_id\":\"${run_id}\"" status2.json >/dev/null; then
 	echo "Error: status after restart lost run id ${run_id}" >&2
-	cat status2.json >&2
 	exit 1
 fi
 if ! grep -F '"finished_at":"' status2.json >/dev/null; then
 	echo "Error: persisted run after restart has no finished_at" >&2
-	cat status2.json >&2
 	exit 1
 fi
 if ! grep -F '"error":"' status2.json >/dev/null; then
 	echo "Error: persisted run after restart has no error" >&2
-	cat status2.json >&2
 	exit 1
 fi
 echo "[smoke] job persisted across restart, failed run history intact"
 
-# 13. GET /api/v1/runs/:run_id：运行摘要 API 可查询该持久化运行。
-run_code=$(curl --fail --silent -o run2.json -w '%{http_code}' \
+# 17. GET /api/v1/runs/:run_id：运行摘要 API 可查询该持久化运行。
+run_code=$(curl --fail --silent -b cookie.jar -o run2.json -w '%{http_code}' \
 	"${base_url}/api/v1/runs/${run_id}")
 if [[ "${run_code}" != "200" ]]; then
 	echo "Error: GET run after restart status ${run_code}, want 200" >&2
@@ -337,7 +418,7 @@ grep -F "\"job_id\":\"${job_id}\"" run2.json >/dev/null || {
 }
 echo "[smoke] persistent run queryable via runs API"
 
-# 13. SIGTERM 优雅退出：POSIX 平台发 SIGTERM 并 wait 校验退出码（非 0 即失败）；
+# 18. SIGTERM 优雅退出：POSIX 平台发 SIGTERM 并 wait 校验退出码（非 0 即失败）；
 # Windows 的 Git Bash kill 对原生进程不可靠，保留 server_pid 交给 cleanup
 # 的 taskkill 强制清理。
 if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
