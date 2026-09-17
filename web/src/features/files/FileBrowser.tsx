@@ -68,12 +68,14 @@ function splitBreadcrumb(path: string): Array<{ name: string; path: string }> {
 
 // FileBrowser 是共享的目录浏览器：breadcrumb 导航、虚拟化列表、
 // cursor 驱动的增量分页与下载。load 由调用方注入（Remote / Local
-// 各自指向自己的 API）；onPathChange 在目录变化时通知外部当前路径
-//（目录导航与 namespace 重置回根，picker 场景据此跟踪选中路径）；
-// downloadURL 表示该条目是否可下载（symlink / other 由组件内部判
-// 定）。
+// 各自指向自己的 API）；initialPath 是 namespace 的初始目录，组件
+// 挂载或 load 变化（切换 Source / Job）时从这里开始浏览——picker
+// 场景借此直接落在 Job 的 Remote Root 而不是根目录；onPathChange
+// 在目录变化时通知外部当前路径；downloadURL 表示该条目是否可下载
+//（symlink / other 由组件内部判定）。
 export default function FileBrowser({
     load,
+    initialPath = '/',
     downloadURL,
     renderEntryExtra,
     onPathChange,
@@ -84,6 +86,9 @@ export default function FileBrowser({
         path: string,
         cursor: string | null,
     ) => Promise<{ entries: FileEntry[]; nextCursor: string }>
+    // namespace 初始目录：仅挂载与 namespace 变化时生效，目录导航
+    // 不受影响。
+    initialPath?: string
     downloadURL: (path: string) => string
     renderEntryExtra?: (entry: FileEntry) => React.ReactNode
     onPathChange?: (path: string) => void
@@ -147,16 +152,18 @@ export default function FileBrowser({
         setNextCursor('')
     }, [])
 
-    // 目录切换（含 load 变化，如切换 Source / Job）：reset 累积页与
-    // cursor 并回到根目录；先使旧请求失效，避免首个必要请求被旧
-    // loading 状态丢弃。浏览位置属于旧 namespace，同步通知外部回到
-    // 根——Source 切换触发的重载不经过 openDirectory，不通知会让
-    // picker 场景确认按钮返回旧 namespace 的路径。
+    // namespace 初始化与切换（load 或 initialPath 变化，如切换
+    // Source / Job）：reset 累积页与 cursor 并回到该 namespace 的初
+    // 始目录；先使旧请求失效，避免首个必要请求被旧 loading 状态丢
+    // 弃。浏览位置属于旧 namespace，同步通知外部当前目录——Source
+    // 切换触发的重载不经过 openDirectory，不通知会让 picker 场景的
+    // 确认按钮返回旧 namespace 的路径。目录导航（openDirectory）不
+    // 走这里，用户选中的目录不因父组件重渲染被重置。
     useEffect(() => {
         invalidateView()
-        void loadPage('/', null)
-        onPathChange?.('/')
-    }, [invalidateView, loadPage, onPathChange])
+        void loadPage(initialPath, null)
+        onPathChange?.(initialPath)
+    }, [invalidateView, loadPage, initialPath, onPathChange])
 
     const openDirectory = useCallback(
         (target: string) => {

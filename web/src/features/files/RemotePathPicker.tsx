@@ -105,6 +105,7 @@ export default function RemotePathPicker({
                 {activeSourceId !== '' ? (
                     <FileBrowser
                         load={load}
+                        initialPath={initialPath ?? '/'}
                         downloadURL={() => '#'}
                         onPathChange={setCurrentPath}
                         height={320}
