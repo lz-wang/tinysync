@@ -488,3 +488,70 @@ export function remoteFileDownloadURL(sourceId: string, path: string): string {
 export function localFileDownloadURL(jobId: string, path: string): string {
     return `/api/v1/jobs/${jobId}/files/download?path=${encodeURIComponent(path)}`
 }
+
+// ===== 发布策略（v0.6）=====
+
+// PublishedFileResponse 是发布策略的 API 表示；expires_at 为空串
+// 表示永不过期。
+export interface PublishedFileResponse {
+    id: string
+    local_path: string
+    public_path: string
+    enabled: boolean
+    expires_at: string
+    created_at: string
+    updated_at: string
+}
+
+// PublishedFilesListResponse 对应 GET /api/v1/published-files。
+export interface PublishedFilesListResponse {
+    published_files: PublishedFileResponse[]
+}
+
+// CreatePublishedInput 对应 POST /api/v1/published-files：目标以
+// job_id + LocalRoot 内逻辑路径表达。
+export interface CreatePublishedInput {
+    job_id: string
+    path: string
+    public_path: string
+    enabled?: boolean
+    expires_at?: string
+}
+
+// UpdatePublishedInput 对应 PATCH：expires_at 三态——undefined 保留、
+// null 清除（永不过期）、RFC3339 字符串设置。
+export interface UpdatePublishedInput {
+    public_path?: string
+    enabled?: boolean
+    expires_at?: string | null
+}
+
+// listPublished 返回全部发布策略。
+export function listPublished(): Promise<PublishedFileResponse[]> {
+    return getJSON<PublishedFilesListResponse>('/api/v1/published-files').then(
+        body => body.published_files,
+    )
+}
+
+// createPublished 创建发布策略。
+export function createPublished(input: CreatePublishedInput): Promise<PublishedFileResponse> {
+    return requestJSON<PublishedFileResponse>('POST', '/api/v1/published-files', input)
+}
+
+// updatePublished 部分更新发布策略（local_path 不可变）。
+export function updatePublished(
+    id: string,
+    input: UpdatePublishedInput,
+): Promise<PublishedFileResponse> {
+    return requestJSON<PublishedFileResponse>('PATCH', `/api/v1/published-files/${id}`, input)
+}
+
+// deletePublished 删除发布策略（只移除记录，不触及本地文件）。
+export async function deletePublished(id: string): Promise<void> {
+    await requestJSON<unknown>('DELETE', `/api/v1/published-files/${id}`)
+}
+
+// publishedFileURL 构造公开访问 URL（同源 /published 前缀）。
+export function publishedFileURL(publicPath: string): string {
+    return `${window.location.origin}/published${publicPath}`
+}

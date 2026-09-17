@@ -68,13 +68,14 @@ function splitBreadcrumb(path: string): Array<{ name: string; path: string }> {
 
 // FileBrowser 是共享的目录浏览器：breadcrumb 导航、虚拟化列表、
 // cursor 驱动的增量分页与下载。load 由调用方注入（Remote / Local
-// 各自指向自己的 API）；downloadURL 为空表示该条目不可下载
+// 各自指向自己的 API）；onPathChange 在导航发生时通知外部当前目录
+// （picker 场景跟踪选中路径）；downloadURL 表示该条目是否可下载
 // （symlink / other 由组件内部判定）。
 export default function FileBrowser({
     load,
     downloadURL,
     renderEntryExtra,
-    onOpenDirectory,
+    onPathChange,
     emptyHint = '目录为空',
     height = 420,
 }: {
@@ -84,7 +85,7 @@ export default function FileBrowser({
     ) => Promise<{ entries: FileEntry[]; nextCursor: string }>
     downloadURL: (path: string) => string
     renderEntryExtra?: (entry: FileEntry) => React.ReactNode
-    onOpenDirectory?: (path: string) => void
+    onPathChange?: (path: string) => void
     emptyHint?: string
     height?: number
 }) {
@@ -134,8 +135,9 @@ export default function FileBrowser({
             setEntries([])
             setNextCursor('')
             void loadPage(target, null)
+            onPathChange?.(target)
         },
-        [loadPage],
+        [loadPage, onPathChange],
     )
 
     const rowVirtualizer = useVirtualizer({
@@ -240,13 +242,7 @@ export default function FileBrowser({
                                             component="button"
                                             variant="body2"
                                             sx={{ flexGrow: 1, textAlign: 'left' }}
-                                            onClick={() => {
-                                                if (onOpenDirectory !== undefined) {
-                                                    onOpenDirectory(entry.path)
-                                                } else {
-                                                    openDirectory(entry.path)
-                                                }
-                                            }}
+                                            onClick={() => openDirectory(entry.path)}
                                         >
                                             {entry.name}
                                         </Link>

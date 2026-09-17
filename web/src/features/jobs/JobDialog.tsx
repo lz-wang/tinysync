@@ -1,5 +1,6 @@
 import {
     Alert,
+    Box,
     Button,
     Dialog,
     DialogActions,
@@ -22,6 +23,7 @@ import {
     type UpdateJobInput,
     updateJob,
 } from '../../api'
+import RemotePathPicker from '../files/RemotePathPicker'
 
 interface JobDialogProps {
     open: boolean
@@ -106,6 +108,7 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
     const [cronTimezone, setCronTimezone] = useState('')
     const [saving, setSaving] = useState(false)
     const [error, setError] = useState<string | null>(null)
+    const [pickerOpen, setPickerOpen] = useState(false)
 
     useEffect(() => {
         if (!open) {
@@ -259,15 +262,24 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
                             </MenuItem>
                         ))}
                     </TextField>
-                    <TextField
-                        label="Remote Root"
-                        value={remoteRoot}
-                        onChange={e => setRemoteRoot(e.target.value)}
-                        required
-                        placeholder="/photos"
-                        helperText="Absolute remote path to sync from, e.g. / or /backup/docs"
-                        sx={{ '& input': { fontFamily: 'monospace' } }}
-                    />
+                    <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-start' }}>
+                        <TextField
+                            label="Remote Root"
+                            value={remoteRoot}
+                            onChange={e => setRemoteRoot(e.target.value)}
+                            required
+                            placeholder="/photos"
+                            helperText="Absolute remote path to sync from, e.g. / or /backup/docs"
+                            sx={{ flexGrow: 1, '& input': { fontFamily: 'monospace' } }}
+                        />
+                        <Button
+                            variant="outlined"
+                            onClick={() => setPickerOpen(true)}
+                            sx={{ mt: 1, flexShrink: 0 }}
+                        >
+                            Browse...
+                        </Button>
+                    </Box>
                     <TextField
                         label="Local Root"
                         value={localRoot}
@@ -382,6 +394,11 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
                     {saving ? 'Saving…' : 'Save'}
                 </Button>
             </DialogActions>
+            <RemotePathPicker
+                open={pickerOpen}
+                onClose={() => setPickerOpen(false)}
+                onPick={path => setRemoteRoot(path)}
+            />
         </Dialog>
     )
 }
