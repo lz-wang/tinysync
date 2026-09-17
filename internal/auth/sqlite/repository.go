@@ -15,11 +15,6 @@ import (
 	"tinysync/internal/storage"
 )
 
-// lastUsedThrottle 是 last_used_at 的写入节流阈值：仅当当前值为空
-// 或早于 now-throttle 时写入，高频 API 调用不退化为每请求一次
-// SQLite 元数据写。
-const lastUsedThrottle = time.Minute
-
 // Repository 是 auth.Repository 的 SQLite 实现。
 type Repository struct {
 	db *sql.DB
@@ -214,7 +209,7 @@ func (r *Repository) RevokeAPIToken(ctx context.Context, id string, now time.Tim
 // TouchAPITokenLastUsed 实现 auth.Repository：节流写入，不存在的
 // token 静默忽略（认证路径不因元数据维护失败而失败）。
 func (r *Repository) TouchAPITokenLastUsed(ctx context.Context, id string, now time.Time) error {
-	thresholdMs := now.Add(-lastUsedThrottle).UnixMilli()
+	thresholdMs := now.Add(-auth.LastUsedThrottle).UnixMilli()
 	if _, err := r.db.ExecContext(ctx, `UPDATE api_tokens
 		SET last_used_at = ?
 		WHERE id = ? AND (last_used_at IS NULL OR last_used_at < ?)`,

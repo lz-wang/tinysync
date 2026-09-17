@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -122,4 +123,96 @@ func Authorize(p Principal, required Scope) bool {
 		}
 	}
 	return false
+}
+
+// CreateAPITokenInput 是创建 API Token 的输入。
+type CreateAPITokenInput struct {
+	Name      string
+	Scopes    []Scope
+	ExpiresAt *time.Time
+}
+
+// CreateAPIToken 创建 API Token：名称与 scope 校验、scope 规范化
+// （排序去重）、过期时刻必须在未来；raw token 只在返回值中出现
+// 一次，之后无法取回。
+func (s *Service) CreateAPIToken(ctx context.Context, input CreateAPITokenInput) (APIToken, string, error) {
+	name := strings.TrimSpace(input.Name)
+	if err := ValidateTokenName(name); err != nil {
+		return APIToken{}, "", err
+	}
+	scopes, err := NormalizeScopes(input.Scopes)
+	if err != nil {
+		return APIToken{}, "", err
+	}
+	if input.ExpiresAt != nil && !input.ExpiresAt.After(s.Now()) {
+		return APIToken{}, "", fmt.Errorf("%w: expires_at must be in the future", ErrInvalidInput)
+	}
+	raw, hash, err := newAPITokenSecret()
+	if err != nil {
+		return APIToken{}, "", err
+	}
+	id, err := newTokenID()
+	if err != nil {
+		return APIToken{}, "", err
+	}
+	now := s.Now()
+	expires := cloneUTCTime(input.ExpiresAt)
+	token := APIToken{
+		ID:        id,
+		Name:      name,
+		Prefix:    DisplayPrefix(raw),
+		Scopes:    scopes,
+		CreatedAt: now,
+		ExpiresAt: expires,
+	}
+	if err := s.repo.CreateAPIToken(ctx, token, hash); err != nil {
+		return APIToken{}, "", fmt.Errorf("create api token: %w", err)
+	}
+	return token, raw, nil
+}
+
+// ListAPITokens 返回全部 token 元数据（绝不包含 raw token 与
+// token_hash）。
+func (s *Service) ListAPITokens(ctx context.Context) ([]APIToken, error) {
+	return s.repo.ListAPITokens(ctx)
+}
+
+// RevokeAPIToken 幂等软撤销；撤销立即生效（后续认证 401）。
+// 不存在的 ID 返回 ErrNotFound。
+func (s *Service) RevokeAPIToken(ctx context.Context, id string) error {
+	if err := s.repo.RevokeAPIToken(ctx, id, s.Now()); err != nil {
+		return err
+	}
+	return nil
+}
+
+// AuthenticateAPIToken 校验 raw Bearer token 并返回 principal。
+// 不存在、已过期、已撤销统一返回 ErrUnauthorized。认证同时节流
+// 更新 last_used_at（失败不影响认证结果）。
+func (s *Service) AuthenticateAPIToken(ctx context.Context, raw string) (Principal, APIToken, error) {
+	token, err := s.repo.GetAPITokenByHash(ctx, HashAPIToken(raw))
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return Principal{}, APIToken{}, ErrUnauthorized
+		}
+		return Principal{}, APIToken{}, err
+	}
+	if !token.Active(s.Now()) {
+		return Principal{}, APIToken{}, ErrUnauthorized
+	}
+	_ = s.repo.TouchAPITokenLastUsed(ctx, token.ID, s.Now())
+	return Principal{
+		Kind:      PrincipalKindAPIToken,
+		SubjectID: token.ID,
+		Scopes:    token.Scopes,
+	}, token, nil
+}
+
+// cloneUTCTime 复制时间指针并归一为 UTC；nil 保持 nil。
+func cloneUTCTime(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	utc := t.UTC()
+	return &utc
 }

@@ -98,7 +98,11 @@ func (f *fakeRepo) GetAPITokenByHash(_ context.Context, hash []byte) (APIToken, 
 }
 
 func (f *fakeRepo) ListAPITokens(context.Context) ([]APIToken, error) {
-	return nil, errors.New("not implemented")
+	list := make([]APIToken, 0, len(f.tokenByID))
+	for _, token := range f.tokenByID {
+		list = append(list, token)
+	}
+	return list, nil
 }
 
 func (f *fakeRepo) RevokeAPIToken(_ context.Context, id string, now time.Time) error {
@@ -113,7 +117,17 @@ func (f *fakeRepo) RevokeAPIToken(_ context.Context, id string, now time.Time) e
 	return nil
 }
 
-func (f *fakeRepo) TouchAPITokenLastUsed(context.Context, string, time.Time) error {
+// TouchAPITokenLastUsed 与 sqlite 实现同语义：1 分钟阈值内不写入。
+func (f *fakeRepo) TouchAPITokenLastUsed(_ context.Context, id string, now time.Time) error {
+	token, ok := f.tokenByID[id]
+	if !ok {
+		return nil
+	}
+	threshold := now.Add(-LastUsedThrottle)
+	if token.LastUsedAt == nil || token.LastUsedAt.Before(threshold) {
+		token.LastUsedAt = &now
+		f.tokenByID[id] = token
+	}
 	return nil
 }
 
