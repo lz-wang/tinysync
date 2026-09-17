@@ -758,3 +758,104 @@ func TestLoadMigrationsRejectsBadNames(t *testing.T) {
 		t.Fatal("loadMigrations with duplicate version = nil, want error")
 	}
 }
+
+// TestMigrateV5ToV6AddsPublishedFiles：v5 库升级到 v6 后新增
+// published_files 表，既有 sources / jobs / runs 数据完整保留，
+// 备份停留在 v5。
+func TestMigrateV5ToV6AddsPublishedFiles(t *testing.T) {
+	dataDir := t.TempDir()
+	db, err := Open(dataDir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	// 用真实的 0001-0005 schema 构造 v5 形态的库。
+	v5FS := fstest.MapFS{}
+	for _, name := range []string{
+		"0001_sources.sql", "0002_sync_jobs.sql",
+		"0003_scheduler_history.sql", "0004_once_consumption.sql",
+		"0005_source_configs.sql",
+	} {
+		data, err := fs.ReadFile(migrationFS, "migrations/"+name)
+		if err != nil {
+			t.Fatalf("read embedded %s: %v", name, err)
+		}
+		v5FS["migrations/"+name] = &fstest.MapFile{Data: data}
+	}
+	if err := migrate(ctx, db, dataDir, v5FS); err != nil {
+		t.Fatalf("build v5 database: %v", err)
+	}
+	assertVersion(t, db, 5)
+
+	// 存量数据：Source、Job 与一轮运行历史。
+	if _, err := db.Exec(`INSERT INTO sources
+		(id, name, type, endpoint, username, password,
+		 config_json, credentials_json, enabled, created_at, updated_at)
+		VALUES ('src_a', 'nas', 'webdav', '', '', '',
+		 '{"endpoint":"https://example.com/dav/","username":"user"}', '{}', 1, 1, 1)`); err != nil {
+		t.Fatalf("insert source: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO sync_jobs
+		(id, name, source_id, remote_root, local_root, mode,
+		 include_patterns, exclude_patterns, enabled,
+		 schedule_type, schedule_value, schedule_timezone,
+		 once_consumed_for, created_at, updated_at)
+		VALUES ('job_a', 'photos', 'src_a', '/photos', '/tmp/backup', 'copy',
+		 '[]', '[]', 1, 'manual', '', '', NULL, 1, 1)`); err != nil {
+		t.Fatalf("insert job: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO sync_runs
+		(id, job_id, trigger_type, scheduled_for, status, started_at)
+		VALUES ('run_a', 'job_a', 'manual', NULL, 'succeeded', 1)`); err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+
+	if err := Migrate(ctx, db, dataDir); err != nil {
+		t.Fatalf("Migrate v5->v6: %v", err)
+	}
+	assertVersion(t, db, embeddedLatestVersion(t))
+
+	// 既有数据完整保留。
+	var jobName, sourceID string
+	if err := db.QueryRow("SELECT name, source_id FROM sync_jobs WHERE id = 'job_a'").Scan(&jobName, &sourceID); err != nil {
+		t.Fatalf("query job after upgrade: %v", err)
+	}
+	if jobName != "photos" || sourceID != "src_a" {
+		t.Errorf("job after upgrade = (%q, %q), want (photos, src_a)", jobName, sourceID)
+	}
+	var runStatus string
+	if err := db.QueryRow("SELECT status FROM sync_runs WHERE id = 'run_a'").Scan(&runStatus); err != nil {
+		t.Fatalf("query run after upgrade: %v", err)
+	}
+	if runStatus != "succeeded" {
+		t.Errorf("run status = %q, want succeeded", runStatus)
+	}
+
+	// published_files 可用：约束生效。
+	if _, err := db.Exec(`INSERT INTO published_files
+		(id, local_path, public_path, enabled, expires_at, created_at, updated_at)
+		VALUES ('pub_a', '/tmp/a.txt', '/a.txt', 1, NULL, 1, 1)`); err != nil {
+		t.Fatalf("insert published file: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO published_files
+		(id, local_path, public_path, enabled, expires_at, created_at, updated_at)
+		VALUES ('pub_b', '/tmp/b.txt', '/a.txt', 1, NULL, 1, 1)`); err == nil {
+		t.Fatal("insert duplicate public_path = nil, want UNIQUE violation")
+	}
+	if _, err := db.Exec(`INSERT INTO published_files
+		(id, local_path, public_path, enabled, expires_at, created_at, updated_at)
+		VALUES ('pub_c', '/tmp/c.txt', '/c.txt', 2, NULL, 1, 1)`); err == nil {
+		t.Fatal("insert enabled=2 = nil, want CHECK violation")
+	}
+
+	// 升级备份存在且停留在 v5。
+	entries, err := os.ReadDir(filepath.Join(dataDir, backupsDirName))
+	if err != nil {
+		t.Fatalf("read backups dir: %v", err)
+	}
+	if len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), "tinysync-v5-") {
+		t.Fatalf("backup files = %v, want one tinysync-v5-* entry", entries)
+	}
+}
