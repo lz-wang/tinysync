@@ -47,6 +47,12 @@ func (s *Service) AdminConfigured(ctx context.Context) (bool, error) {
 // token——raw 只在此返回一次，之后无法取回。admin 未初始化、密码
 // 错误与 hash 损坏统一返回 ErrInvalidCredentials，不区分具体原因。
 func (s *Service) Login(ctx context.Context, password string) (WebSession, string, error) {
+	// 与设置密码同策略的输入上限：超长输入不进入 KDF，统一按凭据
+	// 错误返回，不暴露策略细节。
+	if len(password) > maxPasswordBytes {
+		return WebSession{}, "", ErrInvalidCredentials
+	}
+
 	// 顺手清理过期会话；清理失败不阻断登录（下次登录再清）。
 	_, _ = s.repo.DeleteExpiredSessions(ctx, s.Now())
 

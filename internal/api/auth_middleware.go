@@ -73,12 +73,6 @@ func authMiddleware(svc *auth.Service) gin.HandlerFunc {
 				return
 			}
 		}
-		// CSRF 纵深防御：携带跨源 Origin 的 state-changing 请求拒绝
-		//（主防线是 SameSite=Strict cookie；Bearer 客户端不带 Origin）。
-		if stateChangingMethods[c.Request.Method] && !sameOrigin(c.Request) {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "cross-origin request rejected"})
-			return
-		}
 		if header := c.GetHeader("Authorization"); header != "" {
 			// Bearer API Token：唯一 machine credential 入口。显式
 			// 提供无效凭据绝不 fallback 到 Web Session。
@@ -104,6 +98,14 @@ func authMiddleware(svc *auth.Service) gin.HandlerFunc {
 		rawToken, err := c.Cookie(sessionCookieName)
 		if err != nil || rawToken == "" {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
+		}
+		// CSRF 纵深防御（仅 Web Session 凭据）：携带跨源 Origin 的
+		// state-changing 请求拒绝——浏览器会自动附带 cookie，存在被
+		// 跨站页面借用的风险；主防线是 SameSite=Strict。Bearer API
+		// Token 是显式凭据，不受 cookie 环境影响，不做 CSRF 校验。
+		if stateChangingMethods[c.Request.Method] && !sameOrigin(c.Request) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "cross-origin request rejected"})
 			return
 		}
 		principal, session, err := svc.AuthenticateSession(c.Request.Context(), rawToken)

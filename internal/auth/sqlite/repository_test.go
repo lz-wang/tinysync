@@ -280,6 +280,40 @@ func TestAPITokenHashUnique(t *testing.T) {
 	}
 }
 
+// scopes_json 损坏或含未知 scope 时读取 fail closed：复用领域层
+// UnmarshalScopes 校验，残缺授权集合绝不进入 principal。
+func TestScanTokenRejectsCorruptedScopes(t *testing.T) {
+	repo, dataDir := testRepo(t)
+	ctx := context.Background()
+	now := time.Unix(1757879400, 0).UTC()
+
+	// 绕过领域层直接写入损坏行（模拟存储损坏）。
+	db, err := storage.Open(dataDir)
+	if err != nil {
+		t.Fatalf("open raw db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	for id, scopesJSON := range map[string]string{
+		"tok_notjson": `not-json`,
+		"tok_unknown": `["sudo"]`,
+	} {
+		if _, err := db.ExecContext(ctx,
+			"INSERT INTO api_tokens (id, name, prefix, token_hash, scopes_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+			id, "corrupted", "ts_corrupt", []byte("sha256-of-"+id), scopesJSON, now.UnixMilli()); err != nil {
+			t.Fatalf("seed corrupted token %s: %v", id, err)
+		}
+	}
+
+	for _, id := range []string{"tok_notjson", "tok_unknown"} {
+		if _, err := repo.GetAPIToken(ctx, id); !errors.Is(err, auth.ErrInvalidInput) {
+			t.Errorf("GetAPIToken(%s) = %v, want ErrInvalidInput", id, err)
+		}
+	}
+	if _, err := repo.ListAPITokens(ctx); !errors.Is(err, auth.ErrInvalidInput) {
+		t.Errorf("ListAPITokens with corrupted rows = %v, want ErrInvalidInput", err)
+	}
+}
+
 func TestAPITokenRevokeIdempotent(t *testing.T) {
 	repo, _ := testRepo(t)
 	ctx := context.Background()

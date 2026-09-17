@@ -210,6 +210,27 @@ func TestLoginErrors(t *testing.T) {
 	}
 }
 
+// 登录密码输入上限：恰好 1024 字节可正常登录，超过 1024 字节在
+// KDF 之前拒绝，统一凭据错误语义（与设置密码同策略）。
+func TestLoginPasswordSizeLimit(t *testing.T) {
+	repo := newFakeRepo()
+	svc := NewService(repo)
+	ctx := context.Background()
+
+	maxBytes := strings.Repeat("a", maxPasswordBytes)
+	if err := svc.SetAdminPassword(ctx, maxBytes); err != nil {
+		t.Fatalf("SetAdminPassword (1024 bytes): %v", err)
+	}
+	if _, _, err := svc.Login(ctx, maxBytes); err != nil {
+		t.Fatalf("Login with 1024-byte password = %v, want success", err)
+	}
+
+	tooLong := strings.Repeat("a", maxPasswordBytes+1)
+	if _, _, err := svc.Login(ctx, tooLong); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("Login with 1025-byte password = %v, want ErrInvalidCredentials", err)
+	}
+}
+
 // 每次 login 产生唯一 session token；logout 后立即失效。
 func TestSessionLifecycle(t *testing.T) {
 	repo := newFakeRepo()

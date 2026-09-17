@@ -248,6 +248,46 @@ func TestTokenScopeEnforcement(t *testing.T) {
 	}
 }
 
+// Bearer API Token 不做 CSRF Origin 校验：显式凭据不受浏览器 cookie
+// 环境影响，跨源 Origin 的 Bearer 变更请求放行到 handler；Web
+// Session 的跨源变更仍被拒绝（契约：CSRF 只约束 cookie 凭据）。
+func TestBearerTokenSkipsCSRFCheck(t *testing.T) {
+	env := newScopeTestEnv(t)
+	runRaw, _ := createTokenViaAPI(t, env.router, `{"name": "runner", "scopes": ["run"]}`)
+
+	// run token + 跨源 Origin + POST：到达 handler（job 缺失 404），
+	// 绝不 403 CSRF。
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/jobs/some/run", nil)
+	req.Header.Set("Authorization", "Bearer "+runRaw)
+	req.Header.Set("Origin", "http://evil.example.com")
+	rec := httptest.NewRecorder()
+	env.router.Engine.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("bearer POST with cross-origin origin = %d, want handler-level 404 (no CSRF check)", rec.Code)
+	}
+
+	// 同源 Bearer 同样放行（对照）。
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/jobs/some/run", nil)
+	req.Header.Set("Authorization", "Bearer "+runRaw)
+	req.Header.Set("Origin", "http://example.com")
+	rec = httptest.NewRecorder()
+	env.router.Engine.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("bearer POST with same-origin = %d, want handler-level 404", rec.Code)
+	}
+
+	// Web Session + 跨源 Origin 的变更请求仍被 CSRF 校验拒绝。
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/sources", strings.NewReader("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(env.router.session)
+	req.Header.Set("Origin", "http://evil.example.com")
+	rec = httptest.NewRecorder()
+	env.router.Engine.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("session POST with cross-origin origin = %d, want 403 (CSRF)", rec.Code)
+	}
+}
+
 // raw token 不落入数据库任何文本列，也无法从 list API 取回。
 func TestRawTokenAbsentFromDatabase(t *testing.T) {
 	env := newScopeTestEnv(t)

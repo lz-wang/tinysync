@@ -26,7 +26,8 @@ GitHub Release 摘要一致。
 - 新增管理员认证基线：`tinysync auth set-password` 用于初始化或
   重置管理员密码（支持 `--password-stdin` 自动化输入），重置会
   立即废弃全部已有 Web Session；`serve` 在管理员密码未初始化时
-  拒绝启动。
+  拒绝启动。登录接口与密码设置执行同一密码长度策略（最长 1024
+  字节），登录请求体另设独立大小上限，防止超长输入拖垮密码散列。
 - REST API 引入认证：除 health / version / 登录与 `/published`
   公开文件外，所有 `/api/v1` 端点默认拒绝匿名访问（401）；Web
   端通过登录建立 HttpOnly Session Cookie（7 天绝对过期、

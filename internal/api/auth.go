@@ -37,6 +37,12 @@ type loginRequest struct {
 	Password string `json:"password"`
 }
 
+// maxLoginBodyBytes 是登录请求体上限：登录契约只需承载一个密码，
+// 公开端点先在 HTTP 层拒绝超大请求体，再由服务层做密码语义上限
+// （1024 字节），两级边界共同防住密码 KDF DoS。通用 strictBind 不加
+// 全局小上限，SFTP private key 等管理请求体天然可能更大。
+const maxLoginBodyBytes = 4 * 1024
+
 // loginResponse 是登录成功响应：expires_at 告知会话绝对过期时刻；
 // session 经 Set-Cookie 下发，响应体不含任何凭据。
 type loginResponse struct {
@@ -56,6 +62,8 @@ func (h *authHandlers) login(c *gin.Context) {
 		return
 	}
 	var req loginRequest
+	// 公开端点：请求体先经独立大小上限，超限与非法 JSON 同形 400。
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxLoginBodyBytes)
 	if !strictBind(c, &req) {
 		return
 	}

@@ -45,7 +45,9 @@ func registerLocalFileRoutes(group *gin.RouterGroup, local *browser.LocalService
 	group.GET("/jobs/:id/files/stat", requireScope(auth.ScopeRead), h.localStat)
 	group.GET("/jobs/:id/files/download", requireScope(auth.ScopeRead), h.localDownload)
 	// 本地文件经 *os.File + ServeContent 服务，HEAD 只回响应头。
-	group.HEAD("/jobs/:id/files/download", h.localDownload)
+	// HEAD 与 GET 同为 read scope：响应头暴露存在性 / 大小 / 类型等
+	// 文件元信息，run-only token 不得借 HEAD 探测。
+	group.HEAD("/jobs/:id/files/download", requireScope(auth.ScopeRead), h.localDownload)
 }
 
 // fileHandlers 是文件浏览端点的 handler 集合。

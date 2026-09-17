@@ -10,6 +10,8 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	"tinysync/internal/api"
 	"tinysync/internal/auth"
 	authsqlite "tinysync/internal/auth/sqlite"
@@ -232,6 +234,11 @@ func TestAuthE2ETokenScopes(t *testing.T) {
 	if rec := doRaw(t, e.router, http.MethodGet, "/api/v1/sources", "", bearer(runRaw)); rec.Code != http.StatusForbidden {
 		t.Errorf("run GET sources = %d, want 403", rec.Code)
 	}
+	// HEAD 下载与 GET 同为 read scope：run-only token 不得借 HEAD
+	// 探测文件元信息（回归：HEAD 曾遗漏 requireScope）。
+	if rec := doRaw(t, e.router, http.MethodHead, "/api/v1/jobs/"+e.job.ID+"/files/download?path=/", "", bearer(runRaw)); rec.Code != http.StatusForbidden {
+		t.Errorf("run token HEAD download = %d, want 403", rec.Code)
+	}
 
 	// admin：read + run + token 管理。
 	if rec := doRaw(t, e.router, http.MethodGet, "/api/v1/sources", "", bearer(adminRaw)); rec.Code != http.StatusOK {
@@ -407,6 +414,160 @@ func TestAuthE2ERestartPersistence(t *testing.T) {
 		}
 		if name == "live" && rec.Code != http.StatusForbidden {
 			t.Errorf("live token after restart = %d, want 403 (authenticated, scope limited)", rec.Code)
+		}
+	}
+}
+
+// 受保护路由 scope 矩阵：对全部 /api/v1 受保护 method/path 逐一断言
+// 匿名 401、read / run / admin 的 403 边界与 Web-Session-only 路由对
+// Bearer 的拒绝；矩阵与 Gin 注册表双向核对——新受保护路由漏配 scope
+// 或平行路由（如 GET ↔ HEAD）漂移时会直接失败。
+func TestAuthE2EProtectedScopeMatrix(t *testing.T) {
+	remote := protocolFixtures()[0].fixture(t)
+	e := newBrowserEnv(t, remote)
+	e.createJob(syncjob.ModeCopy)
+
+	engine, ok := e.router.(*gin.Engine)
+	if !ok {
+		t.Fatal("e2e router is not *gin.Engine")
+	}
+
+	// matrixRoute 描述一个受保护端点：scope 为 "" 表示仅接受 Web
+	// Session（auth/session|logout，Bearer 一律 401）。
+	type matrixRoute struct {
+		method string
+		path   string // 注册模板，:id 以不存在的 ID 发请求
+		scope  auth.Scope
+		body   string
+	}
+	const missingID = "matrix_missing"
+	routes := []matrixRoute{
+		{http.MethodGet, "/api/v1/sources", auth.ScopeRead, ""},
+		{http.MethodPost, "/api/v1/sources", auth.ScopeAdmin, "{}"},
+		{http.MethodGet, "/api/v1/sources/:id", auth.ScopeRead, ""},
+		{http.MethodPatch, "/api/v1/sources/:id", auth.ScopeAdmin, "{}"},
+		{http.MethodDelete, "/api/v1/sources/:id", auth.ScopeAdmin, ""},
+		{http.MethodPost, "/api/v1/sources/:id/test", auth.ScopeAdmin, "{}"},
+		{http.MethodGet, "/api/v1/sources/:id/files", auth.ScopeRead, ""},
+		{http.MethodGet, "/api/v1/sources/:id/files/stat", auth.ScopeRead, ""},
+		{http.MethodGet, "/api/v1/sources/:id/files/download", auth.ScopeRead, ""},
+		{http.MethodGet, "/api/v1/jobs", auth.ScopeRead, ""},
+		{http.MethodPost, "/api/v1/jobs", auth.ScopeAdmin, "{}"},
+		{http.MethodGet, "/api/v1/jobs/:id", auth.ScopeRead, ""},
+		{http.MethodPatch, "/api/v1/jobs/:id", auth.ScopeAdmin, "{}"},
+		{http.MethodDelete, "/api/v1/jobs/:id", auth.ScopeAdmin, ""},
+		{http.MethodPost, "/api/v1/jobs/:id/run", auth.ScopeRun, ""},
+		{http.MethodGet, "/api/v1/jobs/:id/status", auth.ScopeRead, ""},
+		{http.MethodGet, "/api/v1/runs", auth.ScopeRead, ""},
+		{http.MethodGet, "/api/v1/runs/:id", auth.ScopeRead, ""},
+		{http.MethodGet, "/api/v1/runs/:id/items", auth.ScopeRead, ""},
+		{http.MethodGet, "/api/v1/jobs/:id/files", auth.ScopeRead, ""},
+		{http.MethodGet, "/api/v1/jobs/:id/files/stat", auth.ScopeRead, ""},
+		{http.MethodGet, "/api/v1/jobs/:id/files/download", auth.ScopeRead, ""},
+		// HEAD 与 GET download 同为 read：响应头即文件元信息。
+		{http.MethodHead, "/api/v1/jobs/:id/files/download", auth.ScopeRead, ""},
+		{http.MethodGet, "/api/v1/published-files", auth.ScopeRead, ""},
+		{http.MethodPost, "/api/v1/published-files", auth.ScopeAdmin, "{}"},
+		{http.MethodPatch, "/api/v1/published-files/:id", auth.ScopeAdmin, "{}"},
+		{http.MethodDelete, "/api/v1/published-files/:id", auth.ScopeAdmin, ""},
+		{http.MethodGet, "/api/v1/api-tokens", auth.ScopeAdmin, ""},
+		{http.MethodPost, "/api/v1/api-tokens", auth.ScopeAdmin, "{}"},
+		{http.MethodPost, "/api/v1/api-tokens/:id/revoke", auth.ScopeAdmin, ""},
+		{http.MethodGet, "/api/v1/auth/session", "", ""},
+		{http.MethodPost, "/api/v1/auth/logout", "", ""},
+	}
+
+	// 双向核对 1：矩阵每行都必须已注册（矩阵本身不可漂移）。
+	registered := map[string]bool{}
+	for _, r := range engine.Routes() {
+		if strings.HasPrefix(r.Path, "/api/v1/") {
+			registered[r.Method+" "+r.Path] = true
+		}
+	}
+	publicRoutes := map[string]bool{
+		http.MethodGet + " /api/v1/health":      true,
+		http.MethodGet + " /api/v1/version":     true,
+		http.MethodPost + " /api/v1/auth/login": true,
+	}
+	matrixKeys := map[string]bool{}
+	for _, row := range routes {
+		key := row.method + " " + row.path
+		matrixKeys[key] = true
+		if !registered[key] {
+			t.Errorf("matrix row %s is not registered", key)
+		}
+	}
+	// 双向核对 2：每个 /api/v1 注册路由必须进矩阵或显式公开——
+	// 新增受保护端点必须同时声明 scope，防止 GET/HEAD 平行漂移。
+	for key := range registered {
+		if publicRoutes[key] || matrixKeys[key] {
+			continue
+		}
+		t.Errorf("registered route %s missing from scope matrix (declare required scope)", key)
+	}
+
+	createToken := func(t *testing.T, name, scopes string) string {
+		t.Helper()
+		rec := e.doJSON(http.MethodPost, "/api/v1/api-tokens",
+			`{"name": "`+name+`", "scopes": `+scopes+`}`)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create token %s = %d, body = %s", name, rec.Code, rec.Body.String())
+		}
+		var body struct {
+			RawToken string `json:"raw_token"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode create token: %v", err)
+		}
+		return body.RawToken
+	}
+	readRaw := createToken(t, "matrix-reader", `["read"]`)
+	runRaw := createToken(t, "matrix-runner", `["run"]`)
+	adminRaw := createToken(t, "matrix-chief", `["admin"]`)
+
+	type principal struct {
+		name   string
+		rawTok string
+	}
+	principals := []principal{
+		{"anonymous", ""},
+		{"read", readRaw},
+		{"run", runRaw},
+		{"admin", adminRaw},
+	}
+
+	for _, row := range routes {
+		requestPath := strings.ReplaceAll(row.path, ":id", missingID)
+		for _, p := range principals {
+			headers := map[string]string{}
+			if p.rawTok != "" {
+				headers["Authorization"] = "Bearer " + p.rawTok
+			}
+			rec := doRaw(t, e.router, row.method, requestPath, row.body, headers)
+
+			switch {
+			case p.rawTok == "":
+				// 匿名访问受保护端点一律 401。
+				if rec.Code != http.StatusUnauthorized {
+					t.Errorf("%s %s as anonymous = %d, want 401", row.method, requestPath, rec.Code)
+				}
+			case row.scope == "":
+				// Web-Session-only 路由拒绝一切 Bearer。
+				if rec.Code != http.StatusUnauthorized {
+					t.Errorf("%s %s as %s bearer = %d, want 401", row.method, requestPath, p.name, rec.Code)
+				}
+			case p.name == "admin" || p.name == string(row.scope):
+				// scope 匹配（admin 蕴含一切）：到达 handler，任何
+				// handler 产生状态码都可，唯独不允许认证/授权拦截。
+				if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden {
+					t.Errorf("%s %s as %s = %d, want handler reached (not 401/403)", row.method, requestPath, p.name, rec.Code)
+				}
+			default:
+				// scope 不匹配：403。
+				if rec.Code != http.StatusForbidden {
+					t.Errorf("%s %s as %s = %d, want 403", row.method, requestPath, p.name, rec.Code)
+				}
+			}
 		}
 	}
 }

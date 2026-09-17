@@ -238,9 +238,13 @@ func scanToken(row rowScanner) (auth.APIToken, error) {
 		&createdAtMs, &expiresAt, &lastUsedAt, &revokedAt); err != nil {
 		return auth.APIToken{}, err
 	}
-	if err := json.Unmarshal([]byte(scopesJSON), &token.Scopes); err != nil {
+	// 复用领域校验还原 scope：存储损坏或含未知 scope 时 fail closed，
+	// 不让残缺授权集合进入 principal。
+	scopes, err := auth.UnmarshalScopes(scopesJSON)
+	if err != nil {
 		return auth.APIToken{}, fmt.Errorf("unmarshal scopes of api token %s: %w", token.ID, err)
 	}
+	token.Scopes = scopes
 	token.CreatedAt = time.UnixMilli(createdAtMs).UTC()
 	token.ExpiresAt = millisPointer(expiresAt)
 	token.LastUsedAt = millisPointer(lastUsedAt)

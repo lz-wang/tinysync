@@ -171,6 +171,31 @@ func TestLoginEndpoint(t *testing.T) {
 	}
 }
 
+// 登录入口两级输入限制：超限请求体 400；超过 1024 字节的密码在
+// 服务层拒绝，统一 401 invalid credentials，不暴露策略细节。
+func TestLoginInputLimits(t *testing.T) {
+	env := newAuthTestEnv(t)
+
+	// 请求体超过 4 KiB：HTTP 层拒绝，与非法 JSON 同形 400。
+	huge := `{"password": "` + strings.Repeat("x", 5000) + `"}`
+	if rec := env.doBare(http.MethodPost, "/api/v1/auth/login", huge); rec.Code != http.StatusBadRequest {
+		t.Errorf("oversized login body status = %d, want 400", rec.Code)
+	}
+
+	// 密码超 1024 字节：统一 401 invalid credentials。
+	tooLong := `{"password": "` + strings.Repeat("x", 1025) + `"}`
+	rec := env.doBare(http.MethodPost, "/api/v1/auth/login", tooLong)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("oversized password status = %d, want 401", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "invalid credentials") {
+		t.Errorf("oversized password body = %s, want unified error", rec.Body.String())
+	}
+
+	// 登录端点公开匿名，超大输入不得触发 Argon2id：语义上以统一
+	// 401 收敛即可，不做策略区分。
+}
+
 // 登录端点同样执行 Origin 校验。
 func TestLoginOriginValidation(t *testing.T) {
 	env := newAuthTestEnv(t)
