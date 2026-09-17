@@ -57,7 +57,11 @@ func ScanRemote(ctx context.Context, remote source.Remote, remoteRoot string) ([
 }
 
 // scanDir 递归列出一个远端目录；dirLogical 是目录 logical path，
-// dirRel 是其相对 RemoteRoot 的路径。
+// dirRel 是其相对 RemoteRoot 的路径。List 按分页契约逐页消费：
+// 处理一页后以 NextCursor 续拉，空 NextCursor 表示该层枚举结束。
+// seen 记录本层已出现的 logical path 及其类型：同一 path 跨页以
+// 不同类型再次出现（如 S3 一页报文件、另一页报目录）时整体失败，
+// 保持「file/dir collision fail-fast」的完整快照语义。
 func scanDir(ctx context.Context, remote source.Remote, remoteRoot, dirLogical string, depth int, files *[]source.FileInfo) error {
 	if depth > maxScanDepth {
 		return fmt.Errorf("scan %s: exceeded max depth %d", dirLogical, maxScanDepth)
@@ -65,29 +69,40 @@ func scanDir(ctx context.Context, remote source.Remote, remoteRoot, dirLogical s
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	entries, err := remote.List(ctx, dirLogical)
-	if err != nil {
-		return fmt.Errorf("scan %s: %w", dirLogical, err)
-	}
-	for _, entry := range entries {
-		// 跨协议 logical path 统一校验：拒绝反斜杠、NUL、dot segments
-		// 与重复分隔符（防御异常远端把不可移植 key 送进本地 filepath）。
-		if err := source.ValidateLogicalPath(entry.Path); err != nil {
-			return err
+	seen := make(map[string]bool)
+	cursor := ""
+	for {
+		page, err := remote.List(ctx, dirLogical, source.ListOptions{Cursor: cursor})
+		if err != nil {
+			return fmt.Errorf("scan %s: %w", dirLogical, err)
 		}
-		// 每个条目都验证落在 RemoteRoot 之内（防御异常服务器 href）。
-		if _, err := remoteRelPath(remoteRoot, entry.Path); err != nil {
-			return err
-		}
-		if entry.IsDir {
-			if err := scanDir(ctx, remote, remoteRoot, entry.Path, depth+1, files); err != nil {
+		for _, entry := range page.Entries {
+			// 跨协议 logical path 统一校验：拒绝反斜杠、NUL、dot segments
+			// 与重复分隔符（防御异常远端把不可移植 key 送进本地 filepath）。
+			if err := source.ValidateLogicalPath(entry.Path); err != nil {
 				return err
 			}
-			continue
+			// 每个条目都验证落在 RemoteRoot 之内（防御异常服务器 href）。
+			if _, err := remoteRelPath(remoteRoot, entry.Path); err != nil {
+				return err
+			}
+			if prev, ok := seen[entry.Path]; ok && prev != entry.IsDir {
+				return fmt.Errorf("%w: %q is both a file and a directory in remote listing", ErrInvalid, entry.Path)
+			}
+			seen[entry.Path] = entry.IsDir
+			if entry.IsDir {
+				if err := scanDir(ctx, remote, remoteRoot, entry.Path, depth+1, files); err != nil {
+					return err
+				}
+				continue
+			}
+			*files = append(*files, entry)
 		}
-		*files = append(*files, entry)
+		if page.NextCursor == "" {
+			return nil
+		}
+		cursor = page.NextCursor
 	}
-	return nil
 }
 
 // resolveLocalTarget 把 / 分隔的相对路径安全解析到 LocalRoot 之下的

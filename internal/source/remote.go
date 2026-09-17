@@ -2,7 +2,10 @@ package source
 
 import (
 	"context"
+	"encoding/base64"
+	"fmt"
 	"io"
+	"strconv"
 	"time"
 )
 
@@ -27,14 +30,105 @@ type FileInfo struct {
 	Fingerprint Fingerprint
 }
 
+// List 分页语义的常量：DefaultListLimit 是未指定 limit 时的每页
+// 条目数，MaxListLimit 是单页上限。REST 查询参数沿用同一规则，
+// 越界在 API 层拒绝；adapter 内部只做归一。
+const (
+	DefaultListLimit = 100
+	MaxListLimit     = 500
+)
+
+// ListOptions 是 List 的分页参数。
+type ListOptions struct {
+	// Limit 是本页最大条目数；<=0 取 DefaultListLimit，超过
+	// MaxListLimit 截断为 MaxListLimit。
+	Limit int
+	// Cursor 是上一页返回的 NextCursor，原样回传；空串表示从头
+	// 开始。cursor 是 adapter-owned opaque token：调用方不解析、
+	// 不改写、不假设其内部结构。
+	Cursor string
+}
+
+// FilePage 是 List 的一页结果。Entries 为空时 NextCursor 必为空
+// （adapter 不允许空页死循环）；NextCursor 为空串表示枚举结束
+// （EOF）。
+type FilePage struct {
+	Entries    []FileInfo
+	NextCursor string
+}
+
+// NormalizeListLimit 归一分页上限：<=0 取默认值，超过上限截断。
+// adapter 与 REST 层共用，保证全工程单一分页语义。
+func NormalizeListLimit(limit int) int {
+	switch {
+	case limit <= 0:
+		return DefaultListLimit
+	case limit > MaxListLimit:
+		return MaxListLimit
+	default:
+		return limit
+	}
+}
+
+// EncodeListOffset 把切片分页的 offset 编码为 opaque cursor token，
+// 供采用「单层完整枚举 + 切片」策略的 adapter（WebDAV / SFTP）共用。
+// token 对调用方保持不透明：内部是 offset 并不构成对外契约。
+func EncodeListOffset(offset int) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(strconv.Itoa(offset)))
+}
+
+// DecodeListOffset 解码 EncodeListOffset 生成的 cursor；空串按从头
+// 开始处理。非法 token 返回 ErrInvalid——伪造或跨 adapter 的 cursor
+// 在边界整体失败，而不是静默从头开始得到重复页。
+func DecodeListOffset(cursor string) (int, error) {
+	if cursor == "" {
+		return 0, nil
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(cursor)
+	if err != nil {
+		return 0, fmt.Errorf("%w: malformed list cursor", ErrInvalid)
+	}
+	offset, err := strconv.Atoi(string(raw))
+	if err != nil || offset < 0 {
+		return 0, fmt.Errorf("%w: malformed list cursor", ErrInvalid)
+	}
+	return offset, nil
+}
+
+// PageSlice 对已完整枚举的单层条目执行切片分页，供 WebDAV / SFTP
+// 共用：cursor 解码为 offset，返回 entries[offset:offset+limit]。
+// offset 越界按 EOF 处理（空 Entries + 空 NextCursor），limit 经
+// NormalizeListLimit 归一。返回切片与 entries 共享底层数组，调用方
+// 不得就地修改。
+func PageSlice(entries []FileInfo, opts ListOptions) (FilePage, error) {
+	offset, err := DecodeListOffset(opts.Cursor)
+	if err != nil {
+		return FilePage{}, err
+	}
+	limit := NormalizeListLimit(opts.Limit)
+	if offset >= len(entries) {
+		return FilePage{Entries: []FileInfo{}}, nil
+	}
+	end := offset + limit
+	if end > len(entries) {
+		end = len(entries)
+	}
+	next := ""
+	if end < len(entries) {
+		next = EncodeListOffset(end)
+	}
+	return FilePage{Entries: entries[offset:end], NextCursor: next}, nil
+}
+
 // Remote 是 Source 的只读远端访问接口，协议无关：
 // 远端逻辑路径统一使用 /；不暴露协议特定对象给上层；
 // 只包含同步所需能力，不提供 Upload / Delete / Rename / Move。
-// v0.2.0 仅 Connection Test 经 Stat 使用该接口；
-// List / Open 为 v0.3.0 同步引擎预留。
+// List 分页返回：cursor 为 adapter-owned opaque token（S3 映射
+// ContinuationToken；WebDAV / SFTP 为单层枚举后的切片 offset），
+// 空.NextCursor 表示 EOF。
 type Remote interface {
 	Stat(ctx context.Context, path string) (FileInfo, error)
-	List(ctx context.Context, path string) ([]FileInfo, error)
+	List(ctx context.Context, path string, opts ListOptions) (FilePage, error)
 	Open(ctx context.Context, path string) (io.ReadCloser, error)
 	// Close 释放 Remote 持有的连接与会话。无持久会话的协议（如
 	// WebDAV）为显式空操作；有连接生命周期的协议（如 SFTP）必须

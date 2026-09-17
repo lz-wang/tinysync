@@ -206,32 +206,40 @@ func (r *remote) Stat(ctx context.Context, logicalPath string) (source.FileInfo,
 }
 
 // List 实现 source.Remote：ListObjectsV2 + Delimiter="/" 只列一层，
-// Contents 合成文件、CommonPrefixes 合成目录；ContinuationToken 驱动
-// 分页，不假设单页 1000 object。folder marker（以 / 结尾的 key）
-// 表示目录，不作为文件条目。同一 logical path 同时是文件与目录时
-// 整个 List 失败：本地 filesystem 无法无损表达该 namespace，且
-// Mirror 在完整扫描失败时不会删除，fail-fast 安全。
-func (r *remote) List(ctx context.Context, logicalDir string) ([]source.FileInfo, error) {
+// Contents 合成文件、CommonPrefixes 合成目录。S3 分页是协议原生：
+// opts.Cursor ↔ ContinuationToken、opts.Limit ↔ MaxKeys，服务端游标
+// 驱动，不假设单页 1000 object。folder marker（以 / 结尾的 key）
+// 表示目录，不作为文件条目。同一 logical path 在同一页内同时是
+// 文件与目录时整个 List 失败（fail-fast）；跨页 collision 由 scanner
+// 的已见条目检测兜底。MaxKeys 约束 keys + common prefixes 总数，
+// 一页经 marker 过滤后条目可能变少甚至为空——此时继续以
+// ContinuationToken 拉取，直到产出条目或 EOF：契约要求空页不得
+// 携带 NextCursor。
+func (r *remote) List(ctx context.Context, logicalDir string, opts source.ListOptions) (source.FilePage, error) {
 	dir := path.Clean("/" + logicalDir)
 	prefix := r.dirPrefix(dir)
-
-	files := make(map[string]source.FileInfo)
-	dirs := make(map[string]bool)
-	addDir := func(logical string) {
-		if logical != "/" {
-			dirs[logical] = true
-		}
-	}
 
 	input := &s3.ListObjectsV2Input{
 		Bucket:    aws.String(r.bucket),
 		Prefix:    aws.String(prefix),
 		Delimiter: aws.String("/"),
+		MaxKeys:   aws.Int32(int32(source.NormalizeListLimit(opts.Limit))),
+	}
+	if opts.Cursor != "" {
+		input.ContinuationToken = aws.String(opts.Cursor)
 	}
 	for {
 		out, err := r.client.ListObjectsV2(ctx, input)
 		if err != nil {
-			return nil, wrapOp("list", logicalDir, err)
+			return source.FilePage{}, wrapOp("list", logicalDir, err)
+		}
+
+		files := make(map[string]source.FileInfo)
+		dirs := make(map[string]bool)
+		addDir := func(logical string) {
+			if logical != "/" {
+				dirs[logical] = true
+			}
 		}
 		for _, obj := range out.Contents {
 			key := derefStr(obj.Key)
@@ -240,7 +248,7 @@ func (r *remote) List(ctx context.Context, logicalDir string) ([]source.FileInfo
 			}
 			logical, err := r.toLogical(key)
 			if err != nil {
-				return nil, wrapOp("list", logicalDir, err)
+				return source.FilePage{}, wrapOp("list", logicalDir, err)
 			}
 			if strings.HasSuffix(key, "/") {
 				// folder marker：零字节目录占位对象。
@@ -260,35 +268,44 @@ func (r *remote) List(ctx context.Context, logicalDir string) ([]source.FileInfo
 		for _, cp := range out.CommonPrefixes {
 			logical, err := r.toLogical(derefStr(cp.Prefix))
 			if err != nil {
-				return nil, wrapOp("list", logicalDir, err)
+				return source.FilePage{}, wrapOp("list", logicalDir, err)
 			}
 			addDir(logical)
 		}
-		if out.IsTruncated == nil || !*out.IsTruncated {
-			break
+
+		// file/dir collision（本页内）：fail whole scan。
+		for name := range files {
+			if dirs[name] {
+				return source.FilePage{}, wrapOp("list", logicalDir, fmt.Errorf(
+					"%w: %q is both a file and a directory in the s3 namespace", source.ErrInvalid, name))
+			}
 		}
+
+		entries := make([]source.FileInfo, 0, len(files)+len(dirs))
+		for _, fi := range files {
+			entries = append(entries, fi)
+		}
+		for name := range dirs {
+			entries = append(entries, source.FileInfo{Path: name, IsDir: true})
+		}
+
+		truncated := out.IsTruncated != nil && *out.IsTruncated
+		if len(entries) > 0 || !truncated {
+			next := ""
+			if truncated {
+				if out.NextContinuationToken == nil {
+					return source.FilePage{}, wrapOp("list", logicalDir, errors.New("truncated response without continuation token"))
+				}
+				next = *out.NextContinuationToken
+			}
+			return source.FilePage{Entries: entries, NextCursor: next}, nil
+		}
+		// 过滤后为空但服务端还有下一页：继续拉取，避免空页游标。
 		if out.NextContinuationToken == nil {
-			return nil, wrapOp("list", logicalDir, errors.New("truncated response without continuation token"))
+			return source.FilePage{}, wrapOp("list", logicalDir, errors.New("truncated response without continuation token"))
 		}
 		input.ContinuationToken = out.NextContinuationToken
 	}
-
-	// file/dir collision：fail whole scan。
-	for name := range files {
-		if dirs[name] {
-			return nil, wrapOp("list", logicalDir, fmt.Errorf(
-				"%w: %q is both a file and a directory in the s3 namespace", source.ErrInvalid, name))
-		}
-	}
-
-	entries := make([]source.FileInfo, 0, len(files)+len(dirs))
-	for _, fi := range files {
-		entries = append(entries, fi)
-	}
-	for name := range dirs {
-		entries = append(entries, source.FileInfo{Path: name, IsDir: true})
-	}
-	return entries, nil
 }
 
 // Open 实现 source.Remote：GetObject 返回响应 body。

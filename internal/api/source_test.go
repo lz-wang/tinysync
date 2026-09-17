@@ -29,8 +29,8 @@ func (r fakeRemote) Stat(ctx context.Context, path string) (source.FileInfo, err
 	return source.FileInfo{Path: path, IsDir: true}, nil
 }
 
-func (r fakeRemote) List(ctx context.Context, path string) ([]source.FileInfo, error) {
-	return nil, errors.New("not implemented")
+func (r fakeRemote) List(ctx context.Context, path string, opts source.ListOptions) (source.FilePage, error) {
+	return source.FilePage{}, errors.New("not implemented")
 }
 
 func (r fakeRemote) Open(ctx context.Context, path string) (io.ReadCloser, error) {

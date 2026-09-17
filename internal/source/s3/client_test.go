@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
@@ -80,10 +82,53 @@ func (f *fakeS3) ListObjectsV2(ctx context.Context, params *s3.ListObjectsV2Inpu
 	// marker 对象本身也匹配 prefix（作为独立条目进入 Contents）。
 	_ = markers
 
-	var contents []types.Object
+	// 与真实 S3 一致：keys 与 common prefixes 统一按字典序分页，
+	// MaxKeys 约束两者之和。
+	type item struct {
+		key   string
+		isDir bool
+	}
+	items := make([]item, 0, len(files)+len(dirs))
 	for _, e := range files {
-		key := e.key
-		size := e.size
+		items = append(items, item{key: e.key})
+	}
+	for d := range dirs {
+		items = append(items, item{key: prefix + d, isDir: true})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].key < items[j].key })
+
+	token := derefStr(params.ContinuationToken)
+	start := 0
+	if token != "" {
+		// 真实 S3 对非法 ContinuationToken 返回 InvalidArgument；
+		// fake 复刻该行为：伪造 token 由服务端拒绝。
+		if n, err := fmt.Sscanf(token, "page-%d", &start); err != nil || n != 1 {
+			return nil, errors.New("InvalidArgument: The continuation token provided is incorrect")
+		}
+	}
+	limit := f.pageSize
+	if params.MaxKeys != nil && *params.MaxKeys > 0 && (limit <= 0 || int(*params.MaxKeys) < limit) {
+		limit = int(*params.MaxKeys)
+	}
+	if limit <= 0 {
+		limit = len(items)
+	}
+	end := start + limit
+	if end > len(items) {
+		end = len(items)
+	}
+	pageItems := items[start:end]
+
+	var contents []types.Object
+	var common []types.CommonPrefix
+	for _, it := range pageItems {
+		if it.isDir {
+			p := it.key
+			common = append(common, types.CommonPrefix{Prefix: &p})
+			continue
+		}
+		key := it.key
+		size := int64(len(f.objects[key].data))
 		obj := f.objects[key]
 		etag := obj.etag
 		mod := obj.lastModified
@@ -94,42 +139,13 @@ func (f *fakeS3) ListObjectsV2(ctx context.Context, params *s3.ListObjectsV2Inpu
 			LastModified: &mod,
 		})
 	}
-	var common []types.CommonPrefix
-	for d := range dirs {
-		p := prefix + d
-		common = append(common, types.CommonPrefix{Prefix: &p})
-	}
-
-	// 排序保证分页确定性。
-	sortKeys := func(vals []types.Object) {
-		for i := 1; i < len(vals); i++ {
-			for j := i; j > 0 && derefStr(vals[j].Key) < derefStr(vals[j-1].Key); j-- {
-				vals[j], vals[j-1] = vals[j-1], vals[j]
-			}
-		}
-	}
-	sortKeys(contents)
-
-	token := derefStr(params.ContinuationToken)
-	start := 0
-	if token != "" {
-		fmt.Sscanf(token, "page-%d", &start)
-	}
-	limit := f.pageSize
-	if limit <= 0 {
-		limit = len(contents)
-	}
-	end := start + limit
-	if end > len(contents) {
-		end = len(contents)
-	}
-	page := contents[start:end]
 
 	out := &s3.ListObjectsV2Output{
-		Contents:       page,
+		Contents:       contents,
 		CommonPrefixes: common,
+		KeyCount:       aws.Int32(int32(len(pageItems))),
 	}
-	if end < len(contents) {
+	if end < len(items) {
 		truncated := true
 		out.IsTruncated = &truncated
 		next := fmt.Sprintf("page-%d", end)
@@ -191,12 +207,12 @@ func TestS3List(t *testing.T) {
 	fk.put("outside/secret.txt", []byte("no"), mod, "")
 
 	r := newTestRemote(fk, "homes/lzwang")
-	entries, err := r.List(context.Background(), "/")
+	page, err := r.List(context.Background(), "/", source.ListOptions{})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
 	got := map[string]source.FileInfo{}
-	for _, e := range entries {
+	for _, e := range page.Entries {
 		got[e.Path] = e
 	}
 	if len(got) != 3 {
@@ -222,31 +238,79 @@ func TestS3List(t *testing.T) {
 	}
 }
 
-// List 分页：ContinuationToken 驱动多页合并，不假设单页 1000 object。
+// List 分页：opts.Limit 映射 MaxKeys、NextCursor 映射
+// ContinuationToken，逐页拉取无重复无缺失，EOF 以空 NextCursor
+// 表达；非法 cursor 整体失败。
 func TestS3ListPagination(t *testing.T) {
 	mod := time.Unix(1757879400, 0).UTC()
-	fk := newFakeS3(2) // 每页 2 条
+	fk := newFakeS3(2) // 每页最多 2 条
 	want := 5
 	for i := 0; i < want; i++ {
 		fk.put(fmt.Sprintf("base/file-%02d.txt", i), []byte{byte(i)}, mod, "")
 	}
 	r := newTestRemote(fk, "base")
-	entries, err := r.List(context.Background(), "/")
-	if err != nil {
-		t.Fatalf("List: %v", err)
+	ctx := context.Background()
+
+	var seen []string
+	cursors := map[string]bool{}
+	cursor := ""
+	pages := 0
+	for {
+		page, err := r.List(ctx, "/", source.ListOptions{Limit: 2, Cursor: cursor})
+		if err != nil {
+			t.Fatalf("List page %d: %v", pages, err)
+		}
+		if len(page.Entries) > 2 {
+			t.Fatalf("page %d has %d entries, want <= limit 2", pages, len(page.Entries))
+		}
+		for _, e := range page.Entries {
+			seen = append(seen, e.Path)
+		}
+		pages++
+		if page.NextCursor == "" {
+			break
+		}
+		if cursors[page.NextCursor] {
+			t.Fatalf("cursor %q repeated; pagination is not progressing", page.NextCursor)
+		}
+		cursors[page.NextCursor] = true
+		cursor = page.NextCursor
 	}
-	if len(entries) != want {
-		t.Fatalf("entries = %d, want %d (all pages merged)", len(entries), want)
+	if pages < 3 {
+		t.Fatalf("pages = %d, want >= 3 with limit 2 over %d files", pages, want)
 	}
-	seen := map[string]bool{}
-	for _, e := range entries {
-		seen[e.Path] = true
+	if len(seen) != want {
+		t.Fatalf("entries = %d, want %d", len(seen), want)
+	}
+	uniq := map[string]bool{}
+	for _, p := range seen {
+		if uniq[p] {
+			t.Errorf("duplicated entry %s across pages", p)
+		}
+		uniq[p] = true
 	}
 	for i := 0; i < want; i++ {
 		p := fmt.Sprintf("/file-%02d.txt", i)
-		if !seen[p] {
+		if !uniq[p] {
 			t.Errorf("missing %s in paginated result", p)
 		}
+	}
+
+	// 空目录：EOF 立即到达，Entries 空且无 cursor。
+	fk2 := newFakeS3(0)
+	r2 := newTestRemote(fk2, "empty")
+	empty, err := r2.List(ctx, "/", source.ListOptions{})
+	if err != nil {
+		t.Fatalf("List empty: %v", err)
+	}
+	if len(empty.Entries) != 0 || empty.NextCursor != "" {
+		t.Errorf("empty page = %+v, want no entries and no cursor", empty)
+	}
+
+	// 非法 cursor：opaque 直传服务端，由服务端拒绝——adapter 不本地
+	// 校验 ContinuationToken，也不静默从头开始。
+	if _, err := r.List(ctx, "/", source.ListOptions{Cursor: "not-a-real-cursor"}); err == nil {
+		t.Error("List with malformed cursor = nil, want server-side rejection")
 	}
 }
 
@@ -342,7 +406,7 @@ func TestS3ContextCancellation(t *testing.T) {
 	r := newTestRemote(fk, "")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := r.List(ctx, "/"); !errors.Is(err, context.Canceled) {
+	if _, err := r.List(ctx, "/", source.ListOptions{}); !errors.Is(err, context.Canceled) {
 		t.Errorf("List canceled = %v, want context.Canceled", err)
 	}
 }

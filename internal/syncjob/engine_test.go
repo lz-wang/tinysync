@@ -30,11 +30,11 @@ func (e *engineRemote) Stat(ctx context.Context, path string) (source.FileInfo, 
 	return source.FileInfo{}, errorsNew("not implemented")
 }
 
-func (e *engineRemote) List(ctx context.Context, path string) ([]source.FileInfo, error) {
+func (e *engineRemote) List(ctx context.Context, path string, opts source.ListOptions) (source.FilePage, error) {
 	if e.listErr != nil {
-		return nil, e.listErr
+		return source.FilePage{}, e.listErr
 	}
-	return e.entries[path], nil
+	return source.FilePage{Entries: e.entries[path]}, nil
 }
 
 func (e *engineRemote) Open(ctx context.Context, path string) (io.ReadCloser, error) {

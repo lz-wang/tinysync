@@ -246,32 +246,34 @@ func (r *remote) Stat(ctx context.Context, logicalPath string) (source.FileInfo,
 
 // List 实现 source.Remote：ReadDir 列一层；发现 symlink 整体失败——
 // 简单 skip 会得到不完整的 remote snapshot，Mirror 可能据此误删
-// 本地 managed 文件。
-func (r *remote) List(ctx context.Context, logicalDir string) ([]source.FileInfo, error) {
+// 本地 managed 文件。SFTP v1 的 ReadDir 没有持久目录游标：单层
+// 完整枚举后切片分页，cursor 为 opaque offset token（分页约束返回
+// 条目数；协议层单次请求仍是整层目录，v0.6 契约已记录该限制）。
+func (r *remote) List(ctx context.Context, logicalDir string, opts source.ListOptions) (source.FilePage, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return source.FilePage{}, err
 	}
 	abs, err := r.remoteAbs(logicalDir)
 	if err != nil {
-		return nil, err
+		return source.FilePage{}, err
 	}
 	entries, err := r.sftp.ReadDir(abs)
 	if err != nil {
-		return nil, wrapOp("list", logicalDir, err)
+		return source.FilePage{}, wrapOp("list", logicalDir, err)
 	}
-	out := make([]source.FileInfo, 0, len(entries))
+	all := make([]source.FileInfo, 0, len(entries))
 	for _, entry := range entries {
 		logical, err := r.toLogical(logicalDir, entry.Name())
 		if err != nil {
-			return nil, wrapOp("list", logicalDir, err)
+			return source.FilePage{}, wrapOp("list", logicalDir, err)
 		}
 		fi, err := r.toFileInfo(logical, entry)
 		if err != nil {
-			return nil, err
+			return source.FilePage{}, err
 		}
-		out = append(out, fi)
+		all = append(all, fi)
 	}
-	return out, nil
+	return source.PageSlice(all, opts)
 }
 
 // toFileInfo 转换协议无关 FileInfo：symlink 拒绝；SFTP 不提供 ETag，

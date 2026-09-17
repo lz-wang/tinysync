@@ -23,12 +23,12 @@ func (b *gateRemote) Stat(ctx context.Context, path string) (source.FileInfo, er
 	return source.FileInfo{}, nil
 }
 
-func (b *gateRemote) List(ctx context.Context, path string) ([]source.FileInfo, error) {
+func (b *gateRemote) List(ctx context.Context, path string, opts source.ListOptions) (source.FilePage, error) {
 	select {
 	case <-b.gate:
-		return nil, nil
+		return source.FilePage{}, nil
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return source.FilePage{}, ctx.Err()
 	}
 }
 

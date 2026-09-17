@@ -24,8 +24,8 @@ func (d *downloadRemote) Stat(ctx context.Context, path string) (source.FileInfo
 	return source.FileInfo{}, errors.New("not implemented")
 }
 
-func (d *downloadRemote) List(ctx context.Context, path string) ([]source.FileInfo, error) {
-	return nil, errors.New("not implemented")
+func (d *downloadRemote) List(ctx context.Context, path string, opts source.ListOptions) (source.FilePage, error) {
+	return source.FilePage{}, errors.New("not implemented")
 }
 
 func (d *downloadRemote) Open(ctx context.Context, path string) (io.ReadCloser, error) {

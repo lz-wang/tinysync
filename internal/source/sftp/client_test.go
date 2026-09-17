@@ -228,12 +228,12 @@ func TestSFTPPasswordAuthRoundTrip(t *testing.T) {
 	}})
 	ctx := context.Background()
 
-	entries, err := r.List(ctx, "/")
+	page, err := r.List(ctx, "/", source.ListOptions{})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
 	got := map[string]bool{}
-	for _, e := range entries {
+	for _, e := range page.Entries {
 		got[e.Path+"/"+fmt.Sprint(e.IsDir)] = true
 	}
 	if !got["/docs/true"] || !got["/photos/true"] {
@@ -267,12 +267,12 @@ func TestSFTPPrivateKeyAuth(t *testing.T) {
 		PrivateKey:           ts.clientKeyPEM,
 		PrivateKeyPassphrase: testPassphr,
 	}})
-	entries, err := r.List(context.Background(), "/")
+	page, err := r.List(context.Background(), "/", source.ListOptions{})
 	if err != nil {
 		t.Fatalf("List via private key: %v", err)
 	}
-	if len(entries) != 1 || entries[0].Path != "/data.bin" {
-		t.Fatalf("entries = %+v, want /data.bin", entries)
+	if len(page.Entries) != 1 || page.Entries[0].Path != "/data.bin" {
+		t.Fatalf("entries = %+v, want /data.bin", page.Entries)
 	}
 }
 
@@ -350,7 +350,7 @@ func TestSFTPSymlinkRejected(t *testing.T) {
 	r := newSFTPFactoryRemote(t, ts, cfg, source.Credentials{SFTP: &source.SFTPCredentials{
 		Password: testPassword,
 	}})
-	_, err := r.List(context.Background(), "/")
+	_, err := r.List(context.Background(), "/", source.ListOptions{})
 	if err == nil {
 		t.Fatal("List with symlink = nil, want error")
 	}

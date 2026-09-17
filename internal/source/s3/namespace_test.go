@@ -22,9 +22,9 @@ func TestS3FileDirCollisionFailsWholeList(t *testing.T) {
 	fk.put("base/a/b.txt", []byte("nested"), mod, "")
 
 	r := newTestRemote(fk, "base")
-	entries, err := r.List(context.Background(), "/")
+	page, err := r.List(context.Background(), "/", source.ListOptions{})
 	if err == nil {
-		t.Fatalf("List collision = %v entries, want whole-list error", entries)
+		t.Fatalf("List collision = %v entries, want whole-list error", page.Entries)
 	}
 	if !errors.Is(err, source.ErrInvalid) {
 		t.Errorf("error = %v, want ErrInvalid", err)
@@ -41,12 +41,12 @@ func TestS3EmptyBucketAndPrefix(t *testing.T) {
 	r := newTestRemote(fk, "")
 	ctx := context.Background()
 
-	entries, err := r.List(ctx, "/")
+	page, err := r.List(ctx, "/", source.ListOptions{})
 	if err != nil {
 		t.Fatalf("List empty bucket: %v", err)
 	}
-	if len(entries) != 0 {
-		t.Fatalf("entries = %v, want empty", entries)
+	if len(page.Entries) != 0 {
+		t.Fatalf("entries = %v, want empty", page.Entries)
 	}
 	root, err := r.Stat(ctx, "/")
 	if err != nil || !root.IsDir {
@@ -89,12 +89,12 @@ func TestS3NestedListStaysOnOneLevel(t *testing.T) {
 	fk.put("base/docs/summary.md", []byte("y"), mod, "")
 
 	r := newTestRemote(fk, "base")
-	entries, err := r.List(context.Background(), "/docs")
+	page, err := r.List(context.Background(), "/docs", source.ListOptions{})
 	if err != nil {
 		t.Fatalf("List /docs: %v", err)
 	}
 	got := map[string]bool{}
-	for _, e := range entries {
+	for _, e := range page.Entries {
 		got[e.Path+dirSuffix(e)] = true
 	}
 	if !got["/docs/summary.mdfalse"] {
@@ -122,7 +122,7 @@ func TestS3ErrorPropagation(t *testing.T) {
 	fk.listErr = errors.New("connection reset by peer")
 	r := newTestRemote(fk, "")
 
-	_, err := r.List(context.Background(), "/")
+	_, err := r.List(context.Background(), "/", source.ListOptions{})
 	if err == nil || !strings.Contains(err.Error(), "connection reset") {
 		t.Errorf("List error = %v, want underlying cause preserved", err)
 	}
@@ -136,7 +136,7 @@ func TestS3ErrorPropagation(t *testing.T) {
 	slow := newFakeS3(0)
 	slow.listErr = context.DeadlineExceeded
 	r2 := newTestRemote(slow, "")
-	_, err = r2.List(ctx, "/")
+	_, err = r2.List(ctx, "/", source.ListOptions{})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("List deadline = %v, want DeadlineExceeded", err)
 	}

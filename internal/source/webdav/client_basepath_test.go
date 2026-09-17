@@ -115,18 +115,18 @@ func TestEndpointBasePathList(t *testing.T) {
 	bs := newBasePathServer(t)
 	r := newBasePathRemote(t, bs)
 
-	entries, err := r.List(t.Context(), "/docs")
+	page, err := r.List(t.Context(), "/docs", source.ListOptions{})
 	if err != nil {
 		t.Fatalf("List /docs on %s: %v", bs.endpoint(), err)
 	}
 	found := false
-	for _, e := range entries {
+	for _, e := range page.Entries {
 		if e.Path == "/docs/report.txt" && !e.IsDir && e.Fingerprint.Size > 0 {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("entries = %+v, want /docs/report.txt", entries)
+		t.Errorf("entries = %+v, want /docs/report.txt", page.Entries)
 	}
 	assertRequestsStayInRoot(t, bs)
 }

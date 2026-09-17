@@ -32,12 +32,12 @@ func TestSFTPCancellationClosesConnection(t *testing.T) {
 	}
 
 	// 取消前可用。
-	if _, err := r.List(ctx, "/"); err != nil {
+	if _, err := r.List(ctx, "/", source.ListOptions{}); err != nil {
 		t.Fatalf("List before cancel: %v", err)
 	}
 
 	cancel()
-	if _, err := r.List(ctx, "/"); !errors.Is(err, context.Canceled) {
+	if _, err := r.List(ctx, "/", source.ListOptions{}); !errors.Is(err, context.Canceled) {
 		t.Errorf("List after cancel = %v, want context.Canceled", err)
 	}
 	if _, err := r.Stat(ctx, "/a.txt"); !errors.Is(err, context.Canceled) {
@@ -145,11 +145,11 @@ func TestSFTPRootResolution(t *testing.T) {
 	r := newSFTPFactoryRemote(t, ts, cfg, source.Credentials{SFTP: &source.SFTPCredentials{
 		Password: testPassword,
 	}})
-	entries, err := r.List(context.Background(), "/")
+	page, err := r.List(context.Background(), "/", source.ListOptions{})
 	if err != nil {
 		t.Fatalf("List via symlinked root: %v", err)
 	}
-	if len(entries) != 1 || entries[0].Path != "/in-root.txt" {
-		t.Fatalf("entries = %+v, want /in-root.txt resolved through symlinked root", entries)
+	if len(page.Entries) != 1 || page.Entries[0].Path != "/in-root.txt" {
+		t.Fatalf("entries = %+v, want /in-root.txt resolved through symlinked root", page.Entries)
 	}
 }

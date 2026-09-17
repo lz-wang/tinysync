@@ -137,18 +137,18 @@ func TestList(t *testing.T) {
 	srv := startServer(t, davHandler(t))
 	r := newRemote(t, srv, "", "")
 
-	entries, err := r.List(context.Background(), "/docs")
+	page, err := r.List(context.Background(), "/docs", source.ListOptions{})
 	if err != nil {
 		t.Fatalf("List /docs: %v", err)
 	}
 	found := false
-	for _, e := range entries {
+	for _, e := range page.Entries {
 		if e.Path == "/docs/report.txt" && !e.IsDir && e.Fingerprint.Size > 0 {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("entries = %+v, want /docs/report.txt", entries)
+		t.Errorf("entries = %+v, want /docs/report.txt", page.Entries)
 	}
 }
 

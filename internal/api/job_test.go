@@ -33,8 +33,8 @@ func (r fakeJobRemote) Stat(ctx context.Context, path string) (source.FileInfo, 
 	return source.FileInfo{Path: path, IsDir: true}, nil
 }
 
-func (r fakeJobRemote) List(ctx context.Context, path string) ([]source.FileInfo, error) {
-	return r.files, r.err
+func (r fakeJobRemote) List(ctx context.Context, path string, opts source.ListOptions) (source.FilePage, error) {
+	return source.FilePage{Entries: r.files}, r.err
 }
 
 func (r fakeJobRemote) Open(ctx context.Context, path string) (io.ReadCloser, error) {
@@ -56,12 +56,12 @@ func (r *gateRemote) Stat(ctx context.Context, path string) (source.FileInfo, er
 	return source.FileInfo{Path: path, IsDir: true}, nil
 }
 
-func (r *gateRemote) List(ctx context.Context, path string) ([]source.FileInfo, error) {
+func (r *gateRemote) List(ctx context.Context, path string, opts source.ListOptions) (source.FilePage, error) {
 	select {
 	case <-r.gate:
-		return nil, r.err
+		return source.FilePage{}, r.err
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return source.FilePage{}, ctx.Err()
 	}
 }
 
@@ -509,9 +509,9 @@ func (r *contentRemote) Stat(ctx context.Context, path string) (source.FileInfo,
 	return source.FileInfo{Path: path, IsDir: true}, nil
 }
 
-func (r *contentRemote) List(ctx context.Context, path string) ([]source.FileInfo, error) {
+func (r *contentRemote) List(ctx context.Context, path string, opts source.ListOptions) (source.FilePage, error) {
 	if path != "/photos" {
-		return nil, nil
+		return source.FilePage{}, nil
 	}
 	files := make([]source.FileInfo, 0, len(r.content))
 	for p, c := range r.content {
@@ -524,7 +524,7 @@ func (r *contentRemote) List(ctx context.Context, path string) ([]source.FileInf
 			},
 		})
 	}
-	return files, nil
+	return source.FilePage{Entries: files}, nil
 }
 
 func (r *contentRemote) Open(ctx context.Context, path string) (io.ReadCloser, error) {

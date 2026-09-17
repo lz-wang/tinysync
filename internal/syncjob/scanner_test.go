@@ -86,11 +86,11 @@ func (f *fakeRemote) Stat(ctx context.Context, path string) (source.FileInfo, er
 	return source.FileInfo{}, errors.New("not implemented")
 }
 
-func (f *fakeRemote) List(ctx context.Context, path string) ([]source.FileInfo, error) {
+func (f *fakeRemote) List(ctx context.Context, path string, opts source.ListOptions) (source.FilePage, error) {
 	if err := f.errs[path]; err != nil {
-		return nil, err
+		return source.FilePage{}, err
 	}
-	return f.entries[path], nil
+	return source.FilePage{Entries: f.entries[path]}, nil
 }
 
 func (f *fakeRemote) Open(ctx context.Context, path string) (io.ReadCloser, error) {
@@ -227,6 +227,112 @@ func TestResolveLocalTarget(t *testing.T) {
 				t.Errorf("resolveLocalTarget(%q) = %q, want %q", tc.rel, got, tc.want)
 			}
 		})
+	}
+}
+
+// pagerRemote 按预定义页序列返回：对同一目录的 List 依序返回下一
+// 页并记录 cursor 消费，验证 scanner 的分页循环。
+type pagerRemote struct {
+	pages map[string][]source.FilePage
+	calls map[string]int
+}
+
+func newPagerRemote(pages map[string][]source.FilePage) *pagerRemote {
+	return &pagerRemote{pages: pages, calls: map[string]int{}}
+}
+
+func (p *pagerRemote) Stat(ctx context.Context, path string) (source.FileInfo, error) {
+	return source.FileInfo{}, errors.New("not implemented")
+}
+
+func (p *pagerRemote) List(ctx context.Context, path string, opts source.ListOptions) (source.FilePage, error) {
+	seq := p.pages[path]
+	n := p.calls[path]
+	p.calls[path] = n + 1
+	if n >= len(seq) {
+		return source.FilePage{}, errors.New("unexpected extra List call")
+	}
+	page := seq[n]
+	// cursor 语义：首轮必须空串，续页必须回传上一页的 NextCursor。
+	want := ""
+	if n > 0 {
+		want = seq[n-1].NextCursor
+	}
+	if opts.Cursor != want {
+		return source.FilePage{}, errors.New("cursor not propagated")
+	}
+	return page, nil
+}
+
+func (p *pagerRemote) Open(ctx context.Context, path string) (io.ReadCloser, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (p *pagerRemote) Close() error {
+	return nil
+}
+
+// scanner 按分页契约逐页消费：cursor 原样回传、EOF 以空 NextCursor
+// 表达，跨页聚合全部文件。
+func TestScanRemoteConsumesPages(t *testing.T) {
+	remote := newPagerRemote(map[string][]source.FilePage{
+		"/photos": {
+			{Entries: []source.FileInfo{
+				{Path: "/photos/a.jpg"},
+				{Path: "/photos/docs", IsDir: true},
+			}, NextCursor: "cursor-1"},
+			{Entries: []source.FileInfo{
+				{Path: "/photos/b.jpg"},
+			}},
+		},
+		"/photos/docs": {
+			{Entries: []source.FileInfo{
+				{Path: "/photos/docs/report.txt"},
+			}, NextCursor: "deep-cursor"},
+			{Entries: []source.FileInfo{
+				{Path: "/photos/docs/second.txt"},
+			}},
+		},
+	})
+	files, err := ScanRemote(context.Background(), remote, "/photos")
+	if err != nil {
+		t.Fatalf("ScanRemote: %v", err)
+	}
+	var got []string
+	for _, f := range files {
+		got = append(got, f.Path)
+	}
+	for _, want := range []string{"/photos/a.jpg", "/photos/b.jpg", "/photos/docs/report.txt", "/photos/docs/second.txt"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("scan missing %s across pages, got %v", want, got)
+		}
+	}
+	if remote.calls["/photos"] != 2 || remote.calls["/photos/docs"] != 2 {
+		t.Errorf("calls = %v, want 2 pages per directory", remote.calls)
+	}
+}
+
+// 同一 path 跨页以不同类型出现（如 S3 一页报文件、另一页报目录）：
+// 整体失败，保持 file/dir collision 的 fail-fast 快照语义。
+func TestScanRemoteRejectsCrossPageCollision(t *testing.T) {
+	remote := newPagerRemote(map[string][]source.FilePage{
+		"/photos": {
+			{Entries: []source.FileInfo{
+				{Path: "/photos/a.jpg"},
+				{Path: "/photos/docs", IsDir: true},
+			}, NextCursor: "cursor-1"},
+			{Entries: []source.FileInfo{
+				{Path: "/photos/docs"},
+			}},
+		},
+		// 第二页的目录条目会触发对该层的递归；提供空末页让递归正常
+		// 结束，collision 检测发生在 /photos 层的 seen 判定。
+		"/photos/docs": {
+			{},
+		},
+	})
+	if _, err := ScanRemote(context.Background(), remote, "/photos"); !errors.Is(err, ErrInvalid) {
+		t.Errorf("cross-page collision error = %v, want ErrInvalid", err)
 	}
 }
 

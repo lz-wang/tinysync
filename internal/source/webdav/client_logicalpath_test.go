@@ -146,20 +146,20 @@ func TestLogicalPathConversion(t *testing.T) {
 				t.Errorf("docs = %+v, want Path /docs and IsDir", docs)
 			}
 
-			rootList, err := r.List(ctx, "/")
+			rootPage, err := r.List(ctx, "/", source.ListOptions{})
 			if err != nil {
 				t.Fatalf("List /: %v", err)
 			}
-			if len(rootList) != 1 || rootList[0].Path != "/docs" {
-				t.Errorf("root list = %+v, want only /docs (self omitted)", rootList)
+			if len(rootPage.Entries) != 1 || rootPage.Entries[0].Path != "/docs" {
+				t.Errorf("root list = %+v, want only /docs (self omitted)", rootPage.Entries)
 			}
 
-			entries, err := r.List(ctx, "/docs")
+			page, err := r.List(ctx, "/docs", source.ListOptions{})
 			if err != nil {
 				t.Fatalf("List /docs: %v", err)
 			}
 			got := map[string]bool{}
-			for _, e := range entries {
+			for _, e := range page.Entries {
 				if e.IsDir || e.Fingerprint.Size == 0 {
 					t.Errorf("entry %s: IsDir=%v Size=%d, want regular file with size", e.Path, e.IsDir, e.Fingerprint.Size)
 				}
@@ -182,7 +182,7 @@ func TestListRejectsEscapingHref(t *testing.T) {
 	if _, err := r.Stat(context.Background(), "/"); err == nil {
 		t.Fatal("Stat / with foreign href = nil, want escape error")
 	}
-	if _, err := r.List(context.Background(), "/"); err == nil {
+	if _, err := r.List(context.Background(), "/", source.ListOptions{}); err == nil {
 		t.Fatal("List / with foreign href = nil, want escape error")
 	}
 }

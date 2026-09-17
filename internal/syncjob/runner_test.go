@@ -25,12 +25,12 @@ func (b *blockingRemote) Stat(ctx context.Context, path string) (source.FileInfo
 	return source.FileInfo{}, nil
 }
 
-func (b *blockingRemote) List(ctx context.Context, path string) ([]source.FileInfo, error) {
+func (b *blockingRemote) List(ctx context.Context, path string, opts source.ListOptions) (source.FilePage, error) {
 	select {
 	case <-b.release:
-		return nil, nil
+		return source.FilePage{}, nil
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return source.FilePage{}, ctx.Err()
 	}
 }
 
@@ -953,11 +953,11 @@ func (h *hangRemote) Stat(ctx context.Context, path string) (source.FileInfo, er
 	return source.FileInfo{}, nil
 }
 
-func (h *hangRemote) List(ctx context.Context, path string) ([]source.FileInfo, error) {
-	return []source.FileInfo{{
+func (h *hangRemote) List(ctx context.Context, path string, opts source.ListOptions) (source.FilePage, error) {
+	return source.FilePage{Entries: []source.FileInfo{{
 		Path:        "/big.bin",
 		Fingerprint: source.Fingerprint{Size: 1 << 20},
-	}}, nil
+	}}}, nil
 }
 
 func (h *hangRemote) Open(ctx context.Context, path string) (io.ReadCloser, error) {

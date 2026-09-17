@@ -14,8 +14,8 @@ func (r *regStubRemote) Stat(ctx context.Context, path string) (FileInfo, error)
 	return FileInfo{}, nil
 }
 
-func (r *regStubRemote) List(ctx context.Context, path string) ([]FileInfo, error) {
-	return nil, nil
+func (r *regStubRemote) List(ctx context.Context, path string, opts ListOptions) (FilePage, error) {
+	return FilePage{}, nil
 }
 
 func (r *regStubRemote) Open(ctx context.Context, path string) (io.ReadCloser, error) {

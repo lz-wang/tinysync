@@ -160,25 +160,28 @@ func (r *remote) Stat(ctx context.Context, path string) (source.FileInfo, error)
 }
 
 // List 实现 source.Remote（非递归列目录，不包含目录自身条目）。
-func (r *remote) List(ctx context.Context, path string) ([]source.FileInfo, error) {
+// WebDAV 的 Depth:1 PROPFIND 没有服务端分页游标：单层完整枚举后在
+// adapter 边界切片分页，cursor 为 opaque offset token；分页约束的是
+// 返回条目数，协议层单次请求仍是整层目录（v0.6 契约已记录该限制）。
+func (r *remote) List(ctx context.Context, path string, opts source.ListOptions) (source.FilePage, error) {
 	logical := logicalPath(path)
 	entries, err := r.client.ReadDir(ctx, resolveRelative(path), false)
 	if err != nil {
-		return nil, wrapOp("list", path, err)
+		return source.FilePage{}, wrapOp("list", path, err)
 	}
-	list := make([]source.FileInfo, 0, len(entries))
+	all := make([]source.FileInfo, 0, len(entries))
 	for _, entry := range entries {
 		fi, err := r.toFileInfo(entry)
 		if err != nil {
-			return nil, wrapOp("list", path, err)
+			return source.FilePage{}, wrapOp("list", path, err)
 		}
 		// Depth:1 PROPFIND 的响应包含目录自身，对调用方不可见。
 		if fi.Path == logical {
 			continue
 		}
-		list = append(list, fi)
+		all = append(all, fi)
 	}
-	return list, nil
+	return source.PageSlice(all, opts)
 }
 
 // Open 实现 source.Remote。
