@@ -1,5 +1,18 @@
 // 后端 REST API 客户端：与 Go 侧 /api/v1 契约一一对应。
 
+// UnauthorizedError 标识会话失效（401）：AuthProvider 监听后清空
+// 会话状态并跳转登录页。
+export class UnauthorizedError extends Error {
+    constructor() {
+        super('unauthorized')
+        this.name = 'UnauthorizedError'
+    }
+}
+
+// unauthorizedEventName 是 401 时派发的全局事件名：统一会话过期
+// 语义，页面层无需各自捕获。
+export const unauthorizedEventName = 'tinysync:unauthorized'
+
 // HealthResponse 对应 GET /api/v1/health。
 export interface HealthResponse {
     status: string
@@ -119,21 +132,20 @@ export interface UpdateSourceInput {
     enabled?: boolean
 }
 
-async function getJSON<T>(path: string): Promise<T> {
-    const response = await fetch(path)
-    if (!response.ok) {
-        throw new Error(await errorMessage('GET', path, response))
-    }
-    return (await response.json()) as T
-}
-
-// requestJSON 处理带请求体的方法、后端统一错误格式与 204 响应。
-async function requestJSON<T>(method: string, path: string, body?: unknown): Promise<T> {
+// apiFetch 是全部 API 访问的统一入口：same-origin cookie 凭据、
+// JSON 编解码、204 响应、后端错误提取与 401 → UnauthorizedError
+// 语义（同时派发全局事件供 AuthProvider 清理会话状态）。
+async function apiFetch<T>(method: string, path: string, body?: unknown): Promise<T> {
     const response = await fetch(path, {
         method,
+        credentials: 'same-origin',
         headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
         body: body === undefined ? undefined : JSON.stringify(body),
     })
+    if (response.status === 401) {
+        window.dispatchEvent(new CustomEvent(unauthorizedEventName))
+        throw new UnauthorizedError()
+    }
     if (!response.ok) {
         throw new Error(await errorMessage(method, path, response))
     }
@@ -141,6 +153,46 @@ async function requestJSON<T>(method: string, path: string, body?: unknown): Pro
         return undefined as T
     }
     return (await response.json()) as T
+}
+
+async function getJSON<T>(path: string): Promise<T> {
+    return apiFetch<T>('GET', path)
+}
+
+// requestJSON 处理带请求体的方法。
+async function requestJSON<T>(method: string, path: string, body?: unknown): Promise<T> {
+    return apiFetch<T>(method, path, body)
+}
+
+// ===== 认证（v0.7）=====
+
+// SessionResponse 对应 GET /api/v1/auth/session。
+export interface SessionResponse {
+    authenticated: boolean
+    subject: string
+    expires_at: string
+}
+
+// LoginResponse 对应 POST /api/v1/auth/login：会话经 Set-Cookie
+// 建立，响应体只有过期时刻。
+export interface LoginResponse {
+    expires_at: string
+}
+
+// login 登录并建立 Web Session cookie；凭据错误以 Error 抛出
+//（401 已由 apiFetch 转换语义，登录页展示统一文案）。
+export function login(password: string): Promise<LoginResponse> {
+    return apiFetch<LoginResponse>('POST', '/api/v1/auth/login', { password })
+}
+
+// fetchSession 查询当前会话；未登录时抛出 UnauthorizedError。
+export function fetchSession(): Promise<SessionResponse> {
+    return apiFetch<SessionResponse>('GET', '/api/v1/auth/session')
+}
+
+// logout 登出并清除会话 cookie。
+export async function logout(): Promise<void> {
+    await apiFetch<void>('POST', '/api/v1/auth/logout')
 }
 
 // errorMessage 提取后端 {"error": "..."} 中的描述，失败时回退状态码。

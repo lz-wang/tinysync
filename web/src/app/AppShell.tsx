@@ -1,5 +1,6 @@
 import { AppBar, Box, Button, Container, Stack, Toolbar, Typography } from '@mui/material'
-import { NavLink, Outlet } from 'react-router-dom'
+import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { useAuth } from '../features/auth/AuthProvider'
 
 // NavTab 是顶部导航项：激活态由 NavLink 判定。
 function NavTab({ to, label }: { to: string; label: string }) {
@@ -14,8 +15,20 @@ function NavTab({ to, label }: { to: string; label: string }) {
     )
 }
 
-// AppShell 是应用骨架：顶部导航 + 内容区。
+// AppShell 是应用骨架：顶部导航 + 内容区 + 登出（受 RequireAuth
+// 保护，此时会话已建立）。
 export default function AppShell() {
+    const auth = useAuth()
+    const navigate = useNavigate()
+
+    const handleLogout = async () => {
+        try {
+            await auth.logout()
+        } finally {
+            navigate('/login', { replace: true })
+        }
+    }
+
     return (
         <Box sx={{ minHeight: '100vh', bgcolor: 'background.default' }}>
             <AppBar
@@ -35,6 +48,11 @@ export default function AppShell() {
                         <NavTab to="/files" label="Files" />
                         <NavTab to="/history" label="History" />
                     </Stack>
+                    <Box sx={{ ml: 'auto' }}>
+                        <Button size="small" color="inherit" onClick={() => void handleLogout()}>
+                            Logout
+                        </Button>
+                    </Box>
                 </Toolbar>
             </AppBar>
             <Container maxWidth="md" sx={{ py: 4 }}>
