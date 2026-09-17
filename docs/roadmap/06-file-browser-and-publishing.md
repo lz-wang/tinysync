@@ -466,3 +466,35 @@ web/src/pages/FilesPage.tsx
   持久）。
 - 三协议同步 E2E（`runCommonSyncScenario`）与调度 / 历史 / 关闭语义
   测试零回归。
+
+发布前收尾加固（2026-09-17）：
+
+- filesafe 新增 `LstatWithinRoot`（Local Stat 父目录 symlink 逃逸
+  防御：父目录全链 EvalSymlinks containment，最终组件保留 symlink
+  可见的 Lstat 语义）与 `OpenCanonicalRegularFile`（Published
+  serving 复验持久化 canonical 身份：最终组件非 symlink、全链解析
+  等于持久化路径、句柄二次确认普通文件，失败同形 404）；Local
+  下载与公开 serving 收口到共享 `ServeFileContent`。TOCTOU 的
+  `openat`/`O_NOFOLLOW` 级防护留待 v0.9 hardening。
+- E2E 补 post-publish filesystem mutation：策略创建成功后最终组件
+  或父目录被替换为外部 symlink → 404；`Stat /outside-link/...` →
+  400 拒绝矩阵。
+- Publish API（create / update）改用严格 JSON 解码：未知字段（含
+  不存在的 `local_path`）与尾随数据一律 400。
+- `DownloadMeta.SizeKnown` 区分「长度未知」与「真实 0 字节」：远端
+  下载对空文件输出 `Content-Length: 0`。
+- Remote Root 选择器绑定 Job Source（`boundSourceId`），FileBrowser
+  以 request generation 丢弃 stale response 并在 namespace 重置时
+  同步 picker 路径；后续贯通 `initialPath`，Job 的 Browse 对话框
+  直接落在 Remote Root（80aa633）。
+- `make integration`（真实 MinIO）实测 `TestIntegrationS3Pagination`
+  通过：201 对象、limit=37、恰好 6 页 ContinuationToken 链，无重复
+  无缺失。
+
+发布验收（2026-09-17）：
+
+- tag `v0.6.0`（annotated）指向 ea66703；Release workflow run
+  35228820113 全绿（release checks、三平台原生 Smoke、S3
+  integration、publish）。
+- GitHub Release 六平台发行档与 `checksums.txt` 下载后 `shasum -c`
+  核对通过；WebDAV 镜像与 Pushover 通知独立验收通过。
