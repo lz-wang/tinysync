@@ -199,8 +199,8 @@ func TestRemoteBrowserAcrossProtocols(t *testing.T) {
 					t.Fatalf("browse root page %d = %d, body %s", pages, w.Code, w.Body.String())
 				}
 				var page struct {
-					Path       string `json:"path"`
-					Entries    []struct {
+					Path    string `json:"path"`
+					Entries []struct {
 						Path string `json:"path"`
 						Kind string `json:"kind"`
 					} `json:"entries"`
@@ -252,7 +252,7 @@ func TestRemoteBrowserAcrossProtocols(t *testing.T) {
 					t.Fatalf("browse child page %d = %d", pages, w.Code)
 				}
 				var page struct {
-					Entries    []struct {
+					Entries []struct {
 						Path string `json:"path"`
 					} `json:"entries"`
 					NextCursor string `json:"next_cursor"`
