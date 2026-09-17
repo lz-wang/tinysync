@@ -607,3 +607,57 @@ export async function deletePublished(id: string): Promise<void> {
 export function publishedFileURL(publicPath: string): string {
     return `${window.location.origin}/published${publicPath}`
 }
+
+// ===== API Token 管理（v0.7）=====
+
+// APITokenScope 是 token 的授权 scope；admin 蕴含 read + run。
+export type APITokenScope = 'read' | 'run' | 'admin'
+
+// APITokenResponse 是 API Token 元数据：raw token 与 hash 不在此列。
+// 可空时刻输出空串（expires_at 空 = 永不过期、last_used_at 空 =
+// 从未使用、revoked_at 空 = 未撤销）。
+export interface APITokenResponse {
+    id: string
+    name: string
+    prefix: string
+    scopes: APITokenScope[]
+    created_at: string
+    expires_at: string
+    last_used_at: string
+    revoked_at: string
+}
+
+// APITokensListResponse 对应 GET /api/v1/api-tokens 的包装对象。
+export interface APITokensListResponse {
+    api_tokens: APITokenResponse[]
+}
+
+// CreateAPITokenInput 对应 POST /api/v1/api-tokens：expires_at 为
+// 可选 RFC3339，缺省永不过期。
+export interface CreateAPITokenInput {
+    name: string
+    scopes: APITokenScope[]
+    expires_at?: string
+}
+
+// CreateAPITokenResponse 是创建响应：raw_token 只出现这一次。
+export interface CreateAPITokenResponse {
+    api_token: APITokenResponse
+    raw_token: string
+}
+
+// listAPITokens 返回全部 token 元数据。
+export async function listAPITokens(): Promise<APITokenResponse[]> {
+    const data = await apiFetch<APITokensListResponse>('GET', '/api/v1/api-tokens')
+    return data.api_tokens
+}
+
+// createAPIToken 创建 token；raw token 只在返回值中出现一次。
+export function createAPIToken(input: CreateAPITokenInput): Promise<CreateAPITokenResponse> {
+    return requestJSON<CreateAPITokenResponse>('POST', '/api/v1/api-tokens', input)
+}
+
+// revokeAPIToken 幂等软撤销（已撤销的再次撤销仍成功）。
+export async function revokeAPIToken(id: string): Promise<void> {
+    await requestJSON<void>('POST', `/api/v1/api-tokens/${id}/revoke`)
+}

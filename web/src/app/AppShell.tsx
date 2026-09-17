@@ -47,6 +47,7 @@ export default function AppShell() {
                         <NavTab to="/jobs" label="Jobs" />
                         <NavTab to="/files" label="Files" />
                         <NavTab to="/history" label="History" />
+                        <NavTab to="/tokens" label="API Tokens" />
                     </Stack>
                     <Box sx={{ ml: 'auto' }}>
                         <Button size="small" color="inherit" onClick={() => void handleLogout()}>
