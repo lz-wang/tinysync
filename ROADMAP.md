@@ -16,17 +16,23 @@ Web UI、REST API、MCP 复用应用服务层；Source、Job 与 Publish Policy 
 其中 Remote Source 管理链路（持久化、WebDAV 只读访问与连接测试）、
 WebDAV Pull Sync 同步链路（Sync Job → Selector → Sync Engine →
 Local Files）、调度及同步历史链路（自动触发、持久化运行历史、
-并发控制）与文件浏览及发布链路（Remote / Local 浏览、Publish
-Policy、`/published/*path` 公开 serving）已实现；认证与 MCP 尚未实现。
+并发控制）、文件浏览及发布链路（Remote / Local 浏览、Publish
+Policy、`/published/*path` 公开 serving）与认证及 API Token 链路
+（单一 Local Admin、Web Session、scoped API Token、REST
+default-deny）已完成实现，认证待发布；MCP 尚未实现。
 
 ## 当前状态与优先级
 
-本地核对日期：2026-09-17。当前实现、测试和 workflow 支持以下判断。
+本地核对日期：2026-09-18。当前实现、测试和 workflow 支持以下判断。
 
 - **已实现**：`serve`、`version` / `--version`、数据目录与端口配置、日志、HTTP 生命周期、health/version API、内嵌状态页及 fallback 构建；SQLite 持久化与 migration、多协议 Source 领域（typed config / credentials 模型、Remote Registry、WebDAV / S3 / SFTP 只读 adapter、协议无关 logical path 校验、remote identity 保护、应用服务）、Source CRUD 与连接测试 REST API（discriminated config）、Sources Web 管理界面；Sync Job 领域（模型、Selector、remote scanner、planner、原子下载、Copy/Mirror engine、手动运行 Runner、SQLite Repository）、Jobs REST API 与 Web 管理界面、端到端与跨重启持久化测试；调度与历史（Schedule 模型与持久化、Scheduler、多 Job Runner、有界并发传输、`sync_runs` / `sync_run_items` 持久化、runs REST API、History Web UI、并发配置）；文件访问与发布（Remote.List 分页抽象、filesafe 受限路径原语、browser Remote / Local 浏览服务、Job namespace 本地浏览与 managed 标记、published_files 持久化与迁移 `0006_published_files.sql`、发布 CRUD 与 `/published/*path` 公开 serving、Files Web UI）。
 - **已有工程配置**：Git 版本注入、Go 测试、前端静态检查、Codecov、六平台构建、三平台原生 Smoke、Build/Release 分离及 WebDAV 镜像。
 - **v0.1.0 已发布**：远端 `v0.1.0` Release workflow 成功（2026-09-14），六平台发行档案与 `checksums.txt` 已核对到位；WebDAV 镜像按发布规范需独立验收，不能由 GitHub Release 成功推导。
-- **尚未实现**：认证与 Token、MCP。
+- **已完成实现待发布**：认证与 API Token（单一 Local Admin、
+  Argon2id 密码凭据与 CLI bootstrap、Web Session、scoped API
+  Token、REST default-deny 与 CSRF 防护），待三平台 native smoke
+  全绿后打 tag 发布。
+- **尚未实现**：MCP。
 
 v0.2.0 持久化与 Source 管理已发布：远端 Release workflow 成功（2026-09-15），
 六平台发行档与 `checksums.txt` 核对到位，WebDAV 镜像与通知独立验收通过。
@@ -89,6 +95,30 @@ v0.6.0 文件浏览与发布已正式发布：tag `v0.6.0` 指向 ea66703，
 Release workflow run 35228820113 成功（2026-09-17），六平台发行档
 与 `checksums.txt` 核对到位，WebDAV 镜像与 Pushover 通知独立验收
 通过。
+v0.7.0 认证与 API Token 已完成实现（2026-09-18）：单一 Local
+Admin（固定 `admin`，无 users / RBAC）、Argon2id（19 MiB / t=2 /
+p=1）PHC 密码凭据、`auth set-password` CLI bootstrap（支持
+`--password-stdin`，不提供 `--password` argv）、未初始化 serve
+fail-fast、Web Session（256-bit 随机 + SHA-256 落库、7 天绝对
+过期、HttpOnly / SameSite=Strict / HTTPS 下 Secure）、密码重置
+同一事务撤销全部会话、scoped API Token（`ts_` + 256-bit 随机、
+read / run / admin 且 admin ⇒ read + run、可选过期、幂等软撤销、
+last_used 1 分钟写节流、raw token 仅创建响应返回一次）、REST
+default-deny（Bearer 优先且不 fallback Cookie、Auth 缺失 fail
+closed 500、URL 传参凭据 400）、`/published/*path` 保持公开、
+Web 登录页与 API Tokens 管理页、`0007_authentication.sql` 迁移
+及 v6→v7 升级测试、认证边界 E2E。发布前安全收尾：HEAD 本地
+下载补齐 read scope（run ⇏ read）、登录落实 1024 字节密码上限与
+登录请求体 4 KiB 独立上限（防密码 KDF DoS）、CSRF Origin 校验
+收敛到 Web Session 凭据分支（Bearer API Token 不做 CSRF，与
+实现契约对齐）、SQLite scope 解码复用领域校验（存储损坏 fail
+closed），并新增受保护路由 scope 矩阵 E2E（与 Gin 注册表双向
+核对，防平行路由漂移）。本地验证 `make check` 全绿；native
+smoke 已从匿名启动模型迁移到认证生命周期（未初始化拒绝 →
+bootstrap → default-deny → 登录 → 管理 API 携带会话 → 重启后
+原 session 与数据持久化）并在 macOS 实测通过。状态保持
+「已完成实现」，待 Build workflow 三平台 native smoke 全绿后
+打 tag 发布。
 
 ## 架构与边界
 
