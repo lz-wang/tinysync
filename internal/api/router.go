@@ -37,6 +37,7 @@ func NewRouter(webFS fs.FS, deps Dependencies) *gin.Engine {
 		registerSourceRoutes(api, deps.Sources, deps.Jobs)
 		registerJobRoutes(api, deps.Jobs, deps.Runner)
 		registerRemoteFileRoutes(api, deps.Browser)
+		registerLocalFileRoutes(api, deps.LocalFiles)
 	}
 	router.NoRoute(handleWeb(webFS))
 	return router
@@ -53,6 +54,8 @@ type Dependencies struct {
 	Runner *syncjob.Runner
 	// Browser 是文件浏览应用服务；为 nil 时不注册文件端点。
 	Browser *browser.RemoteService
+	// LocalFiles 是本地文件浏览应用服务；为 nil 时不注册本地文件端点。
+	LocalFiles *browser.LocalService
 }
 
 // handleHealth 报告服务健康状态。

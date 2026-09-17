@@ -76,14 +76,17 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 	scheduler := syncjob.NewScheduler(jobRepo, runner, runs)
 
 	// 装配文件浏览：Remote 浏览复用 Source 服务的统一远端入口，
-	// 不引入第二套协议路径。
+	// 本地浏览以 Job.LocalRoot 为唯一 namespace，managed 标记来自
+	// managed_files 记录。
 	files := browser.NewRemoteService(sources)
+	localFiles := browser.NewLocalService(jobs, managedRepo)
 
 	server := api.NewServer(cfg, webFS, api.Dependencies{
-		Sources: sources,
-		Jobs:    jobs,
-		Runner:  runner,
-		Browser: files,
+		Sources:    sources,
+		Jobs:       jobs,
+		Runner:     runner,
+		Browser:    files,
+		LocalFiles: localFiles,
 	})
 
 	serveErr := make(chan error, 1)

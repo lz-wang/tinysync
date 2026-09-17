@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"mime"
 	"net/http"
 	"path"
@@ -13,13 +14,14 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"tinysync/internal/browser"
+	"tinysync/internal/filesafe"
 	"tinysync/internal/source"
 )
 
-// registerRemoteFileRoutes 注册远端文件浏览端点。Browser 为 nil 时
-// 跳过注册（依赖缺失时由未知路径 404 兜底）。
-// 浏览复用 source.Service.OpenRemote 的统一入口，不在 API 层接触
-// 凭据或协议分支。
+// registerRemoteFileRoutes 注册远端文件浏览端点。svc 为 nil 时跳过
+// 注册（依赖缺失时由未知路径 404 兜底）。浏览复用
+// source.Service.OpenRemote 的统一入口，不在 API 层接触凭据或协议
+// 分支。
 func registerRemoteFileRoutes(group *gin.RouterGroup, svc *browser.RemoteService) {
 	if svc == nil {
 		return
@@ -30,9 +32,24 @@ func registerRemoteFileRoutes(group *gin.RouterGroup, svc *browser.RemoteService
 	group.GET("/sources/:id/files/download", h.remoteDownload)
 }
 
+// registerLocalFileRoutes 注册本地文件浏览端点（以 Job 为 namespace）。
+// local 为 nil 时跳过注册。
+func registerLocalFileRoutes(group *gin.RouterGroup, local *browser.LocalService) {
+	if local == nil {
+		return
+	}
+	h := &fileHandlers{local: local}
+	group.GET("/jobs/:id/files", h.localList)
+	group.GET("/jobs/:id/files/stat", h.localStat)
+	group.GET("/jobs/:id/files/download", h.localDownload)
+	// 本地文件经 *os.File + ServeContent 服务，HEAD 只回响应头。
+	group.HEAD("/jobs/:id/files/download", h.localDownload)
+}
+
 // fileHandlers 是文件浏览端点的 handler 集合。
 type fileHandlers struct {
 	remote *browser.RemoteService
+	local  *browser.LocalService
 }
 
 // remoteListResponse 是远端目录列表响应。
@@ -94,6 +111,74 @@ func (h *fileHandlers) remoteDownload(c *gin.Context) {
 	_, _ = io.Copy(c.Writer, body)
 }
 
+// localList 列出 Job.LocalRoot 下的一层目录：
+// GET /api/v1/jobs/:id/files?path=/&limit=100&cursor=...
+func (h *fileHandlers) localList(c *gin.Context) {
+	p := queryPath(c)
+	opts, err := listOptionsFromQuery(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	entries, next, err := h.local.List(c.Request.Context(), c.Param("id"), p, opts)
+	if err != nil {
+		handleFileError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, localListResponse{
+		Path:       p,
+		Entries:    entries,
+		NextCursor: next,
+	})
+}
+
+// localListResponse 是本地目录列表响应（条目携带 managed 标记）。
+type localListResponse struct {
+	Path       string          `json:"path"`
+	Entries    []browser.Entry `json:"entries"`
+	NextCursor string          `json:"next_cursor"`
+}
+
+// localStat 读取本地路径元信息：
+// GET /api/v1/jobs/:id/files/stat?path=/foo.txt
+func (h *fileHandlers) localStat(c *gin.Context) {
+	entry, err := h.local.Stat(c.Request.Context(), c.Param("id"), queryPath(c))
+	if err != nil {
+		handleFileError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, entry)
+}
+
+// localDownload 下载本地文件：
+// GET / HEAD /api/v1/jobs/:id/files/download?path=/foo.txt
+// 经 http.ServeContent 服务：Range → 206 / 非法 Range → 416，
+// HEAD 只回响应头；symlink 与目录在 Open 阶段拒绝。
+func (h *fileHandlers) localDownload(c *gin.Context) {
+	p := queryPath(c)
+	name, f, info, err := h.local.Open(c.Request.Context(), c.Param("id"), p)
+	if err != nil {
+		handleFileError(c, err)
+		return
+	}
+	defer func() { _ = f.Close() }()
+
+	if disposition := mime.FormatMediaType("attachment", map[string]string{"filename": name}); disposition != "" {
+		c.Header("Content-Disposition", disposition)
+	}
+	// 未命中 Range 时显式回 200；ServeContent 对合法 Range 回 206。
+	if !rangeRequested(c.Request) {
+		c.Status(http.StatusOK)
+	}
+	http.ServeContent(c.Writer, c.Request, name, info.ModTime(), f)
+}
+
+// rangeRequested 判断客户端是否携带 Range 头（ServeContent 负责校验
+// 与 206/416 判定，这里只用于避免预置 200 与 206 冲突）。
+func rangeRequested(r *http.Request) bool {
+	return r.Header.Get("Range") != ""
+}
+
 // queryPath 读取 path 查询参数，缺省为根目录。
 func queryPath(c *gin.Context) string {
 	if p := c.Query("path"); p != "" {
@@ -117,13 +202,16 @@ func listOptionsFromQuery(c *gin.Context) (source.ListOptions, error) {
 	return opts, nil
 }
 
-// handleFileError 把 browser 领域错误映射为 HTTP 响应：invalid 400、
-// not found 404、远端失败 502；请求取消是客户端断开，直接终止响应。
+// handleFileError 把 browser 领域错误映射为 HTTP 响应：invalid（含
+// symlink / 目录不可下载 / root 逃逸）400、not found 404、远端失败
+// 502；请求取消是客户端断开，直接终止响应。
 func handleFileError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		c.Abort()
-	case errors.Is(err, browser.ErrInvalid):
+	case errors.Is(err, fs.ErrNotExist):
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+	case errors.Is(err, browser.ErrInvalid), errors.Is(err, filesafe.ErrEscape), errors.Is(err, filesafe.ErrNotRegularFile):
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 	case errors.Is(err, browser.ErrNotFound):
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})

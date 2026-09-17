@@ -18,6 +18,10 @@ import (
 // symlink 无论指向 root 内还是外都归入本错误。
 var ErrNotRegularFile = errors.New("not a regular file")
 
+// ErrEscape 表示解析结果越出 root（dot segments 在校验层拒绝，
+// 本错误针对 symlink 组件导致的逃逸）。调用方以 errors.Is 判定。
+var ErrEscape = errors.New("path escapes root")
+
 // ValidateLogicalPath 校验以 / 分隔的绝对逻辑路径；"/" 表示 root。
 // 规则：非空、以 / 开头、不含反斜杠与 NUL、除 "/" 外不以 / 结尾、
 // path.Clean 后不变（拒绝 dot segments 与重复分隔符）。反斜杠必须
@@ -106,7 +110,7 @@ func ResolveRegularFile(root, logicalPath string) (string, os.FileInfo, error) {
 		// symlink（或大小写归一）；确认解析结果仍在 root 内。
 		rel, relErr := filepath.Rel(root, resolved)
 		if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return "", nil, fmt.Errorf("logical path %q escapes root %s via symlink", logicalPath, root)
+			return "", nil, fmt.Errorf("%w: logical path %q escapes root %s via symlink", ErrEscape, logicalPath, root)
 		}
 		// info 取自 target，与 resolved 指向同一文件；重新 Stat 保证
 		// 返回的 FileInfo 对应最终打开的路径。
