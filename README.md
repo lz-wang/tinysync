@@ -16,12 +16,15 @@ TinySync 是一个面向 HomeLab 的文件同步服务：单一 Go 二进制，�
 > 发布：远端与本地文件浏览、文件下载与把同步后的受管本地文件
 > 显式发布为受控 HTTP URL。
 >
-> **安全提示**：TinySync 尚未实现自身的认证与鉴权，Source / Job 管理、
-> 同步运行、文件浏览 / 下载与发布管理 API 均无任何访问控制；`private`
-> 仅表示「没有通过 `/published/...` 公开发布」，不表示 REST API 已经过
-> 身份认证。加入文件浏览与下载后，未认证 API 直接具备读取文件内容的
-> 能力，请仅部署在可信的 HomeLab 网络或反向代理访问控制之后，直到
-> 认证版本发布。
+> **认证**：REST API 与 Web UI 全面 default-deny——除 health /
+> version / 登录与 `/published` 公开文件外，所有端点都需要认证。
+> 单一 Local Admin 经密码登录建立 Web Session（HttpOnly Cookie），
+> 自动化脚本使用 scoped API Token（`Authorization: Bearer`）。
+> 管理员密码未初始化时 `serve` 拒绝启动。
+>
+> **部署提示**：认证凭据应经 HTTPS 传输——反向代理场景请设置
+> `X-Forwarded-Proto: https`，会话 Cookie 会自动附加 `Secure`；
+> 纯 HTTP 部署仅建议用于本机或完全可信的网络。
 
 ## 技术栈
 
@@ -37,15 +40,20 @@ TinySync 是一个面向 HomeLab 的文件同步服务：单一 Go 二进制，�
 ## 快速开始
 
 ```bash
+# 1. 初始化管理员密码（首次部署必需；未初始化时 serve 拒绝启动）
+./tinysync auth set-password --datadir ./data
+
+# 2. 启动服务
 ./tinysync serve --datadir ./data --port 9466
 ```
 
-启动后打开 `http://127.0.0.1:9466` 查看 Web UI。
+启动后打开 `http://127.0.0.1:9466`，用管理员密码登录 Web UI。
 
 ```bash
-tinysync serve      # 启动服务（默认 :9466，数据目录 ./data）
-tinysync version    # 打印版本号（同 --version）
-tinysync --version  # 打印版本号
+tinysync serve            # 启动服务（默认 :9466，数据目录 ./data）
+tinysync auth set-password  # 初始化 / 重置管理员密码
+tinysync version          # 打印版本号（同 --version）
+tinysync --version        # 打印版本号
 ```
 
 环境变量 `TINYSYNC_DATADIR`、`TINYSYNC_PORT`、`TINYSYNC_MAX_CONCURRENT_JOBS`、
@@ -53,6 +61,63 @@ tinysync --version  # 打印版本号
 `--max-concurrent-jobs`（同时运行的同步 Job 数上限，默认 1）、
 `--max-concurrent-transfers`（同时进行的远端文件下载上限，默认 4）
 的默认值；命令行参数优先。
+
+## 认证与 API Token
+
+REST API 与 Web UI 默认拒绝匿名访问（401）；公开端点只有
+`GET /api/v1/health`、`GET /api/v1/version`、`POST /api/v1/auth/login`
+与 `/published/*path` 公开文件。
+
+Web UI 使用 HttpOnly Session Cookie（7 天绝对过期、`SameSite=Strict`、
+HTTPS 下自动 `Secure`）；凭据绝不进入 URL，跨源变更请求一律拒绝。
+忘记密码由 operator 在服务器执行 `tinysync auth set-password --datadir ...`
+重置（同时立即废弃全部已有会话）；不提供匿名 Web setup 与认证
+绕过开关。
+
+自动化脚本使用 API Token（`Authorization: Bearer`，唯一 machine
+credential 入口），在 Web UI 的 API Tokens 页创建：
+
+```bash
+# 登录换取会话（Web UI 即此流程）
+curl -i -X POST http://127.0.0.1:9466/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"password": "..."}'
+
+# 创建只读 token（raw token 仅此一次返回，之后不可查询）
+curl -X POST http://127.0.0.1:9466/api/v1/api-tokens \
+  -H "Authorization: Bearer $TINYSYNC_ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "automation", "scopes": ["read"], "expires_at": "2026-12-31T00:00:00Z"}'
+
+# 用 token 访问 API
+curl -H "Authorization: Bearer $TINYSYNC_TOKEN" \
+  http://127.0.0.1:9466/api/v1/sources
+```
+
+Scope 语义（创建后不可变，变更需撤销重建）：
+
+| Scope | 权限 |
+| --- | --- |
+| `read` | 查询 Source / Job / Run / File / Published metadata，下载文件 |
+| `run` | 手动触发 Job（不含 read） |
+| `admin` | 全部权限（read + run + 配置修改 + Token 管理） |
+
+Token 可设过期时刻；撤销幂等且立即生效；`last_used_at` 以 1 分钟
+阈值节流记录。`GET /api-tokens` 只返回 `prefix` 前缀等元数据，
+raw token 与 SHA-256 摘要绝不出现。
+
+### v0.6 → v0.7 升级
+
+```text
+1. 停止 v0.6 服务
+2. 安装 v0.7 二进制
+3. tinysync auth set-password --datadir <datadir>   # migration 0007 自动完成
+4. 启动 v0.7：未初始化管理员密码时 serve 会拒绝启动
+5. Web 登录；为既有脚本逐一创建 API Token
+```
+
+v0.6 的匿名脚本访问自 v0.7 起必须携带 Bearer Token；
+`/published/*path` 公开语义不受升级影响。
 
 ## Sources：多协议同步源
 
@@ -64,6 +129,7 @@ WebDAV：
 
 ```bash
 curl -X POST http://127.0.0.1:9466/api/v1/sources \
+  -H "Authorization: Bearer $TINYSYNC_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "NAS",
@@ -78,6 +144,7 @@ static access key / secret key，不使用宿主机 ambient credential chain）�
 
 ```bash
 curl -X POST http://127.0.0.1:9466/api/v1/sources \
+  -H "Authorization: Bearer $TINYSYNC_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "backup-s3",
@@ -99,6 +166,7 @@ symlink 不跟随，发现即失败）：
 
 ```bash
 curl -X POST http://127.0.0.1:9466/api/v1/sources \
+  -H "Authorization: Bearer $TINYSYNC_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "nas-sftp",
@@ -135,6 +203,7 @@ Job 的 LocalRoot 之下的内容，条目携带 `managed` 标记（TinySync 当
 
 ```bash
 curl -X POST http://127.0.0.1:9466/api/v1/published-files \
+  -H "Authorization: Bearer $TINYSYNC_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
     "job_id": "job_xxx",

@@ -39,6 +39,10 @@ GitHub Release 摘要一致。
   幂等撤销与 last_used 记录；raw token 仅创建响应返回一次，
   之后不可查询。所有端点仅接受 `Authorization: Bearer` 认证，
   按 scope 返回 401 / 403。
+- Web 界面新增登录页与 API Tokens 管理页：登录后进入应用，
+  顶栏可登出；Token 页支持创建（scope 选择与可选过期时刻）、
+  raw token 一次性展示与复制、状态（Active / Expired / Revoked）、
+  最近使用时间与撤销确认；会话过期自动跳转登录页。
 
 ## [0.6.0] - 2026-09-17
 
