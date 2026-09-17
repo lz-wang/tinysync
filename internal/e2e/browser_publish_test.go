@@ -309,6 +309,17 @@ func TestRemoteBrowserAcrossProtocols(t *testing.T) {
 				t.Errorf("content-disposition = %q, want attachment", disposition)
 			}
 
+			// 0 字节文件：Stat 可得时 Content-Length 显式为 0，不与
+			// 「长度未知」混淆。
+			remote.put(t, "/empty.bin", "")
+			w = e.get("/api/v1/sources/src_browser/files/download?path=/empty.bin")
+			if w.Code != http.StatusOK {
+				t.Errorf("empty download = %d", w.Code)
+			}
+			if got := w.Header().Get("Content-Length"); got != "0" {
+				t.Errorf("empty content-length = %q, want 0", got)
+			}
+
 			// invalid logical path → 400。
 			w = e.get("/api/v1/sources/src_browser/files?path=/a/../b")
 			if w.Code != http.StatusBadRequest {
@@ -418,6 +429,19 @@ func TestLocalBrowserConfinement(t *testing.T) {
 		t.Errorf("HEAD = %d body %d", w.Code, w.Body.Len())
 	}
 
+	// 0 字节文件：Content-Length 显式为 0（本地路径长度恒可知）。
+	zero := filepath.Join(e.localRoot, "zero.bin")
+	if err := os.WriteFile(zero, nil, 0o644); err != nil {
+		t.Fatalf("write zero: %v", err)
+	}
+	w = e.get(base + "/files/download?path=/zero.bin")
+	if w.Code != http.StatusOK {
+		t.Errorf("zero download = %d", w.Code)
+	}
+	if got := w.Header().Get("Content-Length"); got != "0" {
+		t.Errorf("zero content-length = %q, want 0", got)
+	}
+
 	// 拒绝矩阵：traversal（含 URL 编码形态）、symlink、目录下载、
 	// 不存在的 job。
 	for _, tc := range []struct {
@@ -523,6 +547,9 @@ func TestPublishLifecycle(t *testing.T) {
 		{"unmanaged", `{"job_id":"` + e.job.ID + `","path":"/stranger.txt","public_path":"/s.txt","enabled":true}`},
 		{"traversal", `{"job_id":"` + e.job.ID + `","path":"/../outside.txt","public_path":"/t.txt","enabled":true}`},
 		{"symlink escape", `{"job_id":"` + e.job.ID + `","path":"/escape-link/secret.txt","public_path":"/e.txt","enabled":true}`},
+		// 未知字段（含不存在的 local_path）一律 400：API 不接受
+		// local_path 的契约由严格解码维持，不能靠静默忽略。
+		{"unknown field", `{"job_id":"` + e.job.ID + `","path":"/docs/published.txt","public_path":"/u.txt","enabled":true,"local_path":"/etc/passwd"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := e.doJSON(http.MethodPost, "/api/v1/published-files", tc.body)

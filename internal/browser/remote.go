@@ -72,9 +72,12 @@ func (s *RemoteService) Stat(ctx context.Context, sourceID, logicalPath string) 
 	return NewEntryFromRemote(fi), nil
 }
 
-// DownloadMeta 是下载响应所需的元信息（Stat 可得时填充）。
+// DownloadMeta 是下载响应所需的元信息（Stat 可得时填充）。SizeKnown
+// 区分「Stat 不可得、长度未知」与「真实长度为 0」：后者也要输出
+// Content-Length: 0，不能用 0 值同时表达两种语义。
 type DownloadMeta struct {
 	Size       int64
+	SizeKnown  bool
 	ModifiedAt *time.Time
 }
 
@@ -110,6 +113,7 @@ func (s *RemoteService) Open(ctx context.Context, sourceID, logicalPath string) 
 	if statErr == nil {
 		meta = DownloadMeta{
 			Size:       fi.Fingerprint.Size,
+			SizeKnown:  true,
 			ModifiedAt: optionalTime(fi.Fingerprint.ModifiedAt),
 		}
 	}

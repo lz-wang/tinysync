@@ -101,11 +101,12 @@ func (h *publishHandlers) list(c *gin.Context) {
 }
 
 // create 创建发布策略；校验失败 400、Job 不存在 404、public_path
-// 冲突 409。
+// 冲突 409。请求体经严格解码：未知字段与尾随 JSON 一律 400，与
+// Source API 的契约风格一致——「API 不接受 local_path」不能靠静默
+// 忽略拼写错误的字段维持。
 func (h *publishHandlers) create(c *gin.Context) {
 	var req createPublishRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+	if !strictBind(c, &req) {
 		return
 	}
 	input := publish.CreateInput{
@@ -138,11 +139,11 @@ type updatePublishRequest struct {
 	ExpiresAt  json.RawMessage `json:"expires_at"`
 }
 
-// update 部分更新策略：local_path 不可变。
+// update 部分更新策略：local_path 不可变；请求体经严格解码（同
+// create），PATCH 只接受声明过的字段。
 func (h *publishHandlers) update(c *gin.Context) {
 	var req updatePublishRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+	if !strictBind(c, &req) {
 		return
 	}
 	input := publish.UpdateInput{PublicPath: req.PublicPath, Enabled: req.Enabled}
@@ -202,9 +203,9 @@ func (h *publishHandlers) serve(c *gin.Context) {
 	if !rangeRequested(c.Request) {
 		c.Status(http.StatusOK)
 	}
-	// *os.File 是 ReadSeeker：Range / 206 / 416 / HEAD 由
-	// ServeContent 统一处理；MIME 按扩展名推断。
-	http.ServeContent(c.Writer, c.Request, path.Base(policy.LocalPath), info.ModTime(), f)
+	// *os.File 是 ReadSeeker：Range / 206 / 416 / HEAD 与 MIME 由
+	// filesafe 的共享 serving 出口统一处理，与 Local 下载同语义。
+	filesafe.ServeFileContent(c.Writer, c.Request, f, info, path.Base(policy.LocalPath))
 }
 
 // handlePublishError 把 publish 领域错误映射为 HTTP 响应：invalid

@@ -170,7 +170,7 @@ func (h *fileHandlers) localDownload(c *gin.Context) {
 	if !rangeRequested(c.Request) {
 		c.Status(http.StatusOK)
 	}
-	http.ServeContent(c.Writer, c.Request, name, info.ModTime(), f)
+	filesafe.ServeFileContent(c.Writer, c.Request, f, info, name)
 }
 
 // rangeRequested 判断客户端是否携带 Range 头（ServeContent 负责校验
@@ -224,7 +224,8 @@ func handleFileError(c *gin.Context, err error) {
 
 // setRemoteDownloadHeaders 设置下载响应头：按扩展名推断 MIME（未知
 // 为 application/octet-stream）、attachment 处置（非 ASCII 文件名按
-// RFC 5987 编码）、Stat 可得时带 Content-Length 与 Last-Modified。
+// RFC 5987 编码）、Stat 可得时带 Content-Length（含 0 字节文件）与
+// Last-Modified。
 func setRemoteDownloadHeaders(w http.ResponseWriter, name string, meta browser.DownloadMeta) {
 	contentType := mime.TypeByExtension(path.Ext(name))
 	if contentType == "" {
@@ -234,7 +235,7 @@ func setRemoteDownloadHeaders(w http.ResponseWriter, name string, meta browser.D
 	if disposition := mime.FormatMediaType("attachment", map[string]string{"filename": name}); disposition != "" {
 		w.Header().Set("Content-Disposition", disposition)
 	}
-	if meta.Size > 0 {
+	if meta.SizeKnown {
 		w.Header().Set("Content-Length", strconv.FormatInt(meta.Size, 10))
 	}
 	if meta.ModifiedAt != nil {
