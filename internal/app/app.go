@@ -14,6 +14,8 @@ import (
 	"tinysync/internal/browser"
 	"tinysync/internal/config"
 	"tinysync/internal/logging"
+	"tinysync/internal/publish"
+	publishsqlite "tinysync/internal/publish/sqlite"
 	"tinysync/internal/source"
 	s3adapter "tinysync/internal/source/s3"
 	sftpadapter "tinysync/internal/source/sftp"
@@ -81,12 +83,17 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 	files := browser.NewRemoteService(sources)
 	localFiles := browser.NewLocalService(jobs, managedRepo)
 
+	// 装配发布策略：canonical local path 校验依赖 Job 与 managed
+	// 记录，serving 与 CRUD 共用同一服务层。
+	policies := publish.NewService(publishsqlite.NewRepository(db), jobs, managedRepo)
+
 	server := api.NewServer(cfg, webFS, api.Dependencies{
 		Sources:    sources,
 		Jobs:       jobs,
 		Runner:     runner,
 		Browser:    files,
 		LocalFiles: localFiles,
+		Publish:    policies,
 	})
 
 	serveErr := make(chan error, 1)

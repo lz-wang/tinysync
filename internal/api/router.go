@@ -12,6 +12,7 @@ import (
 
 	"tinysync/internal/browser"
 	"tinysync/internal/buildinfo"
+	"tinysync/internal/publish"
 	"tinysync/internal/source"
 	"tinysync/internal/syncjob"
 )
@@ -38,7 +39,10 @@ func NewRouter(webFS fs.FS, deps Dependencies) *gin.Engine {
 		registerJobRoutes(api, deps.Jobs, deps.Runner)
 		registerRemoteFileRoutes(api, deps.Browser)
 		registerLocalFileRoutes(api, deps.LocalFiles)
+		registerPublishRoutes(api, deps.Publish)
 	}
+	// /published/*path 显式注册：公开服务不落入 SPA fallback。
+	registerPublicServingRoutes(router, deps.Publish)
 	router.NoRoute(handleWeb(webFS))
 	return router
 }
@@ -56,6 +60,9 @@ type Dependencies struct {
 	Browser *browser.RemoteService
 	// LocalFiles 是本地文件浏览应用服务；为 nil 时不注册本地文件端点。
 	LocalFiles *browser.LocalService
+	// Publish 是发布策略应用服务；为 nil 时不注册发布端点与公开
+	// serving 路由。
+	Publish *publish.Service
 }
 
 // handleHealth 报告服务健康状态。

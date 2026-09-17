@@ -176,22 +176,22 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 }
 
 // ResolveForRequest 把公开路径解析为当前可服务的本地文件：策略存在、
-// enabled、未过期、文件存在且仍是普通文件。任何不满足都返回
-// ErrNotFound——不区分「存在但禁止」与「不存在」，减少资源信息
-// 泄露。返回 canonical 路径与文件信息供 serving 打开。
+// enabled、未过期、文件存在且仍是普通文件。任何不满足都返回裸
+// ErrNotFound——不区分「存在但禁止」与「不存在」，响应同形，减少
+// 资源信息泄露。返回策略与文件信息供 serving 打开。
 func (s *Service) ResolveForRequest(ctx context.Context, publicPath string) (PublishedFile, os.FileInfo, error) {
 	policy, err := s.repo.GetByPublicPath(ctx, publicPath)
 	if err != nil {
-		return PublishedFile{}, nil, fmt.Errorf("%w: %s", ErrNotFound, publicPath)
+		return PublishedFile{}, nil, ErrNotFound
 	}
 	if !policy.Enabled || policy.Expired(s.Now()) {
-		return PublishedFile{}, nil, fmt.Errorf("%w: %s", ErrNotFound, publicPath)
+		return PublishedFile{}, nil, ErrNotFound
 	}
 	// local_path 是 canonical 绝对路径；serving 时重新校验——文件
 	// 可能已被删除或替换为 symlink / 目录。
 	info, err := os.Stat(policy.LocalPath)
 	if err != nil || !info.Mode().IsRegular() {
-		return PublishedFile{}, nil, fmt.Errorf("%w: %s", ErrNotFound, publicPath)
+		return PublishedFile{}, nil, ErrNotFound
 	}
 	return policy, info, nil
 }
