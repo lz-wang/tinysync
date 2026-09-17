@@ -85,6 +85,10 @@ Local Stat 父目录 symlink 逃逸与 Published canonical 路径 serving
 节文件输出 `Content-Length: 0`。本地验证 `make check` / `make
 build` 全绿，真实 MinIO integration 实测通过（含 ContinuationToken
 多页 browser 分页），E2E 覆盖 confinement 与安全语义。
+v0.6.0 文件浏览与发布已正式发布：tag `v0.6.0` 指向 ea66703，
+Release workflow run 35228820113 成功（2026-09-17），六平台发行档
+与 `checksums.txt` 核对到位，WebDAV 镜像与 Pushover 通知独立验收
+通过。
 
 ## 架构与边界
 
