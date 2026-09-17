@@ -32,6 +32,7 @@ export default function AppShell() {
                         <NavTab to="/" label="Overview" />
                         <NavTab to="/sources" label="Sources" />
                         <NavTab to="/jobs" label="Jobs" />
+                        <NavTab to="/files" label="Files" />
                         <NavTab to="/history" label="History" />
                     </Stack>
                 </Toolbar>

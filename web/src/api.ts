@@ -407,3 +407,84 @@ export async function listRunItems(
     const qs = params.toString()
     return getJSON<RunItemsListResponse>(`/api/v1/runs/${id}/items${qs === '' ? '' : `?${qs}`}`)
 }
+
+// ===== 文件浏览（v0.6）=====
+
+// FileKind 是条目类型；symlink / other 仅展示不可操作。
+export type FileKind = 'file' | 'directory' | 'symlink' | 'other'
+
+// FileEntry 是浏览条目：Remote 条目不含 managed，Local 条目携带。
+export interface FileEntry {
+    path: string
+    name: string
+    kind: FileKind
+    size: number
+    modified_at: string | null
+    managed?: boolean
+}
+
+// FilesPageResponse 对应目录列表响应；next_cursor 空串表示 EOF。
+export interface FilesPageResponse {
+    path: string
+    entries: FileEntry[]
+    next_cursor: string
+}
+
+// filesQuery 组装 path / limit / cursor 查询串；path 缺省为根目录。
+function filesQuery(path: string, limit?: number, cursor?: string): string {
+    const params = new URLSearchParams()
+    params.set('path', path)
+    if (limit !== undefined) {
+        params.set('limit', String(limit))
+    }
+    if (cursor !== undefined && cursor !== '') {
+        params.set('cursor', cursor)
+    }
+    return params.toString()
+}
+
+// listRemoteFiles 分页列出 Source 的一层目录。
+export function listRemoteFiles(
+    sourceId: string,
+    path = '/',
+    limit?: number,
+    cursor?: string,
+): Promise<FilesPageResponse> {
+    return getJSON<FilesPageResponse>(
+        `/api/v1/sources/${sourceId}/files?${filesQuery(path, limit, cursor)}`,
+    )
+}
+
+// statRemoteFile 读取远端条目元信息。
+export function statRemoteFile(sourceId: string, path: string): Promise<FileEntry> {
+    return getJSON<FileEntry>(
+        `/api/v1/sources/${sourceId}/files/stat?path=${encodeURIComponent(path)}`,
+    )
+}
+
+// listLocalFiles 分页列出 Job.LocalRoot 下的一层目录。
+export function listLocalFiles(
+    jobId: string,
+    path = '/',
+    limit?: number,
+    cursor?: string,
+): Promise<FilesPageResponse> {
+    return getJSON<FilesPageResponse>(
+        `/api/v1/jobs/${jobId}/files?${filesQuery(path, limit, cursor)}`,
+    )
+}
+
+// statLocalFile 读取本地条目元信息。
+export function statLocalFile(jobId: string, path: string): Promise<FileEntry> {
+    return getJSON<FileEntry>(`/api/v1/jobs/${jobId}/files/stat?path=${encodeURIComponent(path)}`)
+}
+
+// remoteFileDownloadURL 构造远端下载直链（流式 attachment）。
+export function remoteFileDownloadURL(sourceId: string, path: string): string {
+    return `/api/v1/sources/${sourceId}/files/download?path=${encodeURIComponent(path)}`
+}
+
+// localFileDownloadURL 构造本地下载直链（支持 Range / HEAD）。
+export function localFileDownloadURL(jobId: string, path: string): string {
+    return `/api/v1/jobs/${jobId}/files/download?path=${encodeURIComponent(path)}`
+}

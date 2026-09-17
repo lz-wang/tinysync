@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import AppShell from './app/AppShell'
+import FilesPage from './pages/FilesPage'
 import HistoryPage from './pages/HistoryPage'
 import JobsPage from './pages/JobsPage'
 import OverviewPage from './pages/OverviewPage'
@@ -14,6 +15,7 @@ export default function App() {
                 <Route index element={<OverviewPage />} />
                 <Route path="sources" element={<SourcesPage />} />
                 <Route path="jobs" element={<JobsPage />} />
+                <Route path="files" element={<FilesPage />} />
                 <Route path="history" element={<HistoryPage />} />
                 <Route path="history/:runId" element={<RunDetailPage />} />
                 <Route path="*" element={<Navigate to="/" replace />} />
