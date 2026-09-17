@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -159,7 +160,61 @@ func (f *s3Fixture) ListObjectsV2(ctx context.Context, params *s3.ListObjectsV2I
 		p := prefix + d
 		common = append(common, types.CommonPrefix{Prefix: &p})
 	}
-	return &s3.ListObjectsV2Output{Contents: contents, CommonPrefixes: common}, nil
+	// 与真实 S3 一致：keys + common prefixes 统一字典序分页；
+	// MaxKeys / ContinuationToken 生效（token 为 opaque offset），
+	// 无 MaxKeys 时单页全量返回（同步场景行为不变）。
+	items := make([]string, 0, len(contents)+len(common))
+	for _, obj := range contents {
+		items = append(items, deref(obj.Key))
+	}
+	for _, cp := range common {
+		items = append(items, deref(cp.Prefix))
+	}
+	sort.Strings(items)
+
+	start := 0
+	if token := deref(params.ContinuationToken); token != "" {
+		if _, err := fmt.Sscanf(token, "offset-%d", &start); err != nil {
+			return nil, &matrixNotFound{}
+		}
+	}
+	limit := len(items)
+	if params.MaxKeys != nil && *params.MaxKeys > 0 && int(*params.MaxKeys) < limit {
+		limit = int(*params.MaxKeys)
+	}
+	end := start + limit
+	if end > len(items) {
+		end = len(items)
+	}
+	pageKeys := map[string]bool{}
+	for _, key := range items[start:end] {
+		pageKeys[key] = true
+	}
+
+	pageContents := make([]types.Object, 0, len(contents))
+	for _, obj := range contents {
+		if pageKeys[deref(obj.Key)] {
+			pageContents = append(pageContents, obj)
+		}
+	}
+	pageCommon := make([]types.CommonPrefix, 0, len(common))
+	for _, cp := range common {
+		if pageKeys[deref(cp.Prefix)] {
+			pageCommon = append(pageCommon, cp)
+		}
+	}
+	out := &s3.ListObjectsV2Output{
+		Contents:       pageContents,
+		CommonPrefixes: pageCommon,
+		MaxKeys:        params.MaxKeys,
+	}
+	if end < len(items) {
+		truncated := true
+		out.IsTruncated = &truncated
+		next := fmt.Sprintf("offset-%d", end)
+		out.NextContinuationToken = &next
+	}
+	return out, nil
 }
 
 func (f *s3Fixture) HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {

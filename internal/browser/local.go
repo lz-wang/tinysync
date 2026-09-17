@@ -44,6 +44,13 @@ func validateLogicalPath(p string) error {
 // 文件名列表）；全链 EvalSymlinks 解析后必须仍在 root 内，防御父
 // 目录组件中的 symlink 逃逸。
 func resolveDir(root, logicalPath string) (string, error) {
+	// root 先归一为 canonical 形态（与 ResolveRegularFile 同一防御），
+	// 避免未归一 root 与解析结果的 Rel 比较误判逃逸。
+	if canonicalRoot, err := filepath.EvalSymlinks(root); err != nil {
+		return "", err
+	} else if canonicalRoot != root {
+		root = canonicalRoot
+	}
 	dirAbs, err := filesafe.ResolveWithinRoot(root, logicalPath)
 	if err != nil {
 		return "", err

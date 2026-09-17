@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"sort"
 	"strings"
 	"time"
 
@@ -181,6 +182,9 @@ func (r *remote) List(ctx context.Context, path string, opts source.ListOptions)
 		}
 		all = append(all, fi)
 	}
+	// 切片分页要求单层枚举顺序跨请求稳定：WebDAV 协议不保证服务器
+	// 排序，按 logical path 排序后分页，避免页间重复 / 缺失。
+	sort.Slice(all, func(i, j int) bool { return all[i].Path < all[j].Path })
 	return source.PageSlice(all, opts)
 }
 
