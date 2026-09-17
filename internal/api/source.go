@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"tinysync/internal/auth"
 	"tinysync/internal/source"
 	"tinysync/internal/syncjob"
 )
@@ -37,12 +38,14 @@ func registerSourceRoutes(group *gin.RouterGroup, svc *source.Service, jobs *syn
 			return nil
 		}
 	}
-	group.GET("/sources", h.list)
-	group.POST("/sources", h.create)
-	group.GET("/sources/:id", h.get)
-	group.PATCH("/sources/:id", h.update)
-	group.DELETE("/sources/:id", h.delete)
-	group.POST("/sources/:id/test", h.test)
+	// 权限矩阵：查询 read；创建 / 更新 / 删除 / test（会以已有
+	// secret 主动访问远端）admin。
+	group.GET("/sources", requireScope(auth.ScopeRead), h.list)
+	group.POST("/sources", requireScope(auth.ScopeAdmin), h.create)
+	group.GET("/sources/:id", requireScope(auth.ScopeRead), h.get)
+	group.PATCH("/sources/:id", requireScope(auth.ScopeAdmin), h.update)
+	group.DELETE("/sources/:id", requireScope(auth.ScopeAdmin), h.delete)
+	group.POST("/sources/:id/test", requireScope(auth.ScopeAdmin), h.test)
 }
 
 // sourceHandlers 是 Source 端点的 handler 集合。

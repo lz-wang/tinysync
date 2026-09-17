@@ -3,11 +3,41 @@ package api
 import (
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
 	"tinysync/internal/auth"
 )
+
+// requireScope 返回授权中间件：要求已认证 principal 具备所需
+// scope（admin ⇒ read + run 由 auth.Authorize 判定）。
+func requireScope(required auth.Scope) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		principal, ok := principalOf(c)
+		if !ok {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
+		}
+		if !auth.Authorize(principal, required) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "insufficient scope"})
+			return
+		}
+		c.Next()
+	}
+}
+
+// requireWebSession 返回中间件：要求凭据来自 Web Session（auth
+// session 端点不接受 Bearer API Token）。
+func requireWebSession() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if _, ok := sessionOf(c); !ok {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
+		}
+		c.Next()
+	}
+}
 
 // gin context 键：principal 与当前 Web Session。
 const (
@@ -50,9 +80,25 @@ func authMiddleware(svc *auth.Service) gin.HandlerFunc {
 			return
 		}
 		if header := c.GetHeader("Authorization"); header != "" {
-			// Bearer API Token 认证随 scoped token 提交接入；显式提供
-			// 无效凭据绝不 fallback 到 Web Session。
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			// Bearer API Token：唯一 machine credential 入口。显式
+			// 提供无效凭据绝不 fallback 到 Web Session。
+			const bearerPrefix = "Bearer "
+			if !strings.HasPrefix(header, bearerPrefix) {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+				return
+			}
+			raw := strings.TrimSpace(strings.TrimPrefix(header, bearerPrefix))
+			if raw == "" {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+				return
+			}
+			principal, _, err := svc.AuthenticateAPIToken(c.Request.Context(), raw)
+			if err != nil {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+				return
+			}
+			c.Set(ctxKeyPrincipal, principal)
+			c.Next()
 			return
 		}
 		rawToken, err := c.Cookie(sessionCookieName)

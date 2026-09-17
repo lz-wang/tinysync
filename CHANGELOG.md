@@ -33,6 +33,12 @@ GitHub Release 摘要一致。
   SameSite=Strict、HTTPS 下自动 Secure），新增会话查询与登出
   接口（`/api/v1/auth/login|session|logout`），跨源变更请求与
   URL 传参凭据一律拒绝。
+- 新增 API Token：管理端点 `GET/POST /api/v1/api-tokens` 与
+  `POST /api/v1/api-tokens/:id/revoke`，支持 `read` / `run` /
+  `admin` 三种 scope（admin 蕴含 read + run）、可选过期时刻、
+  幂等撤销与 last_used 记录；raw token 仅创建响应返回一次，
+  之后不可查询。所有端点仅接受 `Authorization: Bearer` 认证，
+  按 scope 返回 401 / 403。
 
 ## [0.6.0] - 2026-09-17
 

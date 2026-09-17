@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"tinysync/internal/auth"
 	"tinysync/internal/filesafe"
 	"tinysync/internal/publish"
 	"tinysync/internal/source"
@@ -23,10 +24,11 @@ func registerPublishRoutes(group *gin.RouterGroup, svc *publish.Service) {
 		return
 	}
 	h := &publishHandlers{svc: svc}
-	group.GET("/published-files", h.list)
-	group.POST("/published-files", h.create)
-	group.PATCH("/published-files/:id", h.update)
-	group.DELETE("/published-files/:id", h.remove)
+	// 权限矩阵：查询 read；创建 / 更新 / 删除 admin。
+	group.GET("/published-files", requireScope(auth.ScopeRead), h.list)
+	group.POST("/published-files", requireScope(auth.ScopeAdmin), h.create)
+	group.PATCH("/published-files/:id", requireScope(auth.ScopeAdmin), h.update)
+	group.DELETE("/published-files/:id", requireScope(auth.ScopeAdmin), h.remove)
 }
 
 // registerPublicServingRoutes 注册公开文件路由：/published/*path 是

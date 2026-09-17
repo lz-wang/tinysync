@@ -13,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"tinysync/internal/auth"
 	"tinysync/internal/browser"
 	"tinysync/internal/filesafe"
 	"tinysync/internal/source"
@@ -27,9 +28,10 @@ func registerRemoteFileRoutes(group *gin.RouterGroup, svc *browser.RemoteService
 		return
 	}
 	h := &fileHandlers{remote: svc}
-	group.GET("/sources/:id/files", h.remoteList)
-	group.GET("/sources/:id/files/stat", h.remoteStat)
-	group.GET("/sources/:id/files/download", h.remoteDownload)
+	// 文件浏览与下载为 read scope。
+	group.GET("/sources/:id/files", requireScope(auth.ScopeRead), h.remoteList)
+	group.GET("/sources/:id/files/stat", requireScope(auth.ScopeRead), h.remoteStat)
+	group.GET("/sources/:id/files/download", requireScope(auth.ScopeRead), h.remoteDownload)
 }
 
 // registerLocalFileRoutes 注册本地文件浏览端点（以 Job 为 namespace）。
@@ -39,9 +41,9 @@ func registerLocalFileRoutes(group *gin.RouterGroup, local *browser.LocalService
 		return
 	}
 	h := &fileHandlers{local: local}
-	group.GET("/jobs/:id/files", h.localList)
-	group.GET("/jobs/:id/files/stat", h.localStat)
-	group.GET("/jobs/:id/files/download", h.localDownload)
+	group.GET("/jobs/:id/files", requireScope(auth.ScopeRead), h.localList)
+	group.GET("/jobs/:id/files/stat", requireScope(auth.ScopeRead), h.localStat)
+	group.GET("/jobs/:id/files/download", requireScope(auth.ScopeRead), h.localDownload)
 	// 本地文件经 *os.File + ServeContent 服务，HEAD 只回响应头。
 	group.HEAD("/jobs/:id/files/download", h.localDownload)
 }

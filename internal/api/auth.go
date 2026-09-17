@@ -24,11 +24,12 @@ func registerAuthRoutes(group *gin.RouterGroup, svc *auth.Service) {
 	group.POST("/auth/login", h.login)
 }
 
-// registerSessionRoutes 注册受保护的会话查询与登出端点。
+// registerSessionRoutes 注册受保护的会话查询与登出端点：仅接受
+// Web Session 凭据（Bearer API Token 一律 401）。
 func registerSessionRoutes(group *gin.RouterGroup, svc *auth.Service) {
 	h := &authHandlers{svc: svc}
-	group.GET("/auth/session", h.session)
-	group.POST("/auth/logout", h.logout)
+	group.GET("/auth/session", requireWebSession(), h.session)
+	group.POST("/auth/logout", requireWebSession(), h.logout)
 }
 
 // loginRequest 是登录请求体。

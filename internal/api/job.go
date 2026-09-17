@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"tinysync/internal/auth"
 	"tinysync/internal/source"
 	"tinysync/internal/syncjob"
 )
@@ -22,17 +23,19 @@ func registerJobRoutes(group *gin.RouterGroup, svc *syncjob.Service, runner *syn
 		return
 	}
 	h := &jobHandlers{svc: svc, runner: runner}
-	group.GET("/jobs", h.list)
-	group.POST("/jobs", h.create)
-	group.GET("/jobs/:id", h.get)
-	group.PATCH("/jobs/:id", h.update)
-	group.DELETE("/jobs/:id", h.delete)
+	// 权限矩阵：查询 read；创建 / 更新 / 删除 admin；手动触发 run
+	//（run 不含 read）。
+	group.GET("/jobs", requireScope(auth.ScopeRead), h.list)
+	group.POST("/jobs", requireScope(auth.ScopeAdmin), h.create)
+	group.GET("/jobs/:id", requireScope(auth.ScopeRead), h.get)
+	group.PATCH("/jobs/:id", requireScope(auth.ScopeAdmin), h.update)
+	group.DELETE("/jobs/:id", requireScope(auth.ScopeAdmin), h.delete)
 	if runner != nil {
-		group.POST("/jobs/:id/run", h.run)
-		group.GET("/jobs/:id/status", h.status)
-		group.GET("/runs", h.listRuns)
-		group.GET("/runs/:id", h.getRun)
-		group.GET("/runs/:id/items", h.listRunItems)
+		group.POST("/jobs/:id/run", requireScope(auth.ScopeRun), h.run)
+		group.GET("/jobs/:id/status", requireScope(auth.ScopeRead), h.status)
+		group.GET("/runs", requireScope(auth.ScopeRead), h.listRuns)
+		group.GET("/runs/:id", requireScope(auth.ScopeRead), h.getRun)
+		group.GET("/runs/:id/items", requireScope(auth.ScopeRead), h.listRunItems)
 	}
 }
 

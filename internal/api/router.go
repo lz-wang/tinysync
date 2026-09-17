@@ -49,6 +49,7 @@ func NewRouter(webFS fs.FS, deps Dependencies) *gin.Engine {
 		registerRemoteFileRoutes(protected, deps.Browser)
 		registerLocalFileRoutes(protected, deps.LocalFiles)
 		registerPublishRoutes(protected, deps.Publish)
+		registerAPITokenRoutes(protected, deps.Auth)
 	}
 	// /published/*path 显式注册：公开服务不落入 SPA fallback。
 	registerPublicServingRoutes(router, deps.Publish)
