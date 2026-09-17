@@ -21,6 +21,23 @@ GitHub Release 摘要一致。
 
 ## [Unreleased]
 
+### 新增
+
+- 支持远端与本地文件浏览：Remote 视图可分页浏览 WebDAV / S3 / SFTP
+  三种协议的远端目录（统一逻辑路径与分页游标，S3 使用协议原生
+  分页），Local 视图以 Job 为入口浏览同步根目录并区分
+  managed / unmanaged 文件；大目录采用虚拟列表与增量分页渲染。
+- 支持文件下载：远端文件流式下载，本地文件下载支持 Range 断点
+  请求、HEAD 与正确的 MIME / Content-Disposition。
+- 支持 HTTP 发布策略：把同步后的 managed 本地文件显式发布为
+  `/published/...` 公开 URL，支持启用 / 禁用、过期时刻、路径冲突
+  保护与跨重启持久；禁用、过期或文件删除后 URL 统一返回 404，
+  不泄露存在性。发布目标只能是受 Job 管理的普通文件，API 不接受
+  任意本地路径。
+- Web 界面新增 Files 页面：Remote / Local / Published 三个视图，
+  支持目录导航、分页加载、下载、一键触发同步、远端目录选择器
+  （Job 配置的 Remote Root 可直接浏览选取）与发布策略管理。
+
 ## [0.5.0] - 2026-09-17
 
 ### 新增

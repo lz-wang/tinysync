@@ -12,10 +12,16 @@ TinySync 是一个面向 HomeLab 的文件同步服务：单一 Go 二进制，�
 > 同步引擎。Job 支持自动调度（once / interval / cron，重叠自动
 > 跳过）、受控并发（`--max-concurrent-jobs` /
 > `--max-concurrent-transfers`）与持久化运行历史（每轮运行与
-> 文件级变更明细经 Web UI 与 REST 可查，重启不丢）。
+> 文件级变更明细经 Web UI 与 REST 可查，重启不丢）。文件访问与
+> 发布：远端与本地文件浏览、文件下载与把同步后的受管本地文件
+> 显式发布为受控 HTTP URL。
 >
-> **安全提示**：TinySync 尚未实现自身的认证与鉴权，Source / Job 管理
-> 与同步运行 API 无任何访问控制，请仅部署在可信的 HomeLab 网络中。
+> **安全提示**：TinySync 尚未实现自身的认证与鉴权，Source / Job 管理、
+> 同步运行、文件浏览 / 下载与发布管理 API 均无任何访问控制；`private`
+> 仅表示「没有通过 `/published/...` 公开发布」，不表示 REST API 已经过
+> 身份认证。加入文件浏览与下载后，未认证 API 直接具备读取文件内容的
+> 能力，请仅部署在可信的 HomeLab 网络或反向代理访问控制之后，直到
+> 认证版本发布。
 
 ## 技术栈
 
@@ -115,6 +121,36 @@ path-style、SFTP 的 host / port / username / remote_root / host key
 fingerprint），防止 Mirror 把既有本地文件误判为远端消失而删除；
 secret 轮换始终允许。更换远端的正确路径是新建 Source 后切换 Job 的
 source_id。
+
+## Files：文件浏览与发布
+
+Remote 浏览经 `GET /api/v1/sources/:id/files`（分页查询参数
+`path` / `limit` / `cursor`，limit 默认 100、上限 500）分页浏览远端
+目录；`.../files/stat` 与 `.../files/download` 提供元信息与流式下载。
+本地浏览以 Job 为唯一入口：`GET /api/v1/jobs/:id/files` 只能访问该
+Job 的 LocalRoot 之下的内容，条目携带 `managed` 标记（TinySync 当前
+管理 vs 目录原有 / 已 relinquish 的文件）；本地下载支持 Range / HEAD。
+
+发布策略把同步后的 managed 本地文件显式暴露为受控 URL：
+
+```bash
+curl -X POST http://127.0.0.1:9466/api/v1/published-files \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "job_id": "job_xxx",
+    "path": "/photos/a.jpg",
+    "public_path": "/photos/a.jpg",
+    "enabled": true
+  }'
+```
+
+- 目标必须是该 Job 管理的普通文件（路径逃逸、symlink 与目录一律
+  拒绝）；`local_path` 创建后不可变，要换文件就新建策略。
+- 策略与 Job 生命周期解耦：Job 修改 LocalRoot 不会隐式改写既有
+  URL；Mirror 删除文件后 URL 自然 404。
+- 公开访问地址为 `/published/<public_path>`（同源拼接），支持
+  Range / HEAD；禁用、过期或文件缺失统一返回 404，不区分原因；
+  响应固定 `Cache-Control: no-store`。
 
 ## 版本机制
 

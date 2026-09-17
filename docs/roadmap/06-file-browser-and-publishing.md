@@ -418,3 +418,51 @@ pkg/sftp v1 → v2 迁移
 > （支持 Range / HEAD / 过期 / 禁用，路径逃逸与 symlink 逃逸被
 > 拒绝）；发布生命周期与 Job 解耦且跨重启持久；三协议同步 E2E
 > 零回归。
+
+## 实现记录（2026-09-17）
+
+按契约完成实现，代码结构：
+
+```text
+internal/filesafe/        受限路径原语（path.go）+ serving 共享
+internal/browser/         model / remote.go / local.go 应用服务
+internal/publish/         model / repository / service / validation
+internal/publish/sqlite/  SQLite 持久化（migration 0006）
+internal/api/file.go      files 浏览端点（Remote + Local）
+internal/api/publish.go   发布 CRUD 与 /published/*path serving
+web/src/features/files/   FileBrowser / Remote / Local / Picker /
+                          PublishDialog / PublishedPanel
+web/src/pages/FilesPage.tsx
+```
+
+契约落地要点与契约差异说明：
+
+- 契约冻结的边界全部实现；`source.ValidateLogicalPath` 按「避免两套
+  path 校验」的要求委托 `filesafe.ValidateLogicalPath` 并保留
+  ErrInvalid 语义。
+- 文件不存在统一以 `fs.ErrNotExist` 判定映射 404；S3 stat 的
+  not-found 错误补 `fs.ErrNotExist` 标记（原有 ErrInvalid 判定不变）。
+- WebDAV / SFTP 的切片分页在枚举后按 logical path 排序，保证顺序
+  跨请求稳定（WebDAV 协议不保证服务器排序，SFTP ReadDir 与本地
+  ReadDir 天然有序）。
+- 发布创建校验链按契约执行（safeResolve → 普通文件 → managed →
+  canonical local_path）；`local_path` immutable；serving 侧 disabled /
+  过期 / 缺失 / 目录一律 404 且响应同形。
+- 安全边界声明已写入 README 与本契约：认证在 v0.7，`private` 仅指
+  未公开发布。
+
+验收证据：
+
+- `make check` 全绿（Go vet + Go test 全量 + web lint / typecheck / tsc）。
+- `make build` 通过；`make integration`（真实 MinIO，本地实例）实测
+  TestIntegrationS3 与 TestIntegrationS3Cancellation 通过。
+- E2E（`internal/e2e/browser_publish_test.go`）：三协议远端浏览
+  （browse / stat / download / 多页分页无重复无缺失 / 非法路径 400 /
+  source 缺失 404）；本地浏览（managed / unmanaged / symlink 呈现、
+  Range / HEAD / MIME / disposition、traversal 与 symlink 与目录下载
+  拒绝矩阵）；发布全生命周期（创建 → serving 200 / Range / HEAD →
+  disable / expire / Mirror 删除均 404 同形 → 清除过期恢复 → 409
+  冲突 → unmanaged / traversal / symlink escape 创建拒绝 → 跨重启
+  持久）。
+- 三协议同步 E2E（`runCommonSyncScenario`）与调度 / 历史 / 关闭语义
+  测试零回归。
