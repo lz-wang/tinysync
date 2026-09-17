@@ -122,6 +122,95 @@ func ResolveRegularFile(root, logicalPath string) (string, os.FileInfo, error) {
 	return resolved, info, nil
 }
 
+// LstatWithinRoot 把逻辑路径解析为 root 之下的文件系统路径并返回
+// 最终组件的 Lstat 信息：父目录组件不得经 symlink 逃逸 root，最终
+// 组件保留 Lstat 语义（symlink 原样呈现、不跟随）。浏览 Stat 场景
+// 专用：symlink 本身可以显示，但不能作为路径中间节点把 root 外的
+// 文件元数据（存在性、类型、size、mtime）泄露进来。
+//
+// 返回加固后的文件系统路径（父目录已解析为真实形态）与 FileInfo。
+func LstatWithinRoot(root, logicalPath string) (string, os.FileInfo, error) {
+	// root 先归一为 canonical 形态，与 ResolveRegularFile 同一防御。
+	if canonicalRoot, err := filepath.EvalSymlinks(root); err != nil {
+		return "", nil, err
+	} else if canonicalRoot != root {
+		root = canonicalRoot
+	}
+	target, err := ResolveWithinRoot(root, logicalPath)
+	if err != nil {
+		return "", nil, err
+	}
+	if logicalPath == "/" {
+		info, err := os.Lstat(target)
+		if err != nil {
+			return "", nil, err
+		}
+		return target, info, nil
+	}
+	// 词法 containment 不约束 symlink 组件的运行时解析：对父目录做
+	// EvalSymlinks 后重建目标，确认父目录真实形态仍在 root 内。父
+	// 目录链上有不存在组件时 EvalSymlinks 报 ENOENT，与直接 Lstat
+	// 目标的行为一致。
+	resolvedDir, err := filepath.EvalSymlinks(filepath.Dir(target))
+	if err != nil {
+		return "", nil, err
+	}
+	rel, relErr := filepath.Rel(root, resolvedDir)
+	if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", nil, fmt.Errorf("%w: logical path %q escapes root %s via symlink", ErrEscape, logicalPath, root)
+	}
+	final := filepath.Join(resolvedDir, filepath.Base(target))
+	info, err := os.Lstat(final)
+	if err != nil {
+		return "", nil, err
+	}
+	return final, info, nil
+}
+
+// OpenCanonicalRegularFile 打开持久化 canonical 绝对路径所指的普通
+// 文件。Published serving 以「创建时校验、之后长期复用」的 canonical
+// local_path 为身份，文件系统可能在创建之后发生变化；本函数在每次
+// serving 前重放身份校验，任何原组件后来变成 symlink 都会立即拒绝：
+//   - Lstat 最终组件：目标自身是 symlink 一律拒绝；
+//   - EvalSymlinks 全链解析：结果必须仍等于持久化路径，否则按
+//     ErrEscape 拒绝（canonical 路径已不再指向同一文件身份）；
+//   - 打开后以句柄上的 Stat 再确认普通文件，防御校验与打开之间
+//     的类型替换。
+//
+// 完全消除「检查后、打开前替换」的 TOCTOU 需要 openat/O_NOFOLLOW
+// 级别的原语，属后续 hardening 范围；本函数封死的是请求发起之前
+// 已经存在的 symlink 替换。
+func OpenCanonicalRegularFile(canonicalPath string) (*os.File, os.FileInfo, error) {
+	info, err := os.Lstat(canonicalPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, nil, fmt.Errorf("%w: %s is a symlink", ErrNotRegularFile, canonicalPath)
+	}
+	resolved, err := filepath.EvalSymlinks(canonicalPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	if resolved != canonicalPath {
+		return nil, nil, fmt.Errorf("%w: %s now resolves to %s via symlink", ErrEscape, canonicalPath, resolved)
+	}
+	f, err := os.Open(canonicalPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	info, err = f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, nil, err
+	}
+	if !info.Mode().IsRegular() {
+		_ = f.Close()
+		return nil, nil, fmt.Errorf("%w: %s", ErrNotRegularFile, canonicalPath)
+	}
+	return f, info, nil
+}
+
 // NormalizePublicPath 校验并归一 Publish 的 public path：以 / 开头、
 // clean、非 root。public path 是 /published 之下的唯一公开标识，
 // 与逻辑路径共用基础规则；"/" 表示发布整个根，与单文件模型冲突，

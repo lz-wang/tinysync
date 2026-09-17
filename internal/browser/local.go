@@ -162,6 +162,8 @@ func (s *LocalService) List(ctx context.Context, jobID, logicalDir string, opts 
 }
 
 // Stat 读取单个本地路径的元信息（Lstat 语义：symlink 原样呈现）。
+// 父目录组件经 LstatWithinRoot 加固：symlink 可以作为最终组件显示，
+// 但不能作为中间节点越出 root 泄露外部文件的元信息。
 func (s *LocalService) Stat(ctx context.Context, jobID, logicalPath string) (Entry, error) {
 	if err := validateLogicalPath(logicalPath); err != nil {
 		return Entry{}, err
@@ -174,11 +176,7 @@ func (s *LocalService) Stat(ctx context.Context, jobID, logicalPath string) (Ent
 	if err != nil {
 		return Entry{}, err
 	}
-	target, err := filesafe.ResolveWithinRoot(root, logicalPath)
-	if err != nil {
-		return Entry{}, err
-	}
-	info, err := os.Lstat(target)
+	_, info, err := filesafe.LstatWithinRoot(root, logicalPath)
 	if err != nil {
 		return Entry{}, err
 	}

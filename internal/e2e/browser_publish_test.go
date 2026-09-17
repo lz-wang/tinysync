@@ -430,6 +430,7 @@ func TestLocalBrowserConfinement(t *testing.T) {
 		{"/files/download?path=/inside-link", http.StatusBadRequest},
 		{"/files/download?path=/outside-link/secret.txt", http.StatusBadRequest},
 		{"/files/download?path=/outside-link/ghost", http.StatusNotFound},
+		{"/files/stat?path=/outside-link/secret.txt", http.StatusBadRequest},
 		{"/files/download?path=/docs", http.StatusBadRequest},
 		{"/files?path=/", http.StatusNotFound},
 	} {
@@ -596,5 +597,75 @@ func TestPublishLifecycle(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("policy rows after restart = %d, want 1", count)
+	}
+}
+
+// TestPublishedServingRejectsSymlinkReplacement：策略创建成功之后，
+// canonical 目标自身或其父目录被替换为指向 LocalRoot 之外的 symlink
+// 时，公开 serving 必须拒绝——serving 以持久化 canonical local_path
+// 为身份，全链解析结果偏离持久化形态即同形 404，不跟随 symlink 读
+// 取外部文件。
+func TestPublishedServingRejectsSymlinkReplacement(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		swap func(t *testing.T, file string)
+	}{
+		{"final file replaced by symlink", func(t *testing.T, file string) {
+			outside := t.TempDir()
+			secret := filepath.Join(outside, "secret.txt")
+			if err := os.WriteFile(secret, []byte("root-secret"), 0o644); err != nil {
+				t.Fatalf("write secret: %v", err)
+			}
+			if err := os.Remove(file); err != nil {
+				t.Fatalf("remove published file: %v", err)
+			}
+			if err := os.Symlink(secret, file); err != nil {
+				t.Fatalf("symlink file: %v", err)
+			}
+		}},
+		{"parent dir replaced by symlink", func(t *testing.T, file string) {
+			outside := t.TempDir()
+			// symlink 目标下放置同名普通文件，保证拒绝来自父组件
+			// 逃逸而非路径缺失。
+			if err := os.MkdirAll(filepath.Join(outside, "docs"), 0o755); err != nil {
+				t.Fatalf("mkdir outside docs: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(outside, "docs", "published.txt"), []byte("root-secret"), 0o644); err != nil {
+				t.Fatalf("write outside file: %v", err)
+			}
+			dir := filepath.Dir(file)
+			if err := os.Remove(file); err != nil {
+				t.Fatalf("remove published file: %v", err)
+			}
+			if err := os.Remove(dir); err != nil {
+				t.Fatalf("remove docs dir: %v", err)
+			}
+			if err := os.Symlink(filepath.Join(outside, "docs"), dir); err != nil {
+				t.Fatalf("symlink docs dir: %v", err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			remote := newWebDAVFixture(t)
+			e := newBrowserEnv(t, remote)
+			remote.put(t, "/docs/published.txt", "public-content")
+			e.createJob(syncjob.ModeCopy)
+			e.sync()
+
+			w := e.doJSON(http.MethodPost, "/api/v1/published-files",
+				`{"job_id":"`+e.job.ID+`","path":"/docs/published.txt","public_path":"/share/published.txt","enabled":true}`)
+			if w.Code != http.StatusCreated {
+				t.Fatalf("create policy = %d, body %s", w.Code, w.Body.String())
+			}
+
+			// 创建成功之后文件系统发生替换：创建时的校验不再可信，
+			// serving 必须重新复验 canonical 身份。
+			tc.swap(t, filepath.Join(e.localRoot, "docs", "published.txt"))
+
+			w = e.get("/published/share/published.txt")
+			if w.Code != http.StatusNotFound {
+				t.Fatalf("serving after symlink replacement = %d body %q, want 404", w.Code, w.Body.String())
+			}
+		})
 	}
 }

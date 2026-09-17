@@ -309,8 +309,9 @@ func TestUpdateMutatesOnlyMutableFields(t *testing.T) {
 	}
 }
 
-// ResolveForRequest：禁用 / 过期 / 文件缺失一律 ErrNotFound，不区分
-// 原因。
+// ResolveForRequest：禁用 / 过期一律 ErrNotFound，不区分原因。文件
+// 系统状态（缺失、symlink 替换）不归本层判定，由 serving 时的
+// filesafe.OpenCanonicalRegularFile 复验并同形映射 404。
 func TestResolveForRequestHidesReasons(t *testing.T) {
 	env := newServiceEnv(t)
 	env.write(t, "synced.txt", "data")
@@ -322,7 +323,7 @@ func TestResolveForRequestHidesReasons(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	_, _, err = env.svc.ResolveForRequest(context.Background(), "/a.txt")
+	_, err = env.svc.ResolveForRequest(context.Background(), "/a.txt")
 	if err != nil {
 		t.Fatalf("resolve enabled = %v, want nil", err)
 	}
@@ -332,7 +333,7 @@ func TestResolveForRequestHidesReasons(t *testing.T) {
 	if _, err := env.svc.Update(context.Background(), p.ID, UpdateInput{Enabled: &disabled}); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
-	if _, _, err := env.svc.ResolveForRequest(context.Background(), "/a.txt"); !errors.Is(err, ErrNotFound) {
+	if _, err := env.svc.ResolveForRequest(context.Background(), "/a.txt"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("resolve disabled = %v, want ErrNotFound", err)
 	}
 
@@ -343,7 +344,7 @@ func TestResolveForRequestHidesReasons(t *testing.T) {
 		t.Fatalf("set expiry: %v", err)
 	}
 	env.now = env.now.Add(2 * time.Hour)
-	if _, _, err := env.svc.ResolveForRequest(context.Background(), "/a.txt"); !errors.Is(err, ErrNotFound) {
+	if _, err := env.svc.ResolveForRequest(context.Background(), "/a.txt"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("resolve expired = %v, want ErrNotFound", err)
 	}
 
@@ -352,12 +353,12 @@ func TestResolveForRequestHidesReasons(t *testing.T) {
 	if err := os.Remove(filepath.Join(env.root, "synced.txt")); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
-	if _, _, err := env.svc.ResolveForRequest(context.Background(), "/a.txt"); !errors.Is(err, ErrNotFound) {
-		t.Errorf("resolve missing = %v, want ErrNotFound", err)
+	if _, err := env.svc.ResolveForRequest(context.Background(), "/a.txt"); err != nil {
+		t.Errorf("resolve with missing file = %v, want policy still resolved", err)
 	}
 
 	// 未知公开路径。
-	if _, _, err := env.svc.ResolveForRequest(context.Background(), "/never"); !errors.Is(err, ErrNotFound) {
+	if _, err := env.svc.ResolveForRequest(context.Background(), "/never"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("resolve unknown = %v, want ErrNotFound", err)
 	}
 }

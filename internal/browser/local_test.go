@@ -267,6 +267,14 @@ func TestLocalServiceConfinement(t *testing.T) {
 		t.Errorf("Open escape = %v, want confinement error rather than missing-file", err)
 	}
 
+	// 父目录 symlink 逃逸（Stat 路径）：symlink 只能作为最终组件显示，
+	// 不能作为中间节点泄露 root 外文件的元信息。
+	if _, err := fx.svc.Stat(context.Background(), fx.jobID, "/outside-link/secret.txt"); err == nil {
+		t.Error("Stat through parent symlink escape = nil error, want escape rejection")
+	} else if errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("Stat escape = %v, want confinement error rather than missing-file", err)
+	}
+
 	// 目录请求下载 → ErrNotRegularFile。
 	fx.write(t, "sub/x.txt", "x")
 	if _, _, _, err := fx.svc.Open(context.Background(), fx.jobID, "/sub"); !errors.Is(err, filesafe.ErrNotRegularFile) {

@@ -5,13 +5,13 @@ import (
 	"errors"
 	"io/fs"
 	"net/http"
-	"os"
 	"path"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
+	"tinysync/internal/filesafe"
 	"tinysync/internal/publish"
 	"tinysync/internal/source"
 )
@@ -181,14 +181,17 @@ func (h *publishHandlers) remove(c *gin.Context) {
 // Cache-Control: no-store（第一版语义优先，可配置缓存策略不进入
 // v0.6）。
 func (h *publishHandlers) serve(c *gin.Context) {
-	policy, info, err := h.svc.ResolveForRequest(c.Request.Context(), c.Param("path"))
+	policy, err := h.svc.ResolveForRequest(c.Request.Context(), c.Param("path"))
 	if err != nil {
 		handlePublishError(c, err)
 		return
 	}
-	f, err := os.Open(policy.LocalPath)
+	// canonical local_path 在创建后可能被替换：OpenCanonicalRegularFile
+	// 复验「最终组件非 symlink + 全链解析仍等于持久化路径 + 普通文件」，
+	// 经 symlink 指向 root 外文件的路径在此拒绝。
+	f, info, err := filesafe.OpenCanonicalRegularFile(policy.LocalPath)
 	if err != nil {
-		// 竞态窗口：解析后文件被删除，按不存在处理。
+		// 与「策略不存在」同形返回 404，不泄露文件系统当前状态。
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}

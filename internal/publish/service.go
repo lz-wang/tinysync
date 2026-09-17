@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"time"
 
 	"tinysync/internal/filesafe"
@@ -175,25 +174,23 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	return s.repo.Delete(ctx, id)
 }
 
-// ResolveForRequest 把公开路径解析为当前可服务的本地文件：策略存在、
-// enabled、未过期、文件存在且仍是普通文件。任何不满足都返回裸
-// ErrNotFound——不区分「存在但禁止」与「不存在」，响应同形，减少
-// 资源信息泄露。返回策略与文件信息供 serving 打开。
-func (s *Service) ResolveForRequest(ctx context.Context, publicPath string) (PublishedFile, os.FileInfo, error) {
+// ResolveForRequest 把公开路径解析为当前可服务的策略：策略存在、
+// enabled、未过期。任何不满足都返回裸 ErrNotFound——不区分「存在
+// 但禁止」与「不存在」，响应同形，减少资源信息泄露。
+//
+// local_path 是创建时固化的 canonical 绝对路径；它可能在此之后被
+// 删除或替换为 symlink，文件系统层面的身份复验与打开统一交给
+// filesafe.OpenCanonicalRegularFile 在 serving 时完成——路径代数
+// 校验（创建时）与真实打开（serving 时）共用同一安全原语。
+func (s *Service) ResolveForRequest(ctx context.Context, publicPath string) (PublishedFile, error) {
 	policy, err := s.repo.GetByPublicPath(ctx, publicPath)
 	if err != nil {
-		return PublishedFile{}, nil, ErrNotFound
+		return PublishedFile{}, ErrNotFound
 	}
 	if !policy.Enabled || policy.Expired(s.Now()) {
-		return PublishedFile{}, nil, ErrNotFound
+		return PublishedFile{}, ErrNotFound
 	}
-	// local_path 是 canonical 绝对路径；serving 时重新校验——文件
-	// 可能已被删除或替换为 symlink / 目录。
-	info, err := os.Stat(policy.LocalPath)
-	if err != nil || !info.Mode().IsRegular() {
-		return PublishedFile{}, nil, ErrNotFound
-	}
-	return policy, info, nil
+	return policy, nil
 }
 
 // isManaged 判断逻辑路径（LocalRoot 内相对 slash 形式）是否在该 Job

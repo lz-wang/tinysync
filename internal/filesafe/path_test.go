@@ -235,3 +235,171 @@ func TestResolveWithinRootRejectsParentEscape(t *testing.T) {
 		}
 	}
 }
+
+// TestLstatWithinRoot：最终组件保留 Lstat 语义（symlink 可见），父
+// 目录组件中的 symlink 逃逸必须拒绝——父目录指向 root 外时，目标
+// 的存在性 / 类型 / size / mtime 都不得泄露。
+func TestLstatWithinRoot(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+
+	write := func(rel, content string) {
+		t.Helper()
+		abs := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", abs, err)
+		}
+		if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", abs, err)
+		}
+	}
+	write("docs/a.txt", "hello")
+	outsideFile := filepath.Join(outside, "secret.txt")
+	if err := os.WriteFile(outsideFile, []byte("secret"), 0o644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	link := func(link, target string) {
+		t.Helper()
+		if err := os.Symlink(target, filepath.Join(root, filepath.FromSlash(link))); err != nil {
+			t.Fatalf("symlink %s -> %s: %v", link, target, err)
+		}
+	}
+	link("inside-link.txt", "docs/a.txt")
+	link("escape", outside)
+
+	t.Run("regular file", func(t *testing.T) {
+		_, info, err := LstatWithinRoot(root, "/docs/a.txt")
+		if err != nil {
+			t.Fatalf("LstatWithinRoot regular file: %v", err)
+		}
+		if !info.Mode().IsRegular() || info.Size() != 5 {
+			t.Errorf("info = %v, want regular file size 5", info)
+		}
+	})
+
+	t.Run("root itself", func(t *testing.T) {
+		_, info, err := LstatWithinRoot(root, "/")
+		if err != nil || !info.IsDir() {
+			t.Errorf("LstatWithinRoot(/) = %v, %v; want directory", info, err)
+		}
+	})
+
+	t.Run("final symlink stays visible", func(t *testing.T) {
+		_, info, err := LstatWithinRoot(root, "/inside-link.txt")
+		if err != nil {
+			t.Fatalf("LstatWithinRoot symlink: %v", err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("info mode = %v, want symlink preserved", info.Mode())
+		}
+	})
+
+	t.Run("parent symlink escape rejected", func(t *testing.T) {
+		_, info, err := LstatWithinRoot(root, "/escape/secret.txt")
+		if info != nil || !errors.Is(err, ErrEscape) {
+			t.Errorf("parent escape = %v, %v; want ErrEscape", info, err)
+		}
+	})
+
+	t.Run("missing target", func(t *testing.T) {
+		_, _, err := LstatWithinRoot(root, "/docs/nope.txt")
+		if !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("missing target error = %v, want fs.ErrNotExist", err)
+		}
+	})
+
+	t.Run("missing parent", func(t *testing.T) {
+		_, _, err := LstatWithinRoot(root, "/no-such-dir/a.txt")
+		if !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("missing parent error = %v, want fs.ErrNotExist", err)
+		}
+	})
+}
+
+// TestOpenCanonicalRegularFile：canonical 路径在持久化之后被替换为
+// symlink（最终组件或任意父组件）时必须拒绝；普通文件经句柄二次
+// 确认后打开。
+func TestOpenCanonicalRegularFile(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+
+	file := filepath.Join(root, "a.txt")
+	if err := os.WriteFile(file, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	canonical, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("evalsymlinks root: %v", err)
+	}
+	target := filepath.Join(canonical, "a.txt")
+
+	t.Run("regular file opens", func(t *testing.T) {
+		f, info, err := OpenCanonicalRegularFile(target)
+		if err != nil {
+			t.Fatalf("OpenCanonicalRegularFile: %v", err)
+		}
+		defer func() { _ = f.Close() }()
+		if !info.Mode().IsRegular() || info.Size() != 5 {
+			t.Errorf("info = %v, want regular file size 5", info)
+		}
+	})
+
+	t.Run("missing file", func(t *testing.T) {
+		_, _, err := OpenCanonicalRegularFile(filepath.Join(canonical, "nope.txt"))
+		if !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("missing file error = %v, want fs.ErrNotExist", err)
+		}
+	})
+
+	t.Run("final component replaced by symlink", func(t *testing.T) {
+		outsideFile := filepath.Join(outside, "secret.txt")
+		if err := os.WriteFile(outsideFile, []byte("secret"), 0o644); err != nil {
+			t.Fatalf("write outside: %v", err)
+		}
+		victim := filepath.Join(canonical, "swap.txt")
+		if err := os.WriteFile(victim, []byte("x"), 0o644); err != nil {
+			t.Fatalf("write victim: %v", err)
+		}
+		if err := os.Remove(victim); err != nil {
+			t.Fatalf("remove victim: %v", err)
+		}
+		if err := os.Symlink(outsideFile, victim); err != nil {
+			t.Fatalf("symlink: %v", err)
+		}
+		_, _, err := OpenCanonicalRegularFile(victim)
+		if !errors.Is(err, ErrNotRegularFile) {
+			t.Errorf("final symlink error = %v, want ErrNotRegularFile", err)
+		}
+	})
+
+	t.Run("parent directory replaced by symlink", func(t *testing.T) {
+		// docs -> outside：持久化路径的中间组件成为 symlink，全链
+		// 解析结果偏离持久化形态，必须拒绝。symlink 目标下放置同名
+		// 普通文件，保证拒绝来自父组件逃逸而非最终组件缺失。
+		outsideFile := filepath.Join(outside, "inner.txt")
+		if err := os.WriteFile(outsideFile, []byte("s"), 0o644); err != nil {
+			t.Fatalf("write outside inner: %v", err)
+		}
+		dir := filepath.Join(canonical, "docs")
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatalf("mkdir docs: %v", err)
+		}
+		inner := filepath.Join(dir, "inner.txt")
+		if err := os.WriteFile(inner, []byte("x"), 0o644); err != nil {
+			t.Fatalf("write inner: %v", err)
+		}
+		if err := os.Remove(inner); err != nil {
+			t.Fatalf("remove inner: %v", err)
+		}
+		if err := os.Remove(dir); err != nil {
+			t.Fatalf("remove docs: %v", err)
+		}
+		if err := os.Symlink(outside, dir); err != nil {
+			t.Fatalf("symlink docs: %v", err)
+		}
+		_, _, err := OpenCanonicalRegularFile(inner)
+		if !errors.Is(err, ErrEscape) {
+			t.Errorf("parent symlink error = %v, want ErrEscape", err)
+		}
+	})
+}
