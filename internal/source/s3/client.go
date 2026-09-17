@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"path"
 	"strings"
 	"time"
@@ -202,7 +203,9 @@ func (r *remote) Stat(ctx context.Context, logicalPath string) (source.FileInfo,
 	if (out.KeyCount != nil && *out.KeyCount > 0) || len(out.Contents) > 0 || len(out.CommonPrefixes) > 0 {
 		return source.FileInfo{Path: cleaned, IsDir: true}, nil
 	}
-	return source.FileInfo{}, wrapOp("stat", logicalPath, fmt.Errorf("%w: object %s not found", source.ErrInvalid, logicalPath))
+	// not-found 双重标记：ErrInvalid 保持既有判定语义，fs.ErrNotExist
+	// 供上层（browser 404 映射）区分「不存在」与「非法路径」。
+	return source.FileInfo{}, wrapOp("stat", logicalPath, fmt.Errorf("%w: object %s not found (%w)", source.ErrInvalid, logicalPath, fs.ErrNotExist))
 }
 
 // List 实现 source.Remote：ListObjectsV2 + Delimiter="/" 只列一层，

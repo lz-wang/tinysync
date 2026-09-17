@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"tinysync/internal/browser"
 	"tinysync/internal/buildinfo"
 	"tinysync/internal/source"
 	"tinysync/internal/syncjob"
@@ -35,6 +36,7 @@ func NewRouter(webFS fs.FS, deps Dependencies) *gin.Engine {
 		api.GET("/version", handleVersion)
 		registerSourceRoutes(api, deps.Sources, deps.Jobs)
 		registerJobRoutes(api, deps.Jobs, deps.Runner)
+		registerRemoteFileRoutes(api, deps.Browser)
 	}
 	router.NoRoute(handleWeb(webFS))
 	return router
@@ -49,6 +51,8 @@ type Dependencies struct {
 	Jobs *syncjob.Service
 	// Runner 是手动运行的运行时状态；为 nil 时 run / status 端点不注册。
 	Runner *syncjob.Runner
+	// Browser 是文件浏览应用服务；为 nil 时不注册文件端点。
+	Browser *browser.RemoteService
 }
 
 // handleHealth 报告服务健康状态。

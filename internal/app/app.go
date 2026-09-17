@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"tinysync/internal/api"
+	"tinysync/internal/browser"
 	"tinysync/internal/config"
 	"tinysync/internal/logging"
 	"tinysync/internal/source"
@@ -74,10 +75,15 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 	runner.MaxConcurrentTransfers = cfg.MaxConcurrentTransfers
 	scheduler := syncjob.NewScheduler(jobRepo, runner, runs)
 
+	// 装配文件浏览：Remote 浏览复用 Source 服务的统一远端入口，
+	// 不引入第二套协议路径。
+	files := browser.NewRemoteService(sources)
+
 	server := api.NewServer(cfg, webFS, api.Dependencies{
 		Sources: sources,
 		Jobs:    jobs,
 		Runner:  runner,
+		Browser: files,
 	})
 
 	serveErr := make(chan error, 1)
