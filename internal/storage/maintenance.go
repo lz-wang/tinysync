@@ -134,6 +134,22 @@ func verifyIntegrity(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
+// CheckpointWal 执行 PRAGMA wal_checkpoint(TRUNCATE)：把 WAL 内容合并
+// 回主库并把 WAL 文件截断为零。用于干净关闭的收口——降低长期 WAL
+// 膨胀、改善备份与人工维护体验。正确性不依赖本函数：异常退出由
+// SQLite WAL recovery 保证；失败（如并发读者占用）原样返回错误，
+// 绝不尝试删除 WAL 文件。
+func CheckpointWal(ctx context.Context, db *sql.DB) error {
+	var busy, logPages, checkpointed int
+	if err := db.QueryRowContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &logPages, &checkpointed); err != nil {
+		return fmt.Errorf("wal_checkpoint(TRUNCATE): %w", err)
+	}
+	if busy != 0 {
+		return fmt.Errorf("wal_checkpoint(TRUNCATE): blocked by %d busy reader/writer(s)", busy)
+	}
+	return nil
+}
+
 // ManualBackupPath 为手动备份生成目标路径
 // <dataDir>/backups/tinysync-manual-<时间戳>-<随机后缀>.db，并确保
 // backups 子目录存在（0700）。时间戳仅秒级精度，随机后缀保证同秒内

@@ -154,15 +154,22 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 	}
 
 	logging.Infof("shutting down")
-	// 先停触发来源，再排空存量请求与运行。
+	// 优雅关闭顺序（v0.9 冻结契约）：停触发来源 → 取消在途运行并等待
+	// 终态落库 → 排空存量 HTTP 请求 → WAL checkpoint 收口 → 关闭 DB →
+	// 释放 datadir lock（后两步由 defer 完成）。异常退出不依赖
+	// checkpoint 保正确性，仍由 SQLite WAL recovery 保证。
 	scheduler.Stop()
+	if err := runner.Shutdown(context.Background()); err != nil {
+		return fmt.Errorf("shutdown sync runner: %w", err)
+	}
 	if err := server.Shutdown(context.Background()); err != nil {
 		return err
 	}
-	// 存量请求结束后取消仍在进行的同步运行并等待退出，
-	// 保证退出时没有遗留的传输 goroutine。
-	if err := runner.Shutdown(context.Background()); err != nil {
-		return fmt.Errorf("shutdown sync runner: %w", err)
+	// 运行终态已全部落库后截断 WAL：干净退出不留膨胀的 WAL 文件。
+	// 失败记录并使关闭以非零结果结束，但不尝试删除 WAL 文件。
+	if err := storage.CheckpointWal(context.Background(), db); err != nil {
+		logging.Errorf("wal checkpoint on shutdown: %v", err)
+		return fmt.Errorf("wal checkpoint: %w", err)
 	}
 	logging.Infof("bye")
 	return nil

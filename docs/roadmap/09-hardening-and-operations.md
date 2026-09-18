@@ -98,12 +98,12 @@ Shutdown → Release lock
 - [x] backup schema 较旧：restore 成功，下次 serve 正常向前 migration；
       backup schema 较新：拒绝恢复（不做 downgrade migration）
 - [x] serve 运行期间 restore 因 datadir lock 被拒绝
-- [ ] clean shutdown 顺序收口：停止触发 → 停 Scheduler → cancel/wait
+- [x] clean shutdown 顺序收口：停止触发 → 停 Scheduler → cancel/wait
       Runner → finalize run state → 停 HTTP → `PRAGMA
       wal_checkpoint(TRUNCATE)` → Close DB → release lock
-- [ ] checkpoint failure 记录日志并影响 graceful shutdown 结果；
+- [x] checkpoint failure 记录日志并影响 graceful shutdown 结果；
       绝不尝试删除 WAL 文件
-- [ ] unclean shutdown 依赖 SQLite WAL recovery 保证正确性，不依赖
+- [x] unclean shutdown 依赖 SQLite WAL recovery 保证正确性，不依赖
       checkpoint
 
 ## 4. Filesystem Portability & Safety
@@ -265,8 +265,8 @@ regression fixes、文档与发布为核心，不再大规模设计新机制。
 - [x] restore 前自动生成当前数据库 safety backup
 - [x] newer schema backup 拒绝恢复
 - [x] older schema restore 后可以正常向前迁移
-- [ ] clean shutdown WAL checkpoint 正常
-- [ ] unclean shutdown WAL recovery 正常
+- [x] clean shutdown WAL checkpoint 正常
+- [x] unclean shutdown WAL recovery 正常
 - [ ] path fuzz 无 panic / escape
 - [ ] symlink confinement 不回归
 - [ ] Windows invalid filename fail-fast

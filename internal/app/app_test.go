@@ -88,3 +88,57 @@ func TestRunFailsWhenDatabaseUnavailable(t *testing.T) {
 		t.Fatal("Run with unusable datadir = nil, want error")
 	}
 }
+
+// 优雅关闭收口：Run 正常返回后 WAL 被 checkpoint TRUNCATE 截断为零
+// （或不存在），且已提交数据经重新打开完好可读。
+func TestRunTruncatesWALOnGracefulShutdown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cfg := config.Default()
+	cfg.DataDir = t.TempDir()
+	bootstrapAdmin(t, cfg.DataDir)
+
+	// 预写一行业务数据制造 WAL 内容；连接在断言期间保持打开，
+	// 保证 -wal / -shm 文件存在可断言。
+	extra, err := storage.Open(cfg.DataDir)
+	if err != nil {
+		t.Fatalf("open extra connection: %v", err)
+	}
+	defer extra.Close()
+	if _, err := extra.Exec(`INSERT INTO sources
+		(id, name, type, endpoint, username, password, enabled, created_at, updated_at)
+		VALUES ('src_wal', 'wal-shutdown', 'webdav', 'https://example.com', '', 'pw', 1, 1, 1)`); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(ctx, cfg, fstest.MapFS{})
+	}()
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run graceful = %v, want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return after context cancellation")
+	}
+
+	walPath := filepath.Join(cfg.DataDir, "tinysync.db-wal")
+	info, err := os.Stat(walPath)
+	switch {
+	case os.IsNotExist(err):
+		// 最后一连接未落 WAL 时文件不存在，与零长度等价。
+	case err != nil:
+		t.Fatalf("stat wal: %v", err)
+	case info.Size() != 0:
+		t.Errorf("wal size after graceful shutdown = %d, want 0", info.Size())
+	}
+
+	// checkpoint 后已提交数据完好。
+	var count int
+	if err := extra.QueryRow("SELECT count(*) FROM sources WHERE id = 'src_wal'").Scan(&count); err != nil || count != 1 {
+		t.Errorf("data after shutdown checkpoint (count=%d err=%v)", count, err)
+	}
+}

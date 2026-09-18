@@ -236,6 +236,39 @@ func TestMigrateRefusesCorruptedDatabase(t *testing.T) {
 	assertVersion(t, reopened, 1)
 }
 
+// CheckpointWal 在有 WAL 内容时把 WAL 截断为零；正确性不依赖
+// checkpoint——关闭与否都不丢已提交事务。
+func TestCheckpointWalTruncates(t *testing.T) {
+	dataDir := t.TempDir()
+	dbPath := filepath.Join(dataDir, DatabaseFileName)
+	db := openMigrated(t, dataDir)
+
+	if _, err := db.Exec(`INSERT INTO sources
+		(id, name, type, endpoint, username, password, enabled, created_at, updated_at)
+		VALUES ('src_wal', 'wal-probe', 'webdav', 'https://example.com', '', 'pw', 1, 1, 1)`); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	// WAL 文件此时应存在（WAL 模式写入）。
+	if info, err := os.Stat(dbPath + "-wal"); err != nil || info.Size() == 0 {
+		t.Fatalf("wal file expected non-empty after write (err=%v)", err)
+	}
+
+	if err := CheckpointWal(context.Background(), db); err != nil {
+		t.Fatalf("CheckpointWal: %v", err)
+	}
+	if info, err := os.Stat(dbPath + "-wal"); err != nil {
+		t.Fatalf("stat wal after checkpoint: %v", err)
+	} else if size := info.Size(); size != 0 {
+		t.Errorf("wal size after TRUNCATE checkpoint = %d, want 0", size)
+	}
+
+	// 数据仍可读：checkpoint 不改变已提交内容。
+	var count int
+	if err := db.QueryRow("SELECT count(*) FROM sources WHERE id = 'src_wal'").Scan(&count); err != nil || count != 1 {
+		t.Errorf("data after checkpoint (count=%d err=%v)", count, err)
+	}
+}
+
 // corruptMiddlePage 覆盖文件第二个数据页（offset = 默认页大小 4096
 // 起）为 0xFF，制造保留 header 的页级损坏。文件不足两页时报错。
 func corruptMiddlePage(dbPath string) error {
