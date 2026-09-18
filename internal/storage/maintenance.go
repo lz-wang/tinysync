@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // IntegrityReport 是一次数据库完整性检查的结果汇总。
@@ -131,6 +132,33 @@ func verifyIntegrity(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("integrity check failed before migration: %d foreign key violation(s)", violations)
 	}
 	return nil
+}
+
+// ManualBackupPath 为手动备份生成目标路径
+// <dataDir>/backups/tinysync-manual-<时间戳>-<随机后缀>.db，并确保
+// backups 子目录存在（0700）。时间戳仅秒级精度，随机后缀保证同秒内
+// 的重试不会因目标已存在而冲突。
+func ManualBackupPath(dataDir string) (string, error) {
+	return backupPath(dataDir, "manual")
+}
+
+// PreRestoreBackupPath 为 restore 前的安全备份生成目标路径。
+func PreRestoreBackupPath(dataDir string) (string, error) {
+	return backupPath(dataDir, "prerestore")
+}
+
+// backupPath 生成 <dataDir>/backups/tinysync-<kind>-<时间戳>-<随机>.db。
+func backupPath(dataDir, kind string) (string, error) {
+	backupDir := filepath.Join(dataDir, backupsDirName)
+	if err := os.MkdirAll(backupDir, 0o700); err != nil {
+		return "", fmt.Errorf("create backup dir %s: %w", backupDir, err)
+	}
+	suffix, err := randomHex(4)
+	if err != nil {
+		return "", fmt.Errorf("generate backup suffix: %w", err)
+	}
+	name := fmt.Sprintf("tinysync-%s-%s-%s.db", kind, time.Now().Format("20060102T150405"), suffix)
+	return filepath.Join(backupDir, name), nil
 }
 
 // quickCheck 执行 PRAGMA quick_check：健康时返回单行 "ok"；损坏时

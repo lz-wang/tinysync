@@ -27,6 +27,14 @@ GitHub Release 摘要一致。
   `<datadir>/tinysync.lock` 独占锁（POSIX flock / Windows LockFileEx），
   同一数据目录的第二个实例启动立即失败并说明占用情况，进程异常退出
   后由操作系统自动释放锁；不同数据目录的实例可并存。
+- 新增数据库维护命令：`tinysync db check`（quick_check / 外键 /
+  schema 版本完整性报告）、`tinysync db backup`（VACUUM INTO 一致性
+  快照写入 `<datadir>/backups/`，POSIX 权限 0600）与
+  `tinysync db restore --from <file> --force`（离线恢复：先校验备份、
+  自动生成当前库 safety backup、staging + fsync 后原子替换并清理遗留
+  WAL）。三个命令与 `serve` 互斥执行（同一把 datadir 锁）；schema
+  比当前二进制新的备份拒绝恢复，较旧的备份恢复后由下次 `serve` 正常
+  向前迁移。数据库迁移前的自动备份行为不变。
 
 ## [0.8.0] - 2026-09-18
 

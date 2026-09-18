@@ -31,8 +31,9 @@ func TestNewCommand(t *testing.T) {
 	for _, c := range root.Commands {
 		names = append(names, c.Name)
 	}
-	// serve 为主命令、auth 承载凭据管理、version 子命令同 --version。
-	if want := []string{"serve", "auth", "version"}; !reflect.DeepEqual(names, want) {
+	// serve 为主命令、auth 承载凭据管理、db 承载数据库维护、version
+	// 子命令同 --version。
+	if want := []string{"serve", "auth", "version", "db"}; !reflect.DeepEqual(names, want) {
 		t.Errorf("Commands = %v, want %v", names, want)
 	}
 

@@ -9,12 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // randomHex 返回 n 字节 cryptographically 随机数据的 hex 编码，
@@ -172,16 +169,9 @@ func hasUserTables(ctx context.Context, db *sql.DB) (bool, error) {
 // <dataDir>/backups/tinysync-v<fromVersion>-<时间戳>-<随机后缀>.db。
 // 时间戳仅秒级精度，随机后缀保证同秒内的失败重试不会因目标已存在而冲突。
 func backupDatabase(ctx context.Context, db *sql.DB, dataDir string, fromVersion int) error {
-	backupDir := filepath.Join(dataDir, backupsDirName)
-	if err := os.MkdirAll(backupDir, 0o700); err != nil {
-		return fmt.Errorf("create backup dir %s: %w", backupDir, err)
-	}
-	suffix, err := randomHex(4)
+	target, err := backupPath(dataDir, fmt.Sprintf("v%d", fromVersion))
 	if err != nil {
-		return fmt.Errorf("generate backup suffix: %w", err)
+		return err
 	}
-	name := fmt.Sprintf("tinysync-v%d-%s-%s.db",
-		fromVersion, time.Now().Format("20060102T150405"), suffix)
-	target := filepath.Join(backupDir, name)
 	return Backup(ctx, db, target)
 }

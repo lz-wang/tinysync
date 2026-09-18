@@ -25,7 +25,7 @@
 - [x] 锁通过 OS 级 file lock 实现（POSIX flock / Windows LockFileEx），
       不以「文件存在」判定；crash 后由 OS 自动释放，lock 文件本身可保留
 - [x] pure Go / `CGO_ENABLED=0`，POSIX 与 Windows 均支持
-- [ ] `tinysync db check|backup|restore` 复用同一把 datadir lock
+- [x] `tinysync db check|backup|restore` 复用同一把 datadir lock
 
 ```text
 CLI parse datadir
@@ -87,17 +87,17 @@ Shutdown → Release lock
 - [x] `quick_check != ok`、外键违规、schema 比 binary 新 → 显式失败；
       不自动「修复」数据库，不静默忽略 corruption
 - [x] Migrate 之前先做 integrity check：已损坏的数据库不再继续 migration
-- [ ] operator 命令：`tinysync db check` / `tinysync db backup` /
+- [x] operator 命令：`tinysync db check` / `tinysync db backup` /
       `tinysync db restore --from <file> --force`，全部持有 datadir lock
-- [ ] backup 默认输出 `<datadir>/backups/tinysync-manual-<时间戳>-<随机>.db`
+- [x] backup 默认输出 `<datadir>/backups/tinysync-manual-<时间戳>-<随机>.db`
       （一致性 snapshot，不是裸复制主库文件），POSIX 权限 0600
-- [ ] restore 流程：validate source backup（quick_check / foreign_key_check /
+- [x] restore 流程：validate source backup（quick_check / foreign_key_check /
       user_version ≤ supported）→ 备份当前 DB（pre-restore safety
       backup）→ 同目录 staging 文件 + fsync → 替换数据库 → 清理遗留
       -wal / -shm → reopen + integrity check
-- [ ] backup schema 较旧：restore 成功，下次 serve 正常向前 migration；
+- [x] backup schema 较旧：restore 成功，下次 serve 正常向前 migration；
       backup schema 较新：拒绝恢复（不做 downgrade migration）
-- [ ] serve 运行期间 restore 因 datadir lock 被拒绝
+- [x] serve 运行期间 restore 因 datadir lock 被拒绝
 - [ ] clean shutdown 顺序收口：停止触发 → 停 Scheduler → cancel/wait
       Runner → finalize run state → 停 HTTP → `PRAGMA
       wal_checkpoint(TRUNCATE)` → Close DB → release lock
@@ -260,11 +260,11 @@ regression fixes、文档与发布为核心，不再大规模设计新机制。
 - [ ] transfer timeout 可配置且默认保持兼容行为
 - [x] SQLite quick_check / foreign_key_check 可执行
 - [x] migration 前 corruption 不继续迁移
-- [ ] operator 可以生成一致性数据库备份
-- [ ] operator 可以离线恢复备份
-- [ ] restore 前自动生成当前数据库 safety backup
-- [ ] newer schema backup 拒绝恢复
-- [ ] older schema restore 后可以正常向前迁移
+- [x] operator 可以生成一致性数据库备份
+- [x] operator 可以离线恢复备份
+- [x] restore 前自动生成当前数据库 safety backup
+- [x] newer schema backup 拒绝恢复
+- [x] older schema restore 后可以正常向前迁移
 - [ ] clean shutdown WAL checkpoint 正常
 - [ ] unclean shutdown WAL recovery 正常
 - [ ] path fuzz 无 panic / escape

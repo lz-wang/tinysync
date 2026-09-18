@@ -100,6 +100,52 @@ func NewCommand(webFS fs.FS) *cli.Command {
 					return nil
 				},
 			},
+			{
+				Name:  "db",
+				Usage: "数据库维护（check / backup / restore）",
+				Commands: []*cli.Command{
+					{
+						Name:  "check",
+						Usage: "检查数据库完整性（quick_check / 外键 / schema 版本）",
+						Flags: []cli.Flag{datadirFlag()},
+						Action: func(ctx context.Context, c *cli.Command) error {
+							return execDBCheck(ctx, dbInput{DataDir: c.String("datadir")}, os.Stdout, os.Stderr)
+						},
+					},
+					{
+						Name:  "backup",
+						Usage: "生成数据库一致性备份（VACUUM INTO 快照，非裸复制）",
+						Flags: []cli.Flag{datadirFlag()},
+						Action: func(ctx context.Context, c *cli.Command) error {
+							return execDBBackup(ctx, dbInput{DataDir: c.String("datadir")}, os.Stdout, os.Stderr)
+						},
+					},
+					{
+						Name: "restore",
+						Usage: "从备份离线恢复数据库（破坏性：先备份当前库再替换；" +
+							"schema 较新拒绝，较旧下次 serve 向前迁移）",
+						Flags: []cli.Flag{
+							datadirFlag(),
+							&cli.StringFlag{
+								Name:     "from",
+								Usage:    "备份文件路径（tinysync db backup 或迁移自动备份产出）",
+								Required: true,
+							},
+							&cli.BoolFlag{
+								Name:  "force",
+								Usage: "确认破坏性替换当前数据库",
+							},
+						},
+						Action: func(ctx context.Context, c *cli.Command) error {
+							return execDBRestore(ctx, dbInput{
+								DataDir: c.String("datadir"),
+								From:    c.String("from"),
+								Force:   c.Bool("force"),
+							}, os.Stdout, os.Stderr)
+						},
+					},
+				},
+			},
 		},
 	}
 }
@@ -183,6 +229,16 @@ func readPassword(fromStdin bool, stdin io.Reader, stderr io.Writer) (string, er
 		return "", errors.New("两次输入的密码不一致")
 	}
 	return string(first), nil
+}
+
+// datadirFlag 是离线命令（auth / db）共享的 --datadir 参数。
+func datadirFlag() cli.Flag {
+	return &cli.StringFlag{
+		Name:    "datadir",
+		Usage:   "运行时数据根目录",
+		Value:   config.DefaultDataDir,
+		Sources: cli.EnvVars("TINYSYNC_DATADIR"),
+	}
 }
 
 // serveFlags 是 serve 子命令的启动参数：datadir、port 与并发上限。
