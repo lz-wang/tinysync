@@ -248,14 +248,15 @@ func TestDownloadRejectsSymlinkTarget(t *testing.T) {
 	}
 }
 
-// assertNoTempFiles 断言目录树中没有遗留的 .tinysync-part- 临时文件。
+// assertNoTempFiles 断言目录树中没有遗留的传输临时文件（严格匹配
+// Downloader 真实生成的临时文件名形态）。
 func assertNoTempFiles(t *testing.T, root string) {
 	t.Helper()
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if strings.Contains(d.Name(), ".tinysync-part-") {
+		if isTransferTempName(d.Name()) {
 			t.Errorf("temp file left behind: %s", path)
 		}
 		return nil

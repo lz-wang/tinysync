@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"tinysync/internal/source"
@@ -224,4 +225,20 @@ func newTempPath(target string) (string, error) {
 		return "", fmt.Errorf("generate temp suffix: %w", err)
 	}
 	return filepath.Join(filepath.Dir(target), tempPrefix+hex.EncodeToString(buf)), nil
+}
+
+// isTransferTempName 判断文件名是否为 Downloader 真实生成的临时文件
+// 名形态：tempPrefix + 6 字节 hex（固定 12 个十六进制字符）。crash
+// 清理只删除严格匹配的文件——前缀相同但后缀不是 12 位 hex 的名字
+// （如 .tinysync-part-notes）可能是合法用户文件，不得误删。
+func isTransferTempName(name string) bool {
+	suffix, ok := strings.CutPrefix(name, tempPrefix)
+	if !ok {
+		return false
+	}
+	if len(suffix) != 12 {
+		return false
+	}
+	_, err := hex.DecodeString(suffix)
+	return err == nil
 }

@@ -7,9 +7,11 @@ import (
 	"testing"
 )
 
-// 只删除与内部临时前缀匹配的普通文件：其它隐藏文件、symlink、
-// 目录（即使同名前缀）与合法文件一概不动；嵌套子目录内的遗留
-// 同样清理；LocalRoot 不存在静默跳过。
+// 只删除与 Downloader 实际生成的临时文件名（.tinysync-part- + 12 位
+// hex）严格匹配的普通文件；其余同名前缀变体（裸前缀、6 位 hex、非
+// hex、带扩展名）可能是合法用户文件，一概保留。symlink、目录（即使
+// 同名前缀）与无关隐藏文件同样不动；嵌套子目录内的遗留同样清理；
+// LocalRoot 不存在静默跳过。
 func TestRemoveStaleTempFiles(t *testing.T) {
 	root := t.TempDir()
 	nested := filepath.Join(root, "videos", "movies")
@@ -26,8 +28,15 @@ func TestRemoveStaleTempFiles(t *testing.T) {
 			t.Fatalf("write %s: %v", rel, err)
 		}
 	}
-	write("docs/.tinysync-part-abc123", "stale temp")
-	write(filepath.Join("videos", "movies", ".tinysync-part-ff0099"), "stale temp nested")
+	// 真实 Downloader 形态（tempPrefix + 6 字节 hex）。
+	write("docs/.tinysync-part-0123456789ab", "stale temp")
+	write(filepath.Join("videos", "movies", ".tinysync-part-fedcba987654"), "stale temp nested")
+	// 伪装成临时文件的合法用户文件：一律保留。
+	write("docs/.tinysync-part-", "bare prefix")
+	write("docs/.tinysync-part-abc123", "user file with only 6 hex chars")
+	write("docs/.tinysync-part-notes", "user file with non-hex suffix")
+	write("docs/.tinysync-part-0123456789ag", "user file with non-hex char")
+	write("docs/.tinysync-part-0123456789ab.txt", "user file with extra suffix")
 	write("docs/.tinysync-other", "unrelated hidden file")
 	write("docs/keep.tinysync-part-x", "regular file whose name merely contains the prefix")
 	write("docs/normal.txt", "real content")
@@ -45,13 +54,18 @@ func TestRemoveStaleTempFiles(t *testing.T) {
 	if removed != 2 {
 		t.Errorf("removed = %d, want 2", removed)
 	}
-	if _, err := os.Stat(filepath.Join(root, "docs", ".tinysync-part-abc123")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(root, "docs", ".tinysync-part-0123456789ab")); !os.IsNotExist(err) {
 		t.Errorf("stale temp file survived: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(nested, ".tinysync-part-ff0099")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(nested, ".tinysync-part-fedcba987654")); !os.IsNotExist(err) {
 		t.Errorf("stale nested temp file survived: %v", err)
 	}
 	for _, keep := range []string{
+		"docs/.tinysync-part-",
+		"docs/.tinysync-part-abc123",
+		"docs/.tinysync-part-notes",
+		"docs/.tinysync-part-0123456789ag",
+		"docs/.tinysync-part-0123456789ab.txt",
 		"docs/.tinysync-other",
 		"docs/keep.tinysync-part-x",
 		"docs/normal.txt",
@@ -60,6 +74,32 @@ func TestRemoveStaleTempFiles(t *testing.T) {
 	} {
 		if _, err := os.Stat(filepath.Join(root, keep)); err != nil {
 			t.Errorf("decoy %s was removed: %v", keep, err)
+		}
+	}
+}
+
+// isTransferTempName 严格匹配 Downloader 真实生成的临时文件名形态。
+func TestIsTransferTempName(t *testing.T) {
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{".tinysync-part-0123456789ab", true},
+		{".tinysync-part-fedcba987654", true},
+		{".tinysync-part-", false},                 // 裸前缀
+		{".tinysync-part-abc123", false},           // 只有 6 位 hex
+		{".tinysync-part-0123456789", false},       // 只有 10 位 hex
+		{".tinysync-part-0123456789abc", false},    // 13 位
+		{".tinysync-part-0123456789ag", false},     // 含非 hex 字符
+		{".tinysync-part-0123456789ab.txt", false}, // 带扩展名
+		{".tinysync-part-notes", false},            // 用户文件
+		{".tinysync-other", false},                 // 其它隐藏文件
+		{"normal.txt", false},                      // 无前缀
+		{"", false},                                // 空名
+	}
+	for _, tc := range cases {
+		if got := isTransferTempName(tc.name); got != tc.want {
+			t.Errorf("isTransferTempName(%q) = %v, want %v", tc.name, got, tc.want)
 		}
 	}
 }

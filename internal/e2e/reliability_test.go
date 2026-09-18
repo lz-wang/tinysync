@@ -397,7 +397,7 @@ func TestCrashRecoveryConvergesAfterRestart(t *testing.T) {
 
 	// 注入 crash 遗留状态：遗留临时文件 + pending managed 记录 +
 	// running 运行记录（进程在运行中死亡）。
-	tempPath := filepath.Join(localRoot, ".tinysync-part-deadbeef")
+	tempPath := filepath.Join(localRoot, ".tinysync-part-deadbeefcafe")
 	if err := os.WriteFile(tempPath, []byte("half-written"), 0o644); err != nil {
 		t.Fatalf("write temp: %v", err)
 	}
