@@ -354,12 +354,35 @@ func isNotFoundToErr(err error) error {
 }
 
 // wrapOp 为底层错误补充操作与路径上下文；ctx 超时/取消经 %w 保持
-// 可判定。
+// 可判定。协议错误分类在 adapter boundary 内完成（classifyS3Error）。
 func wrapOp(op, logicalPath string, err error) error {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
-	return fmt.Errorf("s3 %s %s: %w", op, logicalPath, err)
+	return fmt.Errorf("s3 %s %s: %w", op, logicalPath, classifyS3Error(err))
+}
+
+// classifyS3Error 按协议语义标记错误：NoSuchKey / NotFound（对象或
+// 服务不存在）与 401 / 403（认证、授权）为 permanent；408 / 429 / 5xx
+// （请求超时、限流、瞬时服务故障）为 transient；其余错误不带标记，
+// 由 source.IsRetryable 的通用规则兜底（默认 transient）。
+func classifyS3Error(err error) error {
+	if err == nil {
+		return nil
+	}
+	if isNotFound(err) {
+		return source.MarkPermanent(err)
+	}
+	var respErr interface{ HTTPStatusCode() int }
+	if errors.As(err, &respErr) {
+		switch code := respErr.HTTPStatusCode(); {
+		case code == 401 || code == 403:
+			return source.MarkPermanent(err)
+		case code == 408 || code == 429 || code >= 500:
+			return source.MarkTransient(err)
+		}
+	}
+	return err
 }
 
 func derefStr(p *string) string {

@@ -87,10 +87,11 @@ func normalizeHrefPrefix(endpointPath string) string {
 
 // newHTTPClient 构造带安全边界的 HTTP 客户端：
 // Transport 分段超时、最多 5 次重定向、拒绝跨 host 重定向（避免凭据外流）、
-// 拒绝 HTTPS 到 HTTP 的降级重定向。
+// 拒绝 HTTPS 到 HTTP 的降级重定向；错误响应在 transport 层转为带
+// 分类标记的协议错误（见 classifyingTransport）。
 func newHTTPClient() *http.Client {
 	return &http.Client{
-		Transport:     newHTTPTransport(responseHeaderTimeout),
+		Transport:     &classifyingTransport{base: newHTTPTransport(responseHeaderTimeout)},
 		CheckRedirect: redirectPolicy,
 	}
 }
@@ -251,4 +252,54 @@ func wrapOp(op, path string, err error) error {
 		return err
 	}
 	return fmt.Errorf("webdav %s %s: %w", op, path, err)
+}
+
+// webdavStatusError 是 transport 层捕获的 HTTP 错误响应：go-webdav
+// 的错误类型位于 internal 包、外部无法按类型判定状态码，因此本
+// adapter 在自己的 RoundTripper 边界把 ≥400 的响应转为本类型，协议
+// 错误分类据此完成（adapter boundary 之外只见 source 错误语义）。
+type webdavStatusError struct {
+	code int
+}
+
+func (e *webdavStatusError) Error() string {
+	return fmt.Sprintf("webdav: http status %d %s", e.code, http.StatusText(e.code))
+}
+
+// classifyWebDAVStatus 按状态码分类并标记：401 / 403（认证、授权）
+// 与 404（目标不存在）为 permanent；408 / 429 / 5xx（请求超时、限流、
+// 服务端故障）为 transient；其余状态不带标记，由通用规则兜底。
+func classifyWebDAVStatus(code int) error {
+	err := &webdavStatusError{code: code}
+	switch {
+	case code == http.StatusUnauthorized || code == http.StatusForbidden || code == http.StatusNotFound:
+		return source.MarkPermanent(err)
+	case code == http.StatusRequestTimeout || code == http.StatusTooManyRequests || code >= 500:
+		return source.MarkTransient(err)
+	}
+	return err
+}
+
+// classifyingTransport 在 transport 层把 ≥400 的 HTTP 响应转换为带
+// 分类标记的错误。对 read-only 用途（PROPFIND / GET）等价：原本
+// go-webdav 也会把这些状态转为操作失败，只是错误类型不可外部判定。
+type classifyingTransport struct {
+	base http.RoundTripper
+}
+
+// RoundTrip 实现 http.RoundTripper：正常响应原样返回，错误响应在
+// 排空并关闭 body（让连接可复用）后转为分类错误。
+func (t *classifyingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
+	if err != nil {
+		// transport 层错误（连接重置、超时等）不带状态码，分类交给
+		// source.IsRetryable 的通用传输层规则。
+		return nil, err
+	}
+	if resp.StatusCode >= http.StatusBadRequest {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+		return nil, classifyWebDAVStatus(resp.StatusCode)
+	}
+	return resp, nil
 }

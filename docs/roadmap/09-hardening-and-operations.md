@@ -53,7 +53,7 @@ Shutdown → Release lock
 
 ### Goals
 
-- [ ] 重试分类：只重试 transient error；协议错误判断只能在 adapter
+- [x] 重试分类：只重试 transient error；协议错误判断只能在 adapter
       boundary 内完成（`internal/syncjob` 不出现协议分支）
 - [ ] permanent error（401 / 403 / 404、invalid path、host-key mismatch、
       invalid credentials、本地 permission / ENOSPC、path safety violation、

@@ -140,12 +140,13 @@ func authMethod(cfg source.SFTPConfig, creds source.SFTPCredentials) (ssh.AuthMe
 }
 
 // fingerprintCallback 返回严格比较 SHA256 fingerprint 的 HostKeyCallback；
-// expected 必须是 SHA256:<base64> 形式（校验层保证）。
+// expected 必须是 SHA256:<base64> 形式（校验层保证）。host key 不匹配
+// 标记为 permanent：重连不会改变对端密钥，重试无意义。
 func fingerprintCallback(expected string) ssh.HostKeyCallback {
 	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
 		got := ssh.FingerprintSHA256(key)
 		if got != expected {
-			return fmt.Errorf("host key fingerprint mismatch for %s: got %s, want %s", hostname, got, expected)
+			return source.MarkPermanent(fmt.Errorf("host key fingerprint mismatch for %s: got %s, want %s", hostname, got, expected))
 		}
 		return nil
 	}

@@ -90,14 +90,20 @@ func TestBodyTransferNotLimitedByHeaderTimeout(t *testing.T) {
 
 // Factory 构造的客户端不得设置整体 Client.Timeout（它会覆盖整个
 // response body 生命周期、砍断大文件下载）；分段超时全部就位。
+// Transport 为分类包装层（错误响应 → 协议错误分类），底层仍是
+// 分段超时的 *http.Transport。
 func TestHTTPClientContract(t *testing.T) {
 	c := newHTTPClient()
 	if c.Timeout != 0 {
 		t.Errorf("Client.Timeout = %v, want 0 (whole-request timeout must not cut downloads)", c.Timeout)
 	}
-	tr, ok := c.Transport.(*http.Transport)
+	classifier, ok := c.Transport.(*classifyingTransport)
 	if !ok {
-		t.Fatalf("Transport = %T, want *http.Transport", c.Transport)
+		t.Fatalf("Transport = %T, want *classifyingTransport", c.Transport)
+	}
+	tr, ok := classifier.base.(*http.Transport)
+	if !ok {
+		t.Fatalf("inner transport = %T, want *http.Transport", classifier.base)
 	}
 	if tr.ResponseHeaderTimeout <= 0 {
 		t.Errorf("ResponseHeaderTimeout = %v, want positive", tr.ResponseHeaderTimeout)
