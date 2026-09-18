@@ -119,6 +119,55 @@ raw token 与 SHA-256 摘要绝不出现。
 v0.6 的匿名脚本访问自 v0.7 起必须携带 Bearer Token；
 `/published/*path` 公开语义不受升级影响。
 
+## MCP（Agent / LLM 接入）
+
+TinySync 提供 MCP（Model Context Protocol）Streamable HTTP 端点，
+Agent / LLM 可以发现同步源、查询任务、触发同步、检索同步文件并
+读取小型文本。MCP 复用应用服务与 API Token 认证，不提供任何配置
+修改能力。
+
+```text
+Endpoint:  https://tinysync.example/mcp
+Auth:      Authorization: Bearer ts_xxx（API Token，Web Session 无效）
+```
+
+通用客户端配置示例：
+
+```json
+{
+  "url": "https://tinysync.example/mcp",
+  "headers": {
+    "Authorization": "Bearer ts_xxx"
+  }
+}
+```
+
+推荐给普通 Agent 使用 `read` + `run`（双 scope）token。
+
+Scope 与 MCP 能力的对应：
+
+| Scope | MCP 能力 |
+| --- | --- |
+| `read` | 查询资源与文件、读取小型文本 resource、下载文件 |
+| `run` | 触发同步（`run_sync`，不含 read） |
+| `read` + `run` | 推荐：普通 Agent 完整工作流 |
+| `admin` | MCP v0.8 没有 admin-only tool |
+
+提供 7 个只读/执行 tools：`list_sources`、`list_jobs`、`get_job`、
+`run_sync`（只接受已配置的 `job_id`；mirror Job 可能删除远端已
+消失的本地文件）、`get_sync_run`、`search_files`（Job 命名空间内
+的已同步文件检索）、`get_file_info`。
+
+小型文本以 resource 形式内联读取（≤ 256 KiB、UTF-8、仅普通文件）：
+
+```text
+tinysync://jobs/{job_id}/files/{path}
+```
+
+binary 与大文件不经 MCP 搬运：`get_file_info` 返回 relative
+`download_url`，客户端携带同一 Bearer token 请求现有
+`/api/v1/jobs/:id/files/download`（支持 Range 断点）。
+
 ## Sources：多协议同步源
 
 Source 配置按协议分为非敏感 `config` 与 secret `credentials` 两组；

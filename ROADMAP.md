@@ -19,7 +19,7 @@ Local Files）、调度及同步历史链路（自动触发、持久化运行历
 并发控制）、文件浏览及发布链路（Remote / Local 浏览、Publish
 Policy、`/published/*path` 公开 serving）与认证及 API Token 链路
 （单一 Local Admin、Web Session、scoped API Token、REST
-default-deny）已完成实现并发布；MCP 尚未实现。
+default-deny）已完成实现并发布；MCP 已完成实现待发布。
 
 ## 当前状态与优先级
 
@@ -31,7 +31,10 @@ default-deny）已完成实现并发布；MCP 尚未实现。
 - **已发布**：认证与 API Token（单一 Local Admin、Argon2id 密码
   凭据与 CLI bootstrap、Web Session、scoped API Token、REST
   default-deny 与 CSRF 防护）。
-- **尚未实现**：MCP。
+- **已完成实现待发布**：MCP 集成（`POST /mcp` Streamable HTTP、
+  固定 `2026-07-28` sessionless、API Token Bearer、7 tools、
+  managed 文件搜索、小型 UTF-8 resource、大文件经现有 HTTP）。
+- **尚未实现**：无（v0.9 可靠性与运维未开始）。
 
 v0.2.0 持久化与 Source 管理已发布：远端 Release workflow 成功（2026-09-15），
 六平台发行档与 `checksums.txt` 核对到位，WebDAV 镜像与通知独立验收通过。
@@ -121,6 +124,28 @@ v0.7.0 认证与 API Token 已正式发布（2026-09-18）：tag `v0.7.0`
 Release checks / 三平台 native smoke / MinIO integration 全绿，
 六平台发行档与 `checksums.txt` 核对到位，WebDAV 镜像
 （Mirror release to WebDAV step）与 Pushover 通知独立验收通过。
+v0.8.0 MCP 集成已完成实现（2026-09-18）：`internal/mcp` adapter
+挂接 composition root，`POST /mcp` 使用官方 Go MCP SDK v1.8.0
+Streamable HTTP（stateless、JSON 响应、请求体 1 MiB、
+CrossOriginProtection 与 localhost DNS-rebinding 防护），认证链
+RequireBearerToken → TokenVerifier → auth.Service 完全复用 API
+Token（中间件不设全局 scope，per-tool authorization：read tools
+与 resource 用 read、run_sync 用 run、run ⇏ read 保持）；7 个
+tools（list_sources / list_jobs / get_job / run_sync /
+get_sync_run / search_files / get_file_info）经应用服务查询，
+MCP DTO 冻结 wire contract，secret 与 raw token 不进入返回；
+browser.LocalService.SearchManaged 提供应用层 managed 文件搜索
+（Job namespace、synced only、大小写不敏感子串、默认 50 上限
+200、Stat 实时校验）；resource `tinysync://jobs/{job_id}/files/
+{path}` 只承载 ≤256 KiB UTF-8 普通文件（LimitReader(max+1) 独立
+兜底）；大文件复用现有 download 端点（relative URL、同一 Bearer
+token、Range/HEAD 不回归）；cacheScope=private、ttlMs=0；
+Runner 启动错误映射为可判定 tool error；无数据库 migration。
+本地验证 `make check` / `make build` 全绿，native smoke 补充
+认证 MCP 存活检查并在 macOS 实测通过（2026-07-28 sessionless
+请求形态 + 旧版本头 400），MCP E2E 覆盖认证矩阵、授权矩阵、
+run 生命周期（HTTP 请求结束不取消运行）、文件发现、resource
+与 Range 下载。状态保持「已完成实现」，待打 tag 发布。
 
 ## 架构与边界
 
@@ -149,7 +174,7 @@ Release checks / 三平台 native smoke / MinIO integration 全绿，
 | v0.5.0 | [S3 与 SFTP](docs/roadmap/05-s3-and-sftp.md) | 已完成实现 | 同一同步引擎支持三种协议，上层不依赖协议分支 |
 | v0.6.0 | [文件浏览与发布](docs/roadmap/06-file-browser-and-publishing.md) | 已发布 | 只读远端浏览、本地下载与选择性 HTTP 发布，限制访问根目录 |
 | v0.7.0 | [认证与 API Token](docs/roadmap/07-authentication-and-tokens.md) | 已发布 | 单一 Local Admin + Web Session + scoped API Token，REST default-deny 与 CSRF 防护 |
-| v0.8.0 | [MCP 集成](docs/roadmap/08-mcp-integration.md) | 契约冻结 | 复用应用服务与鉴权，查询/运行任务，大文件经 HTTP 获取 |
+| v0.8.0 | [MCP 集成](docs/roadmap/08-mcp-integration.md) | 已完成实现 | 复用应用服务与鉴权，查询/运行任务，大文件经 HTTP 获取 |
 | v0.9.0 | [可靠性与运维](docs/roadmap/09-hardening-and-operations.md) | 规划 | 恢复、安全、协议兼容、跨平台、性能及回归验证具备证据 |
 | v1.0.0 | [单节点稳定版](docs/roadmap/10-stable-release.md) | 规划 | 多协议端到端同步、升级/恢复及完整质量门禁通过 |
 

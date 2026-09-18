@@ -19,6 +19,34 @@ GitHub Release 摘要一致。
 
 内部重构、测试、构建和文档维护不进入发布摘要，除非它们直接交付新特性或修复用户可见故障。
 
+## [Unreleased]
+
+### 新增
+
+- 新增 MCP Streamable HTTP 端点 `POST /mcp`（官方 Go MCP SDK、
+  固定 `2026-07-28` 协议、stateless、JSON 响应、请求体上限
+  1 MiB）：Agent / LLM 可查询与执行 TinySync，完全复用现有
+  API Token 认证（`Authorization: Bearer`，Web Session 无效）与
+  `read` / `run` / `admin` scope，跨源与 DNS rebinding 防护启用。
+- 新增 7 个 MCP tools：`list_sources` / `list_jobs` / `get_job`
+  （只读发现，secret 永不返回）、`run_sync`（只接受已配置的
+  `job_id`，异步返回 `run_id`，标注 destructive-capable）、
+  `get_sync_run`（状态 / 统计 / 失败原因）、`search_files` 与
+  `get_file_info`（本地同步文件发现）；不提供任何配置修改类
+  tool。
+- 新增本地同步文件搜索：以 Job 为命名空间、从 `managed_files`
+  检索已同步文件（大小写不敏感子串匹配，默认 50 条、上限
+  200 条，带截断标记），返回前经 filesafe 边界获取当前实际文件
+  状态；本地已删除的记录不返回。
+- 新增小型文本 MCP resource：`tinysync://jobs/{job_id}/files/{path}`
+  仅承载 ≤ 256 KiB 的 UTF-8 普通文件（读取上限独立兜底，目录 /
+  symlink / binary 一律拒绝），缓存策略为 `cacheScope=private`、
+  `ttlMs=0`。
+- 大文件不经 MCP 搬运：`get_file_info` 返回 relative
+  `download_url`，客户端携带同一 Bearer token 走现有
+  `/api/v1/jobs/:id/files/download`（Range / HEAD 行为不变），
+  不产生匿名临时链接。
+
 ## [0.7.0] - 2026-09-18
 
 ### 新增

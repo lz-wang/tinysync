@@ -108,6 +108,13 @@ JSONResponse: true
 - `StreamableHTTPOptions{Stateless: true, JSONResponse: true,
   PropagateRequestCancellation: true, MaxRequestBodyBytes: 1 << 20}`。
   请求体超过 1 MiB 返回 413。
+- `2026-07-28` 为 sessionless 协议：直接调用（不经 initialize）
+  的请求需携带 `MCP-Protocol-Version: 2026-07-28` 与 `Mcp-Method`
+  头（`tools/call` / `resources/read` 另需 `Mcp-Name`），并在
+  `params._meta` 携带 per-request triple（`protocolVersion` +
+  `clientCapabilities`）；带旧版本 `MCP-Protocol-Version` 头的
+  请求一律 400。旧式 `initialize` 请求保持兼容（SDK 对 legacy
+  initialize 响应 `2025-11-25`），官方 client 以此完成连接握手。
 - 显式启用 Go 标准库 `http.NewCrossOriginProtection()` 包裹 handler
   （SDK 的 options 字段已 deprecated，不依赖其默认值）；SDK 的
   localhost DNS-rebinding protection 保持默认启用。
