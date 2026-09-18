@@ -80,11 +80,12 @@ func New(deps Deps) http.Handler {
 }
 
 // registerTools 注册 v0.8 tools；实现分别落在 tool_source.go、
-// tool_job.go 与 tool_run.go（file tools 随后续 commit 进入）。
+// tool_job.go、tool_run.go 与 tool_file.go。
 func registerTools(server *mcp.Server, deps Deps) {
 	registerSourceTools(server, deps)
 	registerJobTools(server, deps)
 	registerRunTools(server, deps)
+	registerFileTools(server, deps)
 }
 
 // registerResources 注册 MCP resources；实现见 resource.go。

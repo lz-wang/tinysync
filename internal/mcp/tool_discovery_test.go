@@ -14,6 +14,7 @@ import (
 
 	"tinysync/internal/auth"
 	authsqlite "tinysync/internal/auth/sqlite"
+	"tinysync/internal/browser"
 	"tinysync/internal/source"
 	sourcesqlite "tinysync/internal/source/sqlite"
 	"tinysync/internal/storage"
@@ -27,9 +28,10 @@ var errFactoryUnavailable = errors.New("remote factory unavailable in tool tests
 // toolsEnv 是 tool 层测试环境：真实应用服务 + 官方 MCP client，
 // 用于锁定 wire contract 与 per-tool 授权矩阵。
 type toolsEnv struct {
-	t         *testing.T
-	serverURL string
-	svc       *auth.Service
+	t           *testing.T
+	serverURL   string
+	svc         *auth.Service
+	managedRepo syncjob.ManagedRepository
 }
 
 func newToolsEnv(t *testing.T, sources []source.Source, jobs []syncjob.Job) *toolsEnv {
@@ -74,14 +76,33 @@ func newToolsEnv(t *testing.T, sources []source.Source, jobs []syncjob.Job) *too
 	}
 
 	handler := New(Deps{
-		Auth:    svc,
-		Sources: sourcesSvc,
-		Jobs:    jobsSvc,
-		Runner:  runner,
+		Auth:       svc,
+		Sources:    sourcesSvc,
+		Jobs:       jobsSvc,
+		Runner:     runner,
+		LocalFiles: browser.NewLocalService(jobsSvc, managedRepo),
 	})
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
-	return &toolsEnv{t: t, serverURL: server.URL, svc: svc}
+	return &toolsEnv{t: t, serverURL: server.URL, svc: svc, managedRepo: managedRepo}
+}
+
+// upsertSynced 写入 synced 状态的 managed 记录（搜索候选来源）。
+// RemotePath 与 LocalRelPath 一并写入：主键是 (job_id, remote_path)。
+func (e *toolsEnv) upsertSynced(jobID string, relPaths ...string) {
+	e.t.Helper()
+	files := make([]syncjob.ManagedFile, 0, len(relPaths))
+	for _, p := range relPaths {
+		files = append(files, syncjob.ManagedFile{
+			JobID:        jobID,
+			RemotePath:   "/" + p,
+			LocalRelPath: p,
+			State:        syncjob.StateSynced,
+		})
+	}
+	if err := e.managedRepo.Upsert(context.Background(), files); err != nil {
+		e.t.Fatalf("upsert managed files: %v", err)
+	}
 }
 
 // connect 以给定 scope 集合的 API Token 建立 MCP client 会话。
@@ -187,6 +208,9 @@ func discoveryFixture(t *testing.T) (*toolsEnv, source.Source, source.Source) {
 // requireToolError 断言工具调用返回 is_error 结果并返回错误文案。
 func requireToolError(t *testing.T, res *mcp.CallToolResult, err error) string {
 	t.Helper()
+	if err != nil && res == nil {
+		return err.Error()
+	}
 	if err == nil && !res.IsError {
 		t.Fatalf("expected tool error, got success: %+v", res.StructuredContent)
 	}
