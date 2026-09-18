@@ -148,7 +148,7 @@ Shutdown → Release lock
 
 ### Goals
 
-- [ ] 统一 Remote contract suite（`internal/source/remotetest`）：Stat
+- [x] 统一 Remote contract suite（`internal/source/remotetest`）：Stat
       root / Stat file / List / pagination / Open / empty file / large
       file / not found / invalid logical path / context cancellation /
       special filename / root confinement 在三个 adapter 上以同一套

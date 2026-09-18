@@ -148,8 +148,12 @@ func logicalPath(p string) string {
 	return path.Clean("/" + p)
 }
 
-// Stat 实现 source.Remote。
+// Stat 实现 source.Remote。入口统一校验 logical path：非法路径
+// fail-fast，不依赖归一化把无效输入悄悄变成另一个请求。
 func (r *remote) Stat(ctx context.Context, path string) (source.FileInfo, error) {
+	if err := source.ValidateLogicalPath(path); err != nil {
+		return source.FileInfo{}, err
+	}
 	info, err := r.client.Stat(ctx, resolveRelative(path))
 	if err != nil {
 		return source.FileInfo{}, wrapOp("stat", path, err)
@@ -166,6 +170,9 @@ func (r *remote) Stat(ctx context.Context, path string) (source.FileInfo, error)
 // adapter 边界切片分页，cursor 为 opaque offset token；分页约束的是
 // 返回条目数，协议层单次请求仍是整层目录（v0.6 契约已记录该限制）。
 func (r *remote) List(ctx context.Context, path string, opts source.ListOptions) (source.FilePage, error) {
+	if err := source.ValidateLogicalPath(path); err != nil {
+		return source.FilePage{}, err
+	}
 	logical := logicalPath(path)
 	entries, err := r.client.ReadDir(ctx, resolveRelative(path), false)
 	if err != nil {
@@ -189,8 +196,11 @@ func (r *remote) List(ctx context.Context, path string, opts source.ListOptions)
 	return source.PageSlice(all, opts)
 }
 
-// Open 实现 source.Remote。
+// Open 实现 source.Remote。入口统一校验 logical path。
 func (r *remote) Open(ctx context.Context, path string) (io.ReadCloser, error) {
+	if err := source.ValidateLogicalPath(path); err != nil {
+		return nil, err
+	}
 	rc, err := r.client.Open(ctx, resolveRelative(path))
 	if err != nil {
 		return nil, wrapOp("open", path, err)

@@ -157,6 +157,10 @@ func (r *remote) toLogical(key string) (string, error) {
 // HeadObject；Head 失败时探测目录前缀。S3 目录可能没有 marker 对象，
 // 不能只靠对象存在性判断目录。
 func (r *remote) Stat(ctx context.Context, logicalPath string) (source.FileInfo, error) {
+	// 入口统一校验 logical path：非法路径 fail-fast，不做归一化。
+	if err := source.ValidateLogicalPath(logicalPath); err != nil {
+		return source.FileInfo{}, err
+	}
 	cleaned := path.Clean("/" + logicalPath)
 	if cleaned == "/" {
 		// 探测 bucket / prefix 可访问性：一个对象的成本。
@@ -219,6 +223,9 @@ func (r *remote) Stat(ctx context.Context, logicalPath string) (source.FileInfo,
 // ContinuationToken 拉取，直到产出条目或 EOF：契约要求空页不得
 // 携带 NextCursor。
 func (r *remote) List(ctx context.Context, logicalDir string, opts source.ListOptions) (source.FilePage, error) {
+	if err := source.ValidateLogicalPath(logicalDir); err != nil {
+		return source.FilePage{}, err
+	}
 	dir := path.Clean("/" + logicalDir)
 	prefix := r.dirPrefix(dir)
 
@@ -311,8 +318,12 @@ func (r *remote) List(ctx context.Context, logicalDir string, opts source.ListOp
 	}
 }
 
-// Open 实现 source.Remote：GetObject 返回响应 body。
+// Open 实现 source.Remote：GetObject 返回响应 body。入口统一校验
+// logical path。
 func (r *remote) Open(ctx context.Context, logicalPath string) (io.ReadCloser, error) {
+	if err := source.ValidateLogicalPath(logicalPath); err != nil {
+		return nil, err
+	}
 	out, err := r.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(r.bucket),
 		Key:    aws.String(r.objectKey(logicalPath)),

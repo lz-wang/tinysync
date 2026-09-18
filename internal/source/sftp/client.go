@@ -229,9 +229,13 @@ func (r *remote) toLogical(dirLogical, name string) (string, error) {
 	return logical, nil
 }
 
-// Stat 实现 source.Remote：Lstat 不跟随 symlink。
+// Stat 实现 source.Remote：Lstat 不跟随 symlink。入口统一校验
+// logical path（ErrInvalid fail-fast）。
 func (r *remote) Stat(ctx context.Context, logicalPath string) (source.FileInfo, error) {
 	if err := ctx.Err(); err != nil {
+		return source.FileInfo{}, err
+	}
+	if err := source.ValidateLogicalPath(logicalPath); err != nil {
 		return source.FileInfo{}, err
 	}
 	abs, err := r.remoteAbs(logicalPath)
@@ -252,6 +256,9 @@ func (r *remote) Stat(ctx context.Context, logicalPath string) (source.FileInfo,
 // 条目数；协议层单次请求仍是整层目录，v0.6 契约已记录该限制）。
 func (r *remote) List(ctx context.Context, logicalDir string, opts source.ListOptions) (source.FilePage, error) {
 	if err := ctx.Err(); err != nil {
+		return source.FilePage{}, err
+	}
+	if err := source.ValidateLogicalPath(logicalDir); err != nil {
 		return source.FilePage{}, err
 	}
 	abs, err := r.remoteAbs(logicalDir)
@@ -293,9 +300,12 @@ func (r *remote) toFileInfo(logical string, info fs.FileInfo) (source.FileInfo, 
 	}, nil
 }
 
-// Open 实现 source.Remote。
+// Open 实现 source.Remote。入口统一校验 logical path。
 func (r *remote) Open(ctx context.Context, logicalPath string) (io.ReadCloser, error) {
 	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := source.ValidateLogicalPath(logicalPath); err != nil {
 		return nil, err
 	}
 	abs, err := r.remoteAbs(logicalPath)
