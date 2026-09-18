@@ -118,14 +118,14 @@ Shutdown → Release lock
 
 ### Goals
 
-- [ ] 本地映射 preflight 位于「完整 remote scan → selector → build plan →
+- [x] 本地映射 preflight 位于「完整 remote scan → selector → build plan →
       filesystem compatibility preflight → 任何本地 mutation」链上，
       preflight 不全通过则整轮失败、零本地变更
-- [ ] Windows 保留名与非法字符（CON / PRN / AUX / NUL / COM1..COM9 /
+- [x] Windows 保留名与非法字符（CON / PRN / AUX / NUL / COM1..COM9 /
       LPT1..LPT9；`< > : " | ? *`；尾随点、尾随空格、控制字符）在
       mutation 前 fail-fast；这是 local mapping 限制，不污染
       `source.ValidateLogicalPath()` 的远端协议模型
-- [ ] case collision：检测 LocalRoot 实际大小写敏感性；case-insensitive
+- [x] case collision：检测 LocalRoot 实际大小写敏感性；case-insensitive
       文件系统上本轮计划内出现 `Foo.txt` / `foo.txt` 冲突时整体失败，
       不允许后下载覆盖先下载（平台相关结果）
 - [ ] path fuzz（FuzzValidateLogicalPath / FuzzResolveWithinRoot /
@@ -269,8 +269,8 @@ regression fixes、文档与发布为核心，不再大规模设计新机制。
 - [x] unclean shutdown WAL recovery 正常
 - [ ] path fuzz 无 panic / escape
 - [ ] symlink confinement 不回归
-- [ ] Windows invalid filename fail-fast
-- [ ] case-insensitive filesystem collision fail-fast
+- [x] Windows invalid filename fail-fast
+- [x] case-insensitive filesystem collision fail-fast
 - [ ] permission / ENOSPC / rename failure 不破坏旧文件
 - [ ] WebDAV / S3 / SFTP 通过统一 Remote contract
 - [ ] transient network fault E2E 通过

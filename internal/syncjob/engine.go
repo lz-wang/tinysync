@@ -110,6 +110,13 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 		return stats, err
 	}
 
+	// 5.5 filesystem compatibility preflight：跨平台本地映射校验
+	//（Windows 非法文件名、case-insensitive 冲突）。位于任何本地
+	// mutation 之前，不全通过则整轮失败、零本地变更。
+	if err := PreflightFilesystemCompat(job.LocalRoot, plan, DefaultFilenamePolicy()); err != nil {
+		return stats, fmt.Errorf("filesystem compatibility preflight failed; no local changes were made: %w", err)
+	}
+
 	downloader := NewDownloader(opts.Remote)
 	downloader.timeout = opts.TransferTimeout
 	now := time.Now().UTC()
