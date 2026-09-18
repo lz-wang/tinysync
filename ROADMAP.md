@@ -19,7 +19,7 @@ Local Files）、调度及同步历史链路（自动触发、持久化运行历
 并发控制）、文件浏览及发布链路（Remote / Local 浏览、Publish
 Policy、`/published/*path` 公开 serving）与认证及 API Token 链路
 （单一 Local Admin、Web Session、scoped API Token、REST
-default-deny）已完成实现，认证待发布；MCP 尚未实现。
+default-deny）已完成实现并发布；MCP 尚未实现。
 
 ## 当前状态与优先级
 
@@ -28,10 +28,9 @@ default-deny）已完成实现，认证待发布；MCP 尚未实现。
 - **已实现**：`serve`、`version` / `--version`、数据目录与端口配置、日志、HTTP 生命周期、health/version API、内嵌状态页及 fallback 构建；SQLite 持久化与 migration、多协议 Source 领域（typed config / credentials 模型、Remote Registry、WebDAV / S3 / SFTP 只读 adapter、协议无关 logical path 校验、remote identity 保护、应用服务）、Source CRUD 与连接测试 REST API（discriminated config）、Sources Web 管理界面；Sync Job 领域（模型、Selector、remote scanner、planner、原子下载、Copy/Mirror engine、手动运行 Runner、SQLite Repository）、Jobs REST API 与 Web 管理界面、端到端与跨重启持久化测试；调度与历史（Schedule 模型与持久化、Scheduler、多 Job Runner、有界并发传输、`sync_runs` / `sync_run_items` 持久化、runs REST API、History Web UI、并发配置）；文件访问与发布（Remote.List 分页抽象、filesafe 受限路径原语、browser Remote / Local 浏览服务、Job namespace 本地浏览与 managed 标记、published_files 持久化与迁移 `0006_published_files.sql`、发布 CRUD 与 `/published/*path` 公开 serving、Files Web UI）。
 - **已有工程配置**：Git 版本注入、Go 测试、前端静态检查、Codecov、六平台构建、三平台原生 Smoke、Build/Release 分离及 WebDAV 镜像。
 - **v0.1.0 已发布**：远端 `v0.1.0` Release workflow 成功（2026-09-14），六平台发行档案与 `checksums.txt` 已核对到位；WebDAV 镜像按发布规范需独立验收，不能由 GitHub Release 成功推导。
-- **已完成实现待发布**：认证与 API Token（单一 Local Admin、
-  Argon2id 密码凭据与 CLI bootstrap、Web Session、scoped API
-  Token、REST default-deny 与 CSRF 防护），待三平台 native smoke
-  全绿后打 tag 发布。
+- **已发布**：认证与 API Token（单一 Local Admin、Argon2id 密码
+  凭据与 CLI bootstrap、Web Session、scoped API Token、REST
+  default-deny 与 CSRF 防护）。
 - **尚未实现**：MCP。
 
 v0.2.0 持久化与 Source 管理已发布：远端 Release workflow 成功（2026-09-15），
@@ -116,9 +115,12 @@ closed），并新增受保护路由 scope 矩阵 E2E（与 Gin 注册表双向
 核对，防平行路由漂移）。本地验证 `make check` 全绿；native
 smoke 已从匿名启动模型迁移到认证生命周期（未初始化拒绝 →
 bootstrap → default-deny → 登录 → 管理 API 携带会话 → 重启后
-原 session 与数据持久化）并在 macOS 实测通过。状态保持
-「已完成实现」，待 Build workflow 三平台 native smoke 全绿后
-打 tag 发布。
+原 session 与数据持久化）并在 macOS 实测通过。
+v0.7.0 认证与 API Token 已正式发布（2026-09-18）：tag `v0.7.0`
+指向 45c2b64，Release workflow run 35289193790 成功——Validate /
+Release checks / 三平台 native smoke / MinIO integration 全绿，
+六平台发行档与 `checksums.txt` 核对到位，WebDAV 镜像
+（Mirror release to WebDAV step）与 Pushover 通知独立验收通过。
 
 ## 架构与边界
 
@@ -146,7 +148,7 @@ bootstrap → default-deny → 登录 → 管理 API 携带会话 → 重启后
 | v0.4.0 | [调度与同步历史](docs/roadmap/04-scheduler-and-history.md) | 已完成 | 自动调度、重叠跳过、并发控制及运行/文件明细可追踪 |
 | v0.5.0 | [S3 与 SFTP](docs/roadmap/05-s3-and-sftp.md) | 已完成实现 | 同一同步引擎支持三种协议，上层不依赖协议分支 |
 | v0.6.0 | [文件浏览与发布](docs/roadmap/06-file-browser-and-publishing.md) | 已发布 | 只读远端浏览、本地下载与选择性 HTTP 发布，限制访问根目录 |
-| v0.7.0 | [认证与 API Token](docs/roadmap/07-authentication-and-tokens.md) | 已完成实现 | 单一 Local Admin + Web Session + scoped API Token，REST default-deny 与 CSRF 防护 |
+| v0.7.0 | [认证与 API Token](docs/roadmap/07-authentication-and-tokens.md) | 已发布 | 单一 Local Admin + Web Session + scoped API Token，REST default-deny 与 CSRF 防护 |
 | v0.8.0 | [MCP 集成](docs/roadmap/08-mcp-integration.md) | 规划 | 复用应用服务与鉴权，查询/运行任务，大文件经 HTTP 获取 |
 | v0.9.0 | [可靠性与运维](docs/roadmap/09-hardening-and-operations.md) | 规划 | 恢复、安全、协议兼容、跨平台、性能及回归验证具备证据 |
 | v1.0.0 | [单节点稳定版](docs/roadmap/10-stable-release.md) | 规划 | 多协议端到端同步、升级/恢复及完整质量门禁通过 |
