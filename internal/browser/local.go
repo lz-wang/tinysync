@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"tinysync/internal/filesafe"
@@ -176,6 +177,13 @@ func (s *LocalService) Stat(ctx context.Context, jobID, logicalPath string) (Ent
 	if err != nil {
 		return Entry{}, err
 	}
+	return statWithin(root, managed, logicalPath)
+}
+
+// statWithin 在已知 root 与 managed 集合内读取条目元信息：Stat 与
+// SearchManaged 共享同一 filesafe 边界与条目构建，搜索不需要为每个
+// 候选重复查询 managed 集合。
+func statWithin(root string, managed map[string]bool, logicalPath string) (Entry, error) {
 	_, info, err := filesafe.LstatWithinRoot(root, logicalPath)
 	if err != nil {
 		return Entry{}, err
@@ -198,6 +206,94 @@ func (s *LocalService) Stat(ctx context.Context, jobID, logicalPath string) (Ent
 		entry.Kind = KindOther
 	}
 	return entry, nil
+}
+
+// SearchOptions 是 managed 文件搜索的参数。Query 非空；Limit 为 0
+// 取默认值（50），负值或超过上限（200）返回 ErrInvalid。
+type SearchOptions struct {
+	Query string
+	Limit int
+}
+
+// managed 搜索的分页边界：与列表分页不同，搜索面向 Agent 的
+// 「发现前若干条」场景，默认值与上限都更小。
+const (
+	searchDefaultLimit = 50
+	searchMaxLimit     = 200
+)
+
+// SearchResult 是 managed 文件搜索的结果。Truncated 为 true 表示
+// 匹配记录多于 limit，仅返回前 limit 条。
+type SearchResult struct {
+	Entries   []Entry
+	Truncated bool
+}
+
+// SearchManaged 以 Job 为 namespace 搜索已同步（synced）的本地文件：
+// 候选来自 managed_files 记录（不扫描任意主机目录），匹配规则为
+// LocalRelPath 的大小写不敏感子串，结果按 LocalRelPath 字典序稳定
+// 排序。每条返回前经 statWithin 获取当前实际文件状态（与 Stat 同一
+// filesafe 边界），本地已不存在的记录跳过，不信任数据库旧 size/mtime。
+func (s *LocalService) SearchManaged(ctx context.Context, jobID string, opts SearchOptions) (SearchResult, error) {
+	query := strings.ToLower(strings.TrimSpace(opts.Query))
+	if query == "" {
+		return SearchResult{}, fmt.Errorf("%w: query must not be empty", ErrInvalid)
+	}
+	limit := opts.Limit
+	if limit == 0 {
+		limit = searchDefaultLimit
+	}
+	if limit < 0 || limit > searchMaxLimit {
+		return SearchResult{}, fmt.Errorf("%w: limit must be in 1..%d", ErrInvalid, searchMaxLimit)
+	}
+
+	job, err := s.jobs.Get(ctx, jobID)
+	if err != nil {
+		if errors.Is(err, syncjob.ErrNotFound) {
+			return SearchResult{}, fmt.Errorf("%w: job not found", ErrNotFound)
+		}
+		return SearchResult{}, err
+	}
+	files, err := s.managed.ListByJob(ctx, jobID)
+	if err != nil {
+		return SearchResult{}, err
+	}
+
+	// synced only + 大小写不敏感子串匹配，按 LocalRelPath 排序保证
+	// 截断结果稳定。
+	matches := make([]string, 0, len(files))
+	for _, f := range files {
+		if f.State != syncjob.StateSynced {
+			continue
+		}
+		if strings.Contains(strings.ToLower(f.LocalRelPath), query) {
+			matches = append(matches, f.LocalRelPath)
+		}
+	}
+	sort.Strings(matches)
+
+	managedSet := make(map[string]bool, len(matches))
+	for _, rel := range matches {
+		managedSet[rel] = true
+	}
+	result := SearchResult{Entries: make([]Entry, 0, min(limit, len(matches)))}
+	for _, rel := range matches {
+		if ctx.Err() != nil {
+			return SearchResult{}, ctx.Err()
+		}
+		if len(result.Entries) == limit {
+			result.Truncated = true
+			break
+		}
+		// 本地已删除 / 暂不可读的记录不返回；confinement 失败同样
+		// 视为当前不可达，不作为搜索错误传播。
+		entry, err := statWithin(job.LocalRoot, managedSet, "/"+rel)
+		if err != nil {
+			continue
+		}
+		result.Entries = append(result.Entries, entry)
+	}
+	return result, nil
 }
 
 // Open 打开本地普通文件供下载 / 发布 serving：ResolveRegularFile

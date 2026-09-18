@@ -324,3 +324,183 @@ func TestLocalServiceInputErrors(t *testing.T) {
 		t.Errorf("list missing job error = %v, want ErrNotFound", err)
 	}
 }
+
+// setManagedSynced 写入带状态的 managed 记录（搜索只认 synced）。
+func setManagedSynced(t *testing.T, f *localFixture, synced, pending []string) {
+	t.Helper()
+	files := make([]syncjob.ManagedFile, 0, len(synced)+len(pending))
+	for _, p := range synced {
+		files = append(files, syncjob.ManagedFile{JobID: f.jobID, LocalRelPath: p, State: syncjob.StateSynced})
+	}
+	for _, p := range pending {
+		files = append(files, syncjob.ManagedFile{JobID: f.jobID, LocalRelPath: p, State: syncjob.StatePending})
+	}
+	f.managed.files = files
+}
+
+func TestLocalServiceSearchManaged(t *testing.T) {
+	fx := newLocalFixture(t)
+	fx.write(t, "documents/2026/invoice-08.pdf", "a")
+	fx.write(t, "documents/2026/invoice-09.pdf", "b")
+	fx.write(t, "documents/2026/report.txt", "c")
+	fx.write(t, "unmanaged-invoice.txt", "d")
+	setManagedSynced(t, fx,
+		[]string{"documents/2026/invoice-08.pdf", "documents/2026/invoice-09.pdf", "documents/2026/report.txt"},
+		[]string{"pending-invoice.txt"})
+	fx.write(t, "pending-invoice.txt", "e")
+
+	res, err := fx.svc.SearchManaged(context.Background(), fx.jobID, SearchOptions{Query: "INVOICE"})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	// 大小写不敏感；pending 排除；unmanaged 不在 managed_files 中。
+	if len(res.Entries) != 2 || res.Truncated {
+		t.Fatalf("entries = %+v truncated = %v, want 2 invoice files", res.Entries, res.Truncated)
+	}
+	for _, e := range res.Entries {
+		if e.Kind != KindFile || e.Managed == nil || !*e.Managed {
+			t.Fatalf("entry = %+v, want managed file", e)
+		}
+	}
+	// 稳定字典序：08 在 09 之前。
+	if res.Entries[0].Path != "/documents/2026/invoice-08.pdf" || res.Entries[1].Path != "/documents/2026/invoice-09.pdf" {
+		t.Fatalf("order = %s, %s", res.Entries[0].Path, res.Entries[1].Path)
+	}
+	// 实际文件状态（size 来自 Stat 而非数据库）。
+	if res.Entries[0].Size != 1 {
+		t.Fatalf("size = %d, want 1", res.Entries[0].Size)
+	}
+}
+
+func TestLocalServiceSearchManagedLimitAndTruncated(t *testing.T) {
+	fx := newLocalFixture(t)
+	synced := make([]string, 0, 5)
+	for i := range 5 {
+		rel := fmt.Sprintf("dir/file-%02d.txt", i)
+		fx.write(t, rel, "x")
+		synced = append(synced, rel)
+	}
+	setManagedSynced(t, fx, synced, nil)
+
+	res, err := fx.svc.SearchManaged(context.Background(), fx.jobID, SearchOptions{Query: "file-", Limit: 3})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(res.Entries) != 3 || !res.Truncated {
+		t.Fatalf("entries = %d truncated = %v, want 3 + truncated", len(res.Entries), res.Truncated)
+	}
+	// 截断保持字典序前缀。
+	if res.Entries[0].Path != "/dir/file-00.txt" {
+		t.Fatalf("first = %s, want /dir/file-00.txt", res.Entries[0].Path)
+	}
+
+	// 精确匹配全部：不截断。
+	full, err := fx.svc.SearchManaged(context.Background(), fx.jobID, SearchOptions{Query: "file-", Limit: 5})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(full.Entries) != 5 || full.Truncated {
+		t.Fatalf("entries = %d truncated = %v, want 5 not truncated", len(full.Entries), full.Truncated)
+	}
+}
+
+func TestLocalServiceSearchManagedDeletedAndSymlink(t *testing.T) {
+	fx := newLocalFixture(t)
+	// deleted：managed 记录存在但本地文件已删除 → 跳过。
+	// symlink replacement：本地路径被替换为 symlink → Lstat 呈现
+	// symlink 条目（照常返回，kind=symlink；读取侧由 Open 拒绝）。
+	fx.write(t, "kept.txt", "keep")
+	if err := os.WriteFile(filepath.Join(fx.root, "gone.txt"), []byte("gone"), 0o644); err != nil {
+		t.Fatalf("write gone: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(fx.root, "link.txt"), []byte("target"), 0o644); err != nil {
+		t.Fatalf("write link: %v", err)
+	}
+	if err := os.Remove(filepath.Join(fx.root, "gone.txt")); err != nil {
+		t.Fatalf("remove gone: %v", err)
+	}
+	if err := os.Remove(filepath.Join(fx.root, "link.txt")); err != nil {
+		t.Fatalf("remove link: %v", err)
+	}
+	if err := os.Symlink("../../outside.txt", filepath.Join(fx.root, "link.txt")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	setManagedSynced(t, fx, []string{"kept.txt", "gone.txt", "link.txt"}, nil)
+
+	res, err := fx.svc.SearchManaged(context.Background(), fx.jobID, SearchOptions{Query: ".txt"})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	got := map[string]string{}
+	for _, e := range res.Entries {
+		got[e.Path] = e.Kind
+	}
+	if _, ok := got["/gone.txt"]; ok {
+		t.Fatal("deleted managed file must not be returned")
+	}
+	if got["/kept.txt"] != KindFile {
+		t.Fatalf("kept.txt kind = %s, want file", got["/kept.txt"])
+	}
+	if got["/link.txt"] != KindSymlink {
+		t.Fatalf("link.txt kind = %s, want symlink (Lstat semantics)", got["/link.txt"])
+	}
+}
+
+func TestLocalServiceSearchManagedInputErrors(t *testing.T) {
+	fx := newLocalFixture(t)
+	cases := []struct {
+		name string
+		opts SearchOptions
+	}{
+		{"empty query", SearchOptions{Query: ""}},
+		{"blank query", SearchOptions{Query: "   "}},
+		{"negative limit", SearchOptions{Query: "a", Limit: -1}},
+		{"limit over max", SearchOptions{Query: "a", Limit: searchMaxLimit + 1}},
+	}
+	for _, tc := range cases {
+		if _, err := fx.svc.SearchManaged(context.Background(), fx.jobID, tc.opts); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: error = %v, want ErrInvalid", tc.name, err)
+		}
+	}
+	if _, err := fx.svc.SearchManaged(context.Background(), "no-such-job", SearchOptions{Query: "a"}); !errors.Is(err, ErrNotFound) {
+		t.Errorf("missing job: error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestLocalServiceSearchManagedJobIsolation(t *testing.T) {
+	fx := newLocalFixture(t)
+	fx.write(t, "shared/report.txt", "r")
+	setManagedSynced(t, fx, []string{"shared/report.txt"}, nil)
+
+	// 另一个 Job 的 LocalRoot 即使包含同名路径，也没有该 Job 的
+	// managed 记录：搜索以 Job 为 namespace。
+	fx2 := newLocalFixture(t)
+	fx2.write(t, "shared/report.txt", "r")
+
+	res, err := fx.svc.SearchManaged(context.Background(), fx.jobID, SearchOptions{Query: "report"})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(res.Entries) != 1 || res.Entries[0].Path != "/shared/report.txt" {
+		t.Fatalf("entries = %+v, want only job's own file", res.Entries)
+	}
+	res2, err := fx2.svc.SearchManaged(context.Background(), fx2.jobID, SearchOptions{Query: "report"})
+	if err != nil {
+		t.Fatalf("search job2: %v", err)
+	}
+	if len(res2.Entries) != 0 {
+		t.Fatalf("job2 entries = %+v, want empty (no managed record)", res2.Entries)
+	}
+}
+
+func TestLocalServiceSearchManagedContextCancellation(t *testing.T) {
+	fx := newLocalFixture(t)
+	fx.write(t, "a/one.txt", "1")
+	setManagedSynced(t, fx, []string{"a/one.txt"}, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := fx.svc.SearchManaged(ctx, fx.jobID, SearchOptions{Query: "one"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+}
