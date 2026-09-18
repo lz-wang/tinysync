@@ -15,7 +15,7 @@
 
 | 工作流 | 触发与职责 |
 | --- | --- |
-| [build.yml](../../.github/workflows/build.yml) | main push、面向 main 的 PR、手动触发；纯 Markdown 文档变更跳过自动构建，其他变更执行 `make ci`、覆盖率/Codecov、六平台构建与三平台原生 Smoke，不生成 GitHub Release |
+| [build.yml](../../.github/workflows/build.yml) | main push、面向 main 的 PR、手动触发；纯文档变更（任意 Markdown 或 `docs/`）跳过自动构建，其他变更执行 `make ci`、覆盖率/Codecov、六平台构建与三平台原生 Smoke，不生成 GitHub Release |
 | [release.yml](../../.github/workflows/release.yml) | tag push 或手动指定已有 tag；校验稳定版 `vX.Y.Z`、`make version` 和 CHANGELOG 段落，执行 `make ci` 与三平台原生 Smoke，再发布 |
 
 - Build 中 PR 仅验证可构建；main push / 手动运行额外打包开发快照，按版本目录镜像到 WebDAV，附逐文件 `.sha256`。

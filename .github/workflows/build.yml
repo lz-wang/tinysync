@@ -4,16 +4,19 @@ name: Build and Notify
 # 也不生成 GitHub Release。不使用 Actions Artifact：PR 只验证六平台可构建，
 # main/manual 额外经 Makefile 打包开发快照并镜像到 WebDAV
 # （HomeLab 内网获取开发版）。
-# 仅 Markdown 文档变更不触发构建；与任意源码、配置或工作流变更混合时仍会触发。
+# 纯文档变更不触发自动 Actions：覆盖所有 Markdown 及 docs/ 中的文档资源；
+# 与任意源码、配置或工作流变更混合时仍会触发。
 on:
   push:
     branches: ["main"]
     paths-ignore:
       - "**.md"
+      - "docs/**"
   pull_request:
     branches: ["main"]
     paths-ignore:
       - "**.md"
+      - "docs/**"
   workflow_dispatch:
 
 concurrency:
