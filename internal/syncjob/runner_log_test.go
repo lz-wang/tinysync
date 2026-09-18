@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"tinysync/internal/logging"
+	"tinysync/internal/source"
 )
 
 // initLogFileLogging 把全局 logger 指向临时目录的日志文件，返回
@@ -77,5 +78,39 @@ func TestFinalizeEmitsSuccessEvent(t *testing.T) {
 		if !strings.Contains(log, want) {
 			t.Errorf("sync_run log missing %q:\n%s", want, log)
 		}
+	}
+}
+
+// run row 落库成功即输出 status=running 事件：终态事件只发生在结束
+// 时，进程硬崩溃后日志里没有「这个 run 曾经启动」的痕迹；running
+// 与终态构成完整时间线，同一 run_id 两条 event=sync_run。
+func TestStartEmitsRunningEvent(t *testing.T) {
+	readLog := initLogFileLogging(t)
+
+	repo := newMemJobRepo()
+	job := Job{ID: "job_start", Name: "j", SourceID: "src_start", Mode: ModeCopy, Enabled: true}
+	if err := repo.Create(context.Background(), job); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	creds := &memCreds{
+		source: source.Source{ID: "src_start", Type: source.TypeWebDAV, Enabled: true},
+		remote: buildRemote(map[string]string{}, nil),
+	}
+	r := NewRunner(repo, newInMemoryManaged(), creds, newMemRunRepo())
+
+	runID, err := r.start(context.Background(), "job_start", TriggerManual, nil)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if _, err := r.Wait(context.Background(), runID); err != nil {
+		t.Fatalf("wait: %v", err)
+	}
+
+	log := readLog()
+	if !strings.Contains(log, "status=running") {
+		t.Errorf("sync_run log missing start event status=running:\n%s", log)
+	}
+	if got := strings.Count(log, "event=sync_run"); got != 2 {
+		t.Errorf("event=sync_run count = %d, want 2 (running + terminal):\n%s", got, log)
 	}
 }

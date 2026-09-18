@@ -294,6 +294,13 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 		return "", fmt.Errorf("persist run %s: %w", runID, err)
 	}
 
+	// run start 事件（v0.9 可观测性契约）：终态事件只发生在结束时，
+	// 进程硬崩溃后日志里没有「这个 run 曾经启动」的痕迹。run row 落库
+	// 成功即输出 running，与终态事件构成同一 run_id 的完整时间线；
+	// 字段布局与终态事件一致，便于日志解析。
+	logging.Infof("event=sync_run job_id=%s run_id=%s source_id=%s status=%s duration_ms=0 bytes=0 files_created=0 files_updated=0 files_deleted=0 error=%q",
+		jobID, runID, job.SourceID, RunRunning, "")
+
 	go func() {
 		defer r.wg.Done()
 		defer func() {

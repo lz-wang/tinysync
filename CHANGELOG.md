@@ -67,9 +67,11 @@ GitHub Release 摘要一致。
   生成 `req_<随机>` 请求标识并回写 `X-Request-ID` 响应头，access
   log 统一记录 event=request、request_id、method、path、status、
   耗时与响应字节数（不记录 query string、请求体与认证头）；每轮
-  同步结束输出 event=sync_run 事件（job_id / run_id / source_id /
-  status / 耗时 / 字节 / 文件变更统计 / 失败原因），文件级失败附
-  带 path。日志保持单一 zap 文本体系，panic 请求同样留痕。
+  同步在启动（run 记录落库成功）与结束时各输出一条 event=sync_run
+  事件（status=running 与终态，job_id / run_id / source_id / status /
+  耗时 / 字节 / 文件变更统计 / 失败原因），文件级失败附带 path，
+  进程硬崩溃后日志仍留有 run 启动痕迹。日志保持单一 zap 文本体系，
+  panic 请求同样留痕。
 
 ## [0.8.0] - 2026-09-18
 
