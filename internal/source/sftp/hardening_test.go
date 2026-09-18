@@ -9,10 +9,12 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"tinysync/internal/source"
+	"tinysync/internal/syncjob"
 )
 
 // ctx 取消：取消后 List / Stat / Open 立即失败；Create 阶段注入的
@@ -283,13 +285,17 @@ func TestSFTPReconnectResolvesCurrentRoot(t *testing.T) {
 }
 
 // 超时隔离的并发语义（v0.9 收尾验证）：停滞传输（A）触发共享连接
-// 拆除时，同连接上的健康传输（B）会被连带中断——按 transient 重试
-// 必须收敛，健康文件不得因邻居的超时而最终失败。若本测试不稳定或
-// 失败，才需要考虑 per-transfer 独立 SSH 连接；当前设计只验证行为。
+// 拆除时，同连接上**正在途读取**的健康传输（B）必然被连带中断——
+// 按 transient 重试必须收敛，健康文件不得因邻居的超时而最终失败。
+// 与仅持有空闲句柄不同，这里 B 在拆除发生时确定性地阻塞在 Read 上
+// （服务端停摆吞掉 B 的下一个响应）。若本测试不稳定或失败，才需要
+// 考虑 per-transfer 独立 SSH 连接；当前设计只验证行为。
 func TestSFTPTimeoutIsolationUnderConcurrentTransfers(t *testing.T) {
 	root := t.TempDir()
 	seedFile(t, root, "stalled.txt", strings.Repeat("A-content-", 500))
-	bContent := strings.Repeat("B-content-", 8192) // 80 KiB，跨多个读取块
+	// 足够大，保证 B 无法在停摆置位前读完（置位只发生在相邻语句间，
+	// B 需要数千次调度才能完成 8 MiB）。
+	bContent := strings.Repeat("B-content-", 819200) // ~8 MiB
 	seedFile(t, root, "healthy.txt", bContent)
 	ts := startTestServer(t)
 
@@ -298,30 +304,34 @@ func TestSFTPTimeoutIsolationUnderConcurrentTransfers(t *testing.T) {
 		Password: testPassword,
 	}})
 
-	// 健康流 B 先建立并读入首批数据：证明停滞发生前传输正常推进。
-	rcB, err := r.Open(context.Background(), "/healthy.txt")
-	if err != nil {
-		t.Fatalf("B Open: %v", err)
-	}
-	defer rcB.Close()
-	head := make([]byte, 32)
-	if _, err := io.ReadFull(rcB, head); err != nil {
-		t.Fatalf("B initial read: %v", err)
-	}
-
-	// 停滞流 A：Open 成功后服务端停摆 → Read 阻塞 → 300ms attempt
-	// 超时拆除连接。
+	// 停滞流 A 先建立：Open 在停摆置位前完成（其后读取才会被吞掉
+	// 响应阻塞），300ms attempt 超时负责拆除连接。
 	attemptCtx, cancelA := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancelA()
 	rcA, err := r.Open(attemptCtx, "/stalled.txt")
 	if err != nil {
 		t.Fatalf("A Open: %v", err)
 	}
+	defer rcA.Close()
+
+	// 健康流 B：同一连接上建立并真正开始持续传输。
+	rcB, err := r.Open(context.Background(), "/healthy.txt")
+	if err != nil {
+		t.Fatalf("B Open: %v", err)
+	}
+	defer func() { _ = rcB.Close() }()
+	bDone := make(chan error, 1)
+	go func() {
+		_, berr := io.Copy(io.Discard, rcB)
+		bDone <- berr
+	}()
+
+	// 服务端停摆：B 的下一个读取响应被吞掉 → B 确定性阻塞在在途
+	// Read 上；A 的读取同样阻塞，直至 300ms 超时经连接拆除中断。
 	ts.stall.Store(true)
 	readA := make(chan error, 1)
 	go func() {
-		buf := make([]byte, 64)
-		_, aerr := rcA.Read(buf)
+		_, aerr := rcA.Read(make([]byte, 64))
 		readA <- aerr
 	}()
 	select {
@@ -332,30 +342,238 @@ func TestSFTPTimeoutIsolationUnderConcurrentTransfers(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("A stalled read not interrupted by attempt timeout")
 	}
-	_ = rcA.Close()
 
-	// A 的超时连带中断了 B 的在途流（transient 语义）：B 按 Downloader
-	// 的重试形态重新打开后必须完整收敛，内容与传输前一致。
+	// B 的在途流随共享连接拆除被连带中断（transient 语义）。
+	if berr := <-bDone; berr == nil {
+		t.Fatal("in-flight B stream survived teardown unharmed; expected collateral transient interruption")
+	}
+
+	// 按 Downloader 的重试形态重新打开后必须完整收敛，内容与传输前
+	// 一致——健康文件不因邻居超时而最终失败。
 	ts.stall.Store(false)
-	rest, berr := io.ReadAll(rcB)
-	if berr == nil {
-		t.Logf("healthy stream survived teardown without collateral error (len=%d)", len(rest))
+	if got := readAllVia(t, r, "/healthy.txt"); got != bContent {
+		t.Errorf("B content after retry = %d bytes, want full %d bytes", len(got), len(bContent))
 	}
-	got := string(head) + string(rest)
-	if berr != nil {
-		rcRetry, oerr := r.Open(context.Background(), "/healthy.txt")
+}
+
+// 真实 Downloader（默认 maxAttempts=3、指数退避 + 有界 jitter）的
+// retry 收敛：A 的 attempt 超时拆除共享连接时，B 的在途 attempt 被
+// 连带打断（transient），Downloader 消耗重试预算后必须收敛成功——
+// 健康文件不因邻居的超时而最终失败。
+func TestSFTPDownloaderConvergesThroughCollateralInterruption(t *testing.T) {
+	root := t.TempDir()
+	seedFile(t, root, "stalled.txt", strings.Repeat("A-content-", 500))
+	bContent := strings.Repeat("B-content-", 819200) // ~8 MiB
+	seedFile(t, root, "healthy.txt", bContent)
+	ts := startTestServer(t)
+
+	cfg := sftpSourceConfig(ts, root, source.SFTPAuthPassword)
+	r := newSFTPFactoryRemote(t, ts, cfg, source.Credentials{SFTP: &source.SFTPCredentials{
+		Password: testPassword,
+	}})
+
+	// A：Open 在停摆前完成，读取由停摆阻塞，300ms attempt 超时负责
+	// 拆除连接。
+	attemptCtx, cancelA := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancelA()
+	rcA, err := r.Open(attemptCtx, "/stalled.txt")
+	if err != nil {
+		t.Fatalf("A Open: %v", err)
+	}
+	defer func() { _ = rcA.Close() }()
+
+	// B：真实 Downloader 下载（默认重试参数）。等其在途（临时文件
+	// 出现）再停摆，保证拆除发生在 B 的 attempt 进行中。
+	localRoot := t.TempDir()
+	dlDone := make(chan error, 1)
+	go func() {
+		d := syncjob.NewDownloader(r)
+		dlDone <- d.Download(context.Background(), "/healthy.txt", localRoot, "healthy.txt",
+			source.Fingerprint{Size: int64(len(bContent))})
+	}()
+	waitForInFlightTransfer(t, localRoot, 5*time.Second)
+
+	ts.stall.Store(true)
+	readA := make(chan error, 1)
+	go func() {
+		_, aerr := rcA.Read(make([]byte, 64))
+		readA <- aerr
+	}()
+	select {
+	case aerr := <-readA:
+		if aerr == nil {
+			t.Fatal("A stalled read returned data, want timeout error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("A stalled read not interrupted by attempt timeout")
+	}
+
+	// 恢复服务端响应：B 被连带打断后经真实重试收敛。
+	ts.stall.Store(false)
+	if derr := <-dlDone; derr != nil {
+		t.Fatalf("Downloader did not converge after collateral interruption: %v", derr)
+	}
+	got, err := os.ReadFile(filepath.Join(localRoot, "healthy.txt"))
+	if err != nil {
+		t.Fatalf("read downloaded file: %v", err)
+	}
+	if string(got) != bContent {
+		t.Errorf("downloaded content = %d bytes, want %d bytes", len(got), len(bContent))
+	}
+}
+
+// waitForInFlightTransfer 轮询等待 Downloader 的在途临时文件出现
+// （命名与 syncjob.Downloader 的内部 tempPrefix 形态一致）。
+func waitForInFlightTransfer(t *testing.T, localRoot string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		entries, err := os.ReadDir(localRoot)
+		if err != nil {
+			t.Fatalf("read local root: %v", err)
+		}
+		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name(), ".tinysync-part-") {
+				return
+			}
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatal("downloader temp file did not appear in time; B attempt never went in-flight")
+}
+
+// stale 代际的迟到超时不得拆除重连后的新连接：超时回调与其文件
+// 打开时的会话快照绑定（teardownSession(expected)），当前会话已
+// 更替时回调必须是 no-op——否则旧 attempt 的 watcher 会拆掉新代际，
+// 新代际上的重试再被下一个 stale watcher 拆掉，形成连锁误伤。
+func TestSFTPStaleTimeoutSparesNewGeneration(t *testing.T) {
+	root := t.TempDir()
+	seedFile(t, root, "stale.txt", "stale-content")
+	seedFile(t, root, "fresh.txt", "fresh-content")
+	ts := startTestServer(t)
+
+	cfg := sftpSourceConfig(ts, root, source.SFTPAuthPassword)
+	r := newSFTPFactoryRemote(t, ts, cfg, source.Credentials{SFTP: &source.SFTPCredentials{
+		Password: testPassword,
+	}})
+	tr := r.(*remote)
+
+	// 代际 1：打开后强制拆除，文件成为携带 stale watcher 的遗留句柄
+	//（真实时序里它的超时回调因调度延迟晚于重连到达）。
+	staleCtx, cancelStale := context.WithCancel(context.Background())
+	defer cancelStale()
+	rcStale, err := r.Open(staleCtx, "/stale.txt")
+	if err != nil {
+		t.Fatalf("stale Open: %v", err)
+	}
+	defer func() { _ = rcStale.Close() }()
+	tr.teardown()
+
+	// 重连产生代际 2 并确认可用，记下当前会话指针。
+	if got := readAllVia(t, r, "/fresh.txt"); got != "fresh-content" {
+		t.Fatalf("fresh generation read = %q, want fresh-content", got)
+	}
+	current, _, err := tr.session(context.Background())
+	if err != nil {
+		t.Fatalf("session: %v", err)
+	}
+
+	// stale 文件的 ctx 取消触发其超时回调：只允许拆代际 1（已不
+	// 存在），绝不能拆掉当前会话。
+	cancelStale()
+	time.Sleep(100 * time.Millisecond)
+
+	after, _, err := tr.session(context.Background())
+	if err != nil {
+		t.Fatalf("session after stale callback: %v", err)
+	}
+	if after != current {
+		t.Fatal("current generation was torn down by a stale timeout callback")
+	}
+	// 当前会话仍真实可用（不是仅指针未变）。
+	if got := readAllVia(t, r, "/fresh.txt"); got != "fresh-content" {
+		t.Fatalf("read after stale callback = %q, want fresh-content", got)
+	}
+}
+
+// Close 与 ctx 取消的竞争不得依赖 select 的随机就绪顺序：文件已
+// Close 成功后迟到的 ctx 取消绝不能触发共享连接 teardown——否则
+// MaxConcurrentTransfers > 1 时，单个已完成的传输会因唤醒顺序随机
+// 连带中断其它在途传输。循环多轮放大「stop 与 ctx.Done 同时就绪」
+// 的竞争窗口。
+func TestCtxFileCloseWinsOverLateCancellation(t *testing.T) {
+	root := t.TempDir()
+	seedFile(t, root, "f.txt", "content")
+	ts := startTestServer(t)
+
+	cfg := sftpSourceConfig(ts, root, source.SFTPAuthPassword)
+	r := newSFTPFactoryRemote(t, ts, cfg, source.Credentials{SFTP: &source.SFTPCredentials{
+		Password: testPassword,
+	}})
+	tr := r.(*remote)
+
+	current, _, err := tr.session(context.Background())
+	if err != nil {
+		t.Fatalf("session: %v", err)
+	}
+	for i := 0; i < 30; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		rc, oerr := r.Open(ctx, "/f.txt")
 		if oerr != nil {
-			t.Fatalf("B retry Open: %v", oerr)
+			t.Fatalf("open %d: %v", i, oerr)
 		}
-		defer rcRetry.Close()
-		data, rerr := io.ReadAll(rcRetry)
-		if rerr != nil {
-			t.Fatalf("B retry read: %v", rerr)
+		if _, rerr := io.ReadAll(rc); rerr != nil {
+			t.Fatalf("read %d: %v", i, rerr)
 		}
-		got = string(data)
+		if cerr := rc.Close(); cerr != nil {
+			t.Fatalf("close %d: %v", i, cerr)
+		}
+		cancel() // Close 成功之后的取消：不得拆除连接
+		time.Sleep(20 * time.Millisecond)
 	}
-	if got != bContent {
-		t.Errorf("B content after collateral interruption = %d bytes, want full %d bytes", len(got), len(bContent))
+	after, _, err := tr.session(context.Background())
+	if err != nil {
+		t.Fatalf("session after close/cancel loop: %v", err)
+	}
+	if after != current {
+		t.Fatal("connection was torn down by a late cancellation after successful Close")
+	}
+}
+
+// Close 与 ctx 取消同时就绪的竞争窗口（白盒）：上面的黑盒循环里
+// Close 的文件关闭往返给了守护 goroutine 先经 stop 退出的调度机会，
+// 打不进真正的竞争；这里用 markClosed 复刻 Close 的状态序列并在同
+// 一 goroutine 上背靠背 cancel——守护 goroutine 醒来时 stop 与
+// ctx.Done 同时就绪，select 的随机选择绝不允许改变结果（Close 赢
+// → 回调不触发）。f 为 nil 即可：该路径不触碰文件。
+func TestCtxFileCloseStateSuppressesRacingCancellation(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		var fired atomic.Bool
+		c := newCtxFile(ctx, nil, func() { fired.Store(true) })
+		c.markClosed()
+		cancel()
+		time.Sleep(20 * time.Millisecond)
+		if fired.Load() {
+			t.Fatalf("iteration %d: teardown fired although Close won the state race", i)
+		}
+	}
+}
+
+// 反向语义仍须成立：未 Close 时 ctx 取消必须真实触发回调（守护
+// 状态机没有被改写成永不拆除）。
+func TestCtxFileTimeoutStillFiresWithoutClose(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var fired atomic.Bool
+	// 守护 goroutine 持有 ctxFile，无需保留返回值。
+	newCtxFile(ctx, nil, func() { fired.Store(true) })
+	cancel()
+	deadline := time.Now().Add(2 * time.Second)
+	for !fired.Load() && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if !fired.Load() {
+		t.Fatal("ctx cancellation did not fire teardown; timeout path is broken")
 	}
 }
 

@@ -253,9 +253,10 @@ func (r *remote) session(ctx context.Context) (*sftp.Client, string, error) {
 	return r.sftp, r.root, nil
 }
 
-// teardown 关闭当前 SSH/SFTP 连接并清空引用：attempt 超时或 run 取消
-// 时触发（见 ctxFile），阻塞中的 SFTP 读取随连接关闭立即返回错误。
-// 连接之后经 session 惰性重建；Close 才是终态。
+// teardown 无条件关闭当前 SSH/SFTP 连接并清空引用（不校验代际）。
+// 生产路径的 attempt 超时走代际绑定的 teardownSession；本方法是
+// 测试注入重连扰动的入口。连接之后经 session 惰性重建；Close 才是
+// 终态。
 //
 // 必须先断 SSH 连接再关 SFTP 会话：sftp.Client.Close 会等待 recv
 // 循环退出，而对端停摆时只有底层连接关闭才能让 recv 循环退出；
@@ -264,6 +265,24 @@ func (r *remote) teardown() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.sftp == nil {
+		return
+	}
+	_ = r.ssh.Close()
+	_ = r.sftp.Close()
+	r.sftp = nil
+	r.ssh = nil
+}
+
+// teardownSession 拆除 expected 指向的连接代际：仅当当前会话仍是
+// expected 时才关闭 SSH/SFTP 并清空引用，否则是 no-op。attempt 超时
+// 回调因此与其文件打开时的会话快照绑定——stale 代际（回调晚于重连
+// 到达）绝不拆掉重连后的新连接，避免「旧 attempt 超时 → 拆新代际 →
+// 新代际重试 → 再被下一个 stale 回调拆掉」的连锁误伤。关闭顺序与
+// teardown 相同（先 SSH 后 SFTP，理由见 teardown）。
+func (r *remote) teardownSession(expected *sftp.Client) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.sftp == nil || r.sftp != expected {
 		return
 	}
 	_ = r.ssh.Close()
@@ -403,7 +422,10 @@ func (r *remote) Open(ctx context.Context, logicalPath string) (io.ReadCloser, e
 	if err != nil {
 		return nil, wrapOp("open", logicalPath, err)
 	}
-	return newCtxFile(ctx, f, r.teardown), nil
+	// 超时回调与连接代际绑定：该文件的 ctx 超时只拆除它打开时所用
+	// 的会话快照，重连后的新代际不受 stale 回调影响（闭包持有的旧
+	// client 指针使其地址不可被新连接复用，指针比较可靠）。
+	return newCtxFile(ctx, f, func() { r.teardownSession(c) }), nil
 }
 
 // Close 实现 source.Remote：关闭连接并进入终态（不再重连），阻塞中
@@ -429,11 +451,21 @@ func (r *remote) Close() error {
 // 请求级取消，且 pkg/sftp 的 File.Read 全程持有内部互斥量——从另
 // 一 goroutine Close 文件无法中断阻塞中的读取；唯一可靠的中断手段
 // 是关闭底层连接。ctx 取消（Downloader 的 attempt 超时或 run 取消）
-// 触发 teardown 拆除共享连接，阻塞中的 Read 立即返回连接丢失错误；
-// Downloader 按 transient 重试，下一次操作经 session 惰性重连。
+// 触发 teardown 拆除所属连接代际，阻塞中的 Read 立即返回连接丢失
+// 错误；Downloader 按 transient 重试，下一次操作经 session 惰性重连。
 type ctxFile struct {
 	f        *sftp.File
 	teardown func()
+
+	// mu 守护 closed / timedOut：Close 与 ctx 取消可能几乎同时就绪，
+	// 而 select 对多个就绪 case 的选择是随机的——显式状态保证「Close
+	// 赢 → 超时回调不再拆连接；超时赢 → 拆所属代际」。没有这层
+	// 协调时，已成功 Close 的文件可能因随机的唤醒顺序触发共享连接
+	// teardown，连带中断其它并发传输。
+	mu       sync.Mutex
+	closed   bool
+	timedOut bool
+
 	stop     chan struct{}
 	stopOnce sync.Once
 }
@@ -451,21 +483,47 @@ func newCtxFile(ctx context.Context, f *sftp.File, teardown func()) *ctxFile {
 	go func() {
 		select {
 		case <-ctx.Done():
-			c.teardown()
+			c.onCtxDone()
 		case <-c.stop:
 		}
 	}()
 	return c
 }
 
+// onCtxDone 触发所属连接代际的拆除：Close 已完成或超时已触发时是
+// no-op。
+func (c *ctxFile) onCtxDone() {
+	c.mu.Lock()
+	if c.closed || c.timedOut {
+		c.mu.Unlock()
+		return
+	}
+	c.timedOut = true
+	c.mu.Unlock()
+	c.teardown()
+}
+
 func (c *ctxFile) Read(p []byte) (int, error) {
 	return c.f.Read(p)
 }
 
-// Close 停止守护并关闭文件；与 ctx 触发的 teardown 竞争安全。
+// Close 停止守护并关闭文件。先置 closed 再关闭 stop：迟到的 ctx
+// 取消无论是否被守护 select 选中，都经状态检查不再拆除连接。
 func (c *ctxFile) Close() error {
-	c.stopOnce.Do(func() { close(c.stop) })
+	c.markClosed()
 	return c.f.Close()
+}
+
+// markClosed 写入「Close 赢得状态竞争」并释放守护 goroutine；与
+// ctx 取消背靠背发生时（stop 与 ctx.Done 同时就绪），守护回调经
+// onCtxDone 的状态检查是 no-op。抽出为独立方法：测试用它复刻真实
+// Close 的状态序列而不引入文件关闭的调度点，可确定性地打进竞争
+// 窗口。
+func (c *ctxFile) markClosed() {
+	c.mu.Lock()
+	c.closed = true
+	c.mu.Unlock()
+	c.stopOnce.Do(func() { close(c.stop) })
 }
 
 // wrapOp 为底层错误补充操作与路径上下文；ctx 超时/取消经 %w 保持
