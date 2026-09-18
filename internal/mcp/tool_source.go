@@ -32,8 +32,8 @@ func registerSourceTools(server *mcp.Server, deps Deps) {
 			return nil, listSourcesResult{}, errors.New("internal error")
 		}
 		result := listSourcesResult{Total: len(sources), Offset: offset}
-		end := min(offset+limit, len(sources))
-		for _, s := range sources[min(offset, len(sources)):end] {
+		start, end := pageBounds(len(sources), offset, limit)
+		for _, s := range sources[start:end] {
 			summary, err := toSourceSummary(s)
 			if err != nil {
 				return nil, listSourcesResult{}, errors.New("internal error")

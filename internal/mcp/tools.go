@@ -39,6 +39,16 @@ func (in ListInput) normalize() (limit, offset int, err error) {
 	return limit, in.Offset, nil
 }
 
+// pageBounds 返回安全的半开分页区间。offset 超过总数时返回空页；先从
+// total 减去 offset，再相加，避免合法的大 offset 与 limit 相加溢出。
+func pageBounds(total, offset, limit int) (start, end int) {
+	if offset >= total {
+		return total, total
+	}
+	pageLen := min(limit, total-offset)
+	return offset, offset + pageLen
+}
+
 // principalFromContext 还原认证中间件注入的 principal：Bearer 中间件
 // 已完成 authentication，这里只取回 scopes 供 per-tool authorization。
 func principalFromContext(ctx context.Context) (auth.Principal, bool) {
@@ -73,7 +83,10 @@ func authorize(ctx context.Context, required auth.Scope) error {
 
 // toolAnnotations 返回只读工具的注解（对 Agent 标注副作用语义）。
 func readOnlyAnnotations() *mcp.ToolAnnotations {
-	return &mcp.ToolAnnotations{ReadOnlyHint: true}
+	return &mcp.ToolAnnotations{
+		ReadOnlyHint:  true,
+		OpenWorldHint: boolPtr(false),
+	}
 }
 
 // destructiveAnnotations 标注 side-effect / destructive-capable 语义：
@@ -82,9 +95,9 @@ func readOnlyAnnotations() *mcp.ToolAnnotations {
 func destructiveAnnotations() *mcp.ToolAnnotations {
 	return &mcp.ToolAnnotations{
 		ReadOnlyHint:    false,
-		IdempotentHint:  true,
+		IdempotentHint:  false,
 		DestructiveHint: boolPtr(true),
-		OpenWorldHint:   boolPtr(false),
+		OpenWorldHint:   boolPtr(true),
 	}
 }
 

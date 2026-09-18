@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -276,6 +277,30 @@ func TestMCPListSources(t *testing.T) {
 	}
 }
 
+func TestMCPToolAnnotations(t *testing.T) {
+	env, _, _ := discoveryFixture(t)
+	session := env.connect([]auth.Scope{auth.ScopeRead, auth.ScopeRun})
+
+	listed, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	annotations := make(map[string]*mcp.ToolAnnotations, len(listed.Tools))
+	for _, tool := range listed.Tools {
+		annotations[tool.Name] = tool.Annotations
+	}
+	for _, name := range []string{"list_sources", "list_jobs", "get_job", "get_sync_run", "search_files", "get_file_info"} {
+		got := annotations[name]
+		if got == nil || !got.ReadOnlyHint || got.OpenWorldHint == nil || *got.OpenWorldHint {
+			t.Errorf("%s annotations = %+v, want read-only closed-world", name, got)
+		}
+	}
+	run := annotations["run_sync"]
+	if run == nil || run.ReadOnlyHint || run.IdempotentHint || run.DestructiveHint == nil || !*run.DestructiveHint || run.OpenWorldHint == nil || !*run.OpenWorldHint {
+		t.Errorf("run_sync annotations = %+v, want non-idempotent destructive open-world", run)
+	}
+}
+
 func TestMCPListJobsOrderAndPaging(t *testing.T) {
 	env, _, _ := discoveryFixture(t)
 	session := env.connect([]auth.Scope{auth.ScopeRead})
@@ -306,6 +331,14 @@ func TestMCPListJobsOrderAndPaging(t *testing.T) {
 	// 越界 limit 报 tool error，不静默截断。
 	if _, res, err := callTool(session, "list_jobs", ListInput{Limit: maxListLimit + 1}); err == nil && !res.IsError {
 		t.Fatal("limit over max should fail")
+	}
+
+}
+
+func TestPageBoundsHugeOffset(t *testing.T) {
+	start, end := pageBounds(2, math.MaxInt, defaultListLimit)
+	if start != 2 || end != 2 {
+		t.Fatalf("pageBounds huge offset = (%d, %d), want empty page (2, 2)", start, end)
 	}
 }
 

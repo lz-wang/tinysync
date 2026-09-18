@@ -44,8 +44,8 @@ func registerJobTools(server *mcp.Server, deps Deps) {
 			return nil, listJobsResult{}, errors.New("internal error")
 		}
 		result := listJobsResult{Total: len(jobs), Offset: offset}
-		end := min(offset+limit, len(jobs))
-		for _, j := range jobs[min(offset, len(jobs)):end] {
+		start, end := pageBounds(len(jobs), offset, limit)
+		for _, j := range jobs[start:end] {
 			result.Jobs = append(result.Jobs, toJobSummary(j))
 		}
 		return nil, result, nil
