@@ -60,8 +60,10 @@ func newToolsEnv(t *testing.T, sources []source.Source, jobs []syncjob.Job) *too
 		}
 	}
 	jobRepo := jobsqlite.NewRepository(db)
+	managedRepo := jobsqlite.NewManagedRepository(db)
 	sourcesSvc := source.NewService(srcRepo, nilFactory{})
 	jobsSvc := syncjob.NewService(jobRepo, sourcesSvc, dataDir)
+	runner := syncjob.NewRunner(jobRepo, managedRepo, sourcesSvc, jobsqlite.NewRunRepository(db))
 	for _, j := range jobs {
 		clone := j
 		clone.CreatedAt = now
@@ -75,6 +77,7 @@ func newToolsEnv(t *testing.T, sources []source.Source, jobs []syncjob.Job) *too
 		Auth:    svc,
 		Sources: sourcesSvc,
 		Jobs:    jobsSvc,
+		Runner:  runner,
 	})
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
