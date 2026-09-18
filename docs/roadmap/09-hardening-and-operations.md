@@ -211,9 +211,11 @@ files_created files_updated files_deleted error
 - [x] 10k listing / 100k managed metadata 基准已记录；只有实测不可接受
       才追加独立优化 commit（如 repository 内查询），否则不提前优化
 - [x] hardening CI：`.github/workflows/hardening.yml`（可复用、ref
-      输入），Build 链路 test → integration → hardening → build →
-      native smoke；Release 链路 release checks → integration →
-      hardening → native smoke → publish
+      输入）。各质量 gate 在 prepare 之后并行执行，不是严格顺序链：
+      Build 上 build 与 native smoke 在 test 通过后运行，notify 汇总
+      test / integration / hardening / build / smoke 全部结果；
+      Release 上 publish 需要 test / integration / hardening / smoke
+      全部通过——hardening 失败无法发布
 
 ## Benchmark baseline（记录于 2026-09-18）
 
