@@ -181,6 +181,46 @@ start_server serve.log
 wait_ready serve.log
 echo "[smoke] health ok (public)"
 
+# 5b. datadir 单实例约束：同一 datadir 的第二个 serve 必须 fail-fast
+#     退出（exit != 0）并说明 datadir 已被占用；已运行实例保持健康。
+"${binary}" serve --datadir "${datadir}" --port $((port + 1)) >second_instance.log 2>&1 &
+second_pid=$!
+second_exited=0
+for _ in {1..30}; do
+	if ! kill -0 "${second_pid}" >/dev/null 2>&1; then
+		second_exited=1
+		break
+	fi
+	sleep 1
+done
+if [[ "${second_exited}" != "1" ]]; then
+	if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
+		taskkill.exe //IM "$(basename "${binary}")" //T //F >/dev/null 2>&1 || true
+	else
+		kill -TERM "${second_pid}" >/dev/null 2>&1 || true
+	fi
+	echo "Error: second serve instance on same datadir did not fail fast" >&2
+	cat second_instance.log >&2
+	exit 1
+fi
+second_rc=0
+wait "${second_pid}" >/dev/null 2>&1 || second_rc=$?
+if [[ "${second_rc}" -eq 0 ]]; then
+	echo "Error: second serve instance exited 0, want failure" >&2
+	cat second_instance.log >&2
+	exit 1
+fi
+if ! grep -F 'owned by another tinysync process' second_instance.log >/dev/null; then
+	echo "Error: second instance did not report datadir ownership conflict" >&2
+	cat second_instance.log >&2
+	exit 1
+fi
+if ! curl --fail --silent "${base_url}/api/v1/health" | grep -F '"status":"ok"' >/dev/null; then
+	echo "Error: first instance unhealthy after second instance rejection" >&2
+	exit 1
+fi
+echo "[smoke] datadir single-instance enforced (second instance exit ${second_rc})"
+
 # 7. default-deny：匿名访问管理 API 一律 401。
 anon_code=$(curl --silent -o anon.json -w '%{http_code}' "${base_url}/api/v1/sources")
 if [[ "${anon_code}" != "401" ]]; then

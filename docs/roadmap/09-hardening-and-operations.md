@@ -18,13 +18,13 @@
 
 ### Goals
 
-- [ ] 同一 datadir 只允许一个 TinySync 进程持有
+- [x] 同一 datadir 只允许一个 TinySync 进程持有
       `<datadir>/tinysync.lock`（exclusive lock，serve 全生命周期持有）
-- [ ] lock acquisition fail-fast：第二个实例立即失败退出（exit != 0），
+- [x] lock acquisition fail-fast：第二个实例立即失败退出（exit != 0），
       错误信息包含 datadir 路径，不包含任何 secret
-- [ ] 锁通过 OS 级 file lock 实现（POSIX flock / Windows LockFileEx），
+- [x] 锁通过 OS 级 file lock 实现（POSIX flock / Windows LockFileEx），
       不以「文件存在」判定；crash 后由 OS 自动释放，lock 文件本身可保留
-- [ ] pure Go / `CGO_ENABLED=0`，POSIX 与 Windows 均支持
+- [x] pure Go / `CGO_ENABLED=0`，POSIX 与 Windows 均支持
 - [ ] `tinysync db check|backup|restore` 复用同一把 datadir lock
 
 ```text
@@ -251,7 +251,7 @@ regression fixes、文档与发布为核心，不再大规模设计新机制。
 恢复、安全、跨平台和长期运行场景均有可复现的验证结果，升级与备份恢复
 路径已验证，关键领域回归测试与性能基准能够支撑 v1.0 验收。验收清单：
 
-- [ ] 同一 datadir 不允许两个 TinySync serve 实例同时运行
+- [x] 同一 datadir 不允许两个 TinySync serve 实例同时运行
 - [ ] crash 后 stale running run 自动收敛
 - [ ] crash 遗留 transfer temp file 自动安全清理
 - [ ] transient remote error 可以重试

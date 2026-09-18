@@ -15,6 +15,7 @@ import (
 	authsqlite "tinysync/internal/auth/sqlite"
 	"tinysync/internal/browser"
 	"tinysync/internal/config"
+	"tinysync/internal/instance"
 	"tinysync/internal/logging"
 	"tinysync/internal/mcp"
 	"tinysync/internal/publish"
@@ -33,7 +34,21 @@ import (
 // webFS 为嵌入的前端静态资源。数据库不可用时不启动 HTTP 服务；
 // ctx 取消后执行优雅关闭：停止接收新请求，等待存量请求完成，最后关闭 DB。
 // 返回 nil 表示正常退出（含优雅关闭），非 nil 表示启动或运行失败。
+//
+// datadir 单实例约束：整个进程生命周期持有 <datadir>/tinysync.lock
+// 独占锁（one datadir = one process），第二个实例启动即失败；锁在
+// DB 关闭后释放。
 func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
+	lock, err := instance.Acquire(cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if lerr := lock.Release(); lerr != nil {
+			logging.Errorf("release datadir lock: %v", lerr)
+		}
+	}()
+
 	db, err := storage.Open(cfg.DataDir)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
