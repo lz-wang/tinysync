@@ -303,5 +303,15 @@ regression fixes、文档与发布为核心，不再大规模设计新机制。
 - [x] benchmark baseline 已记录（100k managed metadata / 10k listing /
       large transfer）
 - [x] `make check` / `make build` / `make integration` / `make hardening`
-- [ ] 三平台 native smoke 与六平台 build 通过（随发布流程在远端 CI 执行）
-- [ ] Release assets + checksums 核对；WebDAV 镜像独立验收
+- [x] 三平台 native smoke 与六平台 build 通过（随发布流程在远端 CI 执行）
+- [x] Release assets + checksums 核对；WebDAV 镜像独立验收
+
+发布验收（2026-09-19）：annotated tag `v0.9.0` 指向 `abbe378`，
+Release workflow run `35370102052` 全绿——Release checks、MinIO
+integration、Hardening gate（reliability / scale / restore / fuzz）、
+Ubuntu / macOS / Windows native smoke 与 publish 均成功。GitHub
+Release `v0.9.0` 含六个平台发行档与 `checksums.txt`，后者六项值与
+公开资产 digest 逐项核验一致，Release Notes 与 CHANGELOG `[0.9.0]`
+段落一致；WebDAV mirror（`0.9.0/` 目录 7 个文件）与 Pushover 通知
+步骤均成功。main push Build run `35367388384`（`c051895`）的
+六平台构建与三平台 native smoke 亦通过。
