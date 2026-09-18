@@ -28,6 +28,8 @@
 #	16. Job 配置跨重启持久化，运行历史持久化：状态保持 failed，
 #	    run_id / finished_at / error 与重启前一致
 #	17. GET /api/v1/runs/:run_id 确认运行摘要 API 可查询该持久化运行
+#	17b. MCP 存活检查：anonymous /mcp 401、cookie-only 401、
+#	    Bearer API Token 的 initialize 得到 2026-07-28 协议 result
 #	18. SIGTERM 优雅退出（Windows 为强制清理）
 #
 # 接口：scripts/smoke.sh <binary> <expected-version>
@@ -417,6 +419,93 @@ grep -F "\"job_id\":\"${job_id}\"" run2.json >/dev/null || {
 	exit 1
 }
 echo "[smoke] persistent run queryable via runs API"
+
+# 17b. MCP 存活检查：/mcp 只认 Bearer API Token；匿名与 Web Session
+#      cookie 一律 401。2026-07-28 为 sessionless 协议：直接调用
+#      tools/list 需携带 MCP-Protocol-Version 头并得到 result，旧版
+#      本头被拒绝（协议细节由 Go E2E 覆盖，这里锁定端点在真实二进制
+#      上活着且带认证边界）。
+mcp_init='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2026-07-28","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}'
+mcp_code=$(curl --silent -o mcp_anon.json -w '%{http_code}' \
+	-H 'Content-Type: application/json' \
+	-H 'Accept: application/json, text/event-stream' \
+	--data "${mcp_init}" \
+	"${base_url}/mcp")
+if [[ "${mcp_code}" != "401" ]]; then
+	echo "Error: anonymous POST /mcp status ${mcp_code}, want 401" >&2
+	cat mcp_anon.json >&2
+	exit 1
+fi
+mcp_code=$(curl --silent -o /dev/null -w '%{http_code}' -b cookie.jar \
+	-H 'Content-Type: application/json' \
+	-H 'Accept: application/json, text/event-stream' \
+	--data "${mcp_init}" \
+	"${base_url}/mcp")
+if [[ "${mcp_code}" != "401" ]]; then
+	echo "Error: cookie-only POST /mcp status ${mcp_code}, want 401 (MCP never accepts web session)" >&2
+	exit 1
+fi
+curl --fail --silent -b cookie.jar \
+	-H 'Content-Type: application/json' \
+	--data '{"name":"smoke-mcp","scopes":["read"]}' \
+	"${base_url}/api/v1/api-tokens" >token.json
+mcp_token=$(grep -o '"raw_token":"[^"]*"' token.json | head -1 | cut -d '"' -f4)
+if [[ -z "${mcp_token}" ]]; then
+	echo "Error: no raw_token in api-tokens response: $(cat token.json)" >&2
+	exit 1
+fi
+# 2026-07-28 sessionless 请求形态：MCP-Protocol-Version / Mcp-Method
+# 头 + params._meta 的 per-request triple（protocolVersion +
+# clientCapabilities）。
+mcp_tools='{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'
+mcp_code=$(curl --silent -o mcp_tools.json -w '%{http_code}' \
+	-H 'Content-Type: application/json' \
+	-H 'Accept: application/json, text/event-stream' \
+	-H 'MCP-Protocol-Version: 2026-07-28' \
+	-H 'Mcp-Method: tools/list' \
+	-H "Authorization: Bearer ${mcp_token}" \
+	--data "${mcp_tools}" \
+	"${base_url}/mcp")
+if [[ "${mcp_code}" != "200" ]]; then
+	echo "Error: bearer tools/list status ${mcp_code}, want 200" >&2
+	cat mcp_tools.json >&2
+	exit 1
+fi
+if ! grep -F '"result"' mcp_tools.json >/dev/null; then
+	echo "Error: tools/list response missing JSON-RPC result: $(cat mcp_tools.json)" >&2
+	exit 1
+fi
+if ! grep -F 'run_sync' mcp_tools.json >/dev/null; then
+	echo "Error: tools/list missing run_sync: $(cat mcp_tools.json)" >&2
+	exit 1
+fi
+mcp_code=$(curl --silent -o /dev/null -w '%{http_code}' \
+	-H 'Content-Type: application/json' \
+	-H 'Accept: application/json, text/event-stream' \
+	-H 'MCP-Protocol-Version: 2025-06-18' \
+	-H "Authorization: Bearer ${mcp_token}" \
+	--data "${mcp_tools}" \
+	"${base_url}/mcp")
+if [[ "${mcp_code}" != "400" ]]; then
+	echo "Error: old protocol version header status ${mcp_code}, want 400" >&2
+	exit 1
+fi
+mcp_code=$(curl --silent -o mcp_init.json -w '%{http_code}' \
+	-H 'Content-Type: application/json' \
+	-H 'Accept: application/json, text/event-stream' \
+	-H "Authorization: Bearer ${mcp_token}" \
+	--data "${mcp_init}" \
+	"${base_url}/mcp")
+if [[ "${mcp_code}" != "200" ]] || ! grep -F '"result"' mcp_init.json >/dev/null; then
+	echo "Error: bearer initialize status ${mcp_code} (want 200 with result)" >&2
+	cat mcp_init.json >&2
+	exit 1
+fi
+if grep -F "${mcp_token}" mcp_init.json >/dev/null; then
+	echo "Error: MCP response echoes raw token" >&2
+	exit 1
+fi
+echo "[smoke] mcp endpoint authenticated and alive (2026-07-28)"
 
 # 18. SIGTERM 优雅退出：POSIX 平台发 SIGTERM 并 wait 校验退出码（非 0 即失败）；
 # Windows 的 Git Bash kill 对原生进程不可靠，保留 server_pid 交给 cleanup
