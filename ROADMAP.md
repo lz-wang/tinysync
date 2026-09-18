@@ -146,6 +146,11 @@ Runner 启动错误映射为可判定 tool error；无数据库 migration。
 请求形态 + 旧版本头 400），MCP E2E 覆盖认证矩阵、授权矩阵、
 run 生命周期（HTTP 请求结束不取消运行）、文件发现、resource
 与 Range 下载。状态保持「已完成实现」，待打 tag 发布。
+发布前静态评审收尾已修复列表超大 offset 溢出、Tool Annotation
+（`run_sync` 非幂等且 open-world、只读工具 closed-world）、managed 搜索
+错误 / `truncated` 语义与未知 `/mcp/*` 的 SPA fallback；本地 `make check`
+和 `make build` 已复验通过。修复后的远端 Build 与正式 Release 尚未执行，
+不得以修复前 `52be3f0` 的 Build 结果替代。
 
 ## 架构与边界
 

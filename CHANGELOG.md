@@ -47,6 +47,18 @@ GitHub Release 摘要一致。
   `/api/v1/jobs/:id/files/download`（Range / HEAD 行为不变），
   不产生匿名临时链接。
 
+### 修复
+
+- 修复 MCP `list_sources` 与 `list_jobs` 在超大合法 offset 下的整数
+  溢出：现在稳定返回空页，不会因 slice bounds panic 变为 500；同时
+  修正 Tool Annotation，`run_sync` 明确为非幂等、会与预配置远端交互，
+  只读工具明确为闭合世界。
+- 修复 `search_files` 将本地权限、I/O 等访问失败误报为「没有匹配文件」
+  的语义丢失；现在只忽略已经不存在的 managed 文件，且仅存在第
+  `limit + 1` 条实际可返回结果时设置 `truncated`。
+- 修复未注册的 `/mcp/*` 路径会被 Web SPA fallback 返回 HTML 的路由
+  边界问题，现统一返回 404。
+
 ## [0.7.0] - 2026-09-18
 
 ### 新增

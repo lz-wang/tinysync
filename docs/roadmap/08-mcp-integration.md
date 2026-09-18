@@ -232,7 +232,10 @@ max limit      = 200
 
 返回前对匹配记录再走 `LocalService.Stat()` 获得当前实际文件状态
 （filesafe confinement 后的 Entry），**不信任数据库中的旧
-size/mtime**；本地已删除的文件不返回。结果携带 `Truncated` 标记。
+size/mtime**；仅本地已删除（`fs.ErrNotExist`）的文件不返回，权限、I/O
+或其他 filesafe 异常按内部错误向上返回，不能伪装成「没有匹配文件」。
+结果仅在存在第 `limit + 1` 条实际可返回 Entry 时携带 `Truncated=true`；
+失效 managed 记录不影响该判断。
 
 ```text
 managed_files → candidate path → LocalService.Stat → actual Entry
@@ -329,7 +332,12 @@ ttlMs      = 0
 - secret、raw token、token hash、credential 明文不出现在任何 MCP
   tool / resource 返回中；E2E 以 grep 断言。
 - MCP 请求体上限 1 MiB；资源读取上限 256 KiB；搜索/列表均有上限，
-  无无界返回。
+  无无界返回。列表分页在计算切片边界前先处理 offset 超出总数的情形，
+  避免超大合法 offset 与 limit 相加溢出。
+- Tool Annotation 准确表达运行语义：只读查询为 closed-world；
+  `run_sync` 为 non-idempotent、destructive-capable、open-world
+  （会连接管理员预配置的 WebDAV / S3 / SFTP endpoint）。
+- 未注册的 `/mcp/*` 路径统一 404，不得落入 Web SPA fallback。
 - 不提供任何 mutation tool；配置面变更不经 MCP 可达。
 
 ## Testing
@@ -344,6 +352,9 @@ ttlMs      = 0
   全链路（含 Range → 206）。
 - native smoke：锁定 `anonymous /mcp → 401`、`Bearer /mcp → 有效 MCP
   响应` 两条存活检查；协议细节由 Go E2E 承担。
+- 发布前回归：覆盖超大 offset 的无溢出分页、Tool Annotation wire
+  值、失效 managed 记录不误设 `Truncated`、意外 filesystem error 上浮，
+  以及 `/mcp/* → 404` 路由边界。
 - 既有 REST / Web UI / Scheduler / Browser / Publish E2E 零回归。
 
 ## Upgrade impact
@@ -395,3 +406,15 @@ ttlMs      = 0
     全绿。
 23. 正式 Release、六平台资产、checksum、WebDAV mirror 按现有发布
     流程验收。
+
+## 发布前收尾记录
+
+2026-09-18 的静态评审发现并已在本地修复以下 release-candidate
+问题：列表超大 offset 的整数溢出、`run_sync` 的幂等 / open-world
+annotation、受管文件搜索的错误与截断语义，以及 `/mcp/*` 的 SPA fallback
+边界。对应本地 `make check` 与 `make build` 已通过。
+
+此前 Build run `35295781867` 验证的是修复前的 `52be3f0`，不能作为本次
+修复后的远端验收证据。当前仍保持「已完成实现待发布」：应在这些 commits
+推送后取得新的 Build 结果，再按既有流程创建 `v0.8.0` Release 并验收第
+23 条；在此之前不得标记为已发布。
