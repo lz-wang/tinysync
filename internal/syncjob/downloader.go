@@ -3,8 +3,8 @@ package syncjob
 import (
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,10 +14,13 @@ import (
 	"tinysync/internal/source"
 )
 
-// 下载器默认重试参数：共尝试 3 次，指数退避 100ms / 200ms。
+// 下载器默认重试参数：共尝试 3 次；指数退避 attempt 2 → ~250ms、
+// attempt 3 → ~500ms，叠加有界 jitter（[0, maxJitter)）打散并发传输
+// 的重试节奏；只重试 source.IsRetryable 判定为瞬时的错误。
 const (
 	defaultMaxAttempts = 3
-	baseBackoff        = 100 * time.Millisecond
+	baseBackoff        = 250 * time.Millisecond
+	maxJitter          = 100 * time.Millisecond
 )
 
 // tempPrefix 是同目录临时文件前缀；临时文件必须与目标同目录，
@@ -28,12 +31,21 @@ const tempPrefix = ".tinysync-part-"
 // Downloader 把远端文件原子下载到 LocalRoot 之下的目标路径：
 // remote.Open → 同目录临时文件 → io.Copy → 大小校验 → Sync/Close →
 // rename 替换目标。任何失败都清理临时文件且不触碰已有目标；
-// 瞬时错误按 maxAttempts 基础重试，context 取消立即放弃。
+// 仅 source.IsRetryable 的瞬时错误按 maxAttempts 重试，context 取消
+// 与确定性失败立即放弃。
 type Downloader struct {
 	remote      source.Remote
 	maxAttempts int
 	// backoff 返回第 attempt 次重试前的等待时间（attempt 从 1 开始）。
 	backoff func(attempt int) time.Duration
+	// jitter 返回附加的有界随机等待；nil 表示无抖动（测试注入 0 值
+	// 或确定性序列，保证计时可预期）。
+	jitter func() time.Duration
+	// timeout 是单文件单次 attempt 的传输超时；0 表示不启用（默认，
+	// HomeLab 大文件可能合法传输很久，不引入任意的默认断流行为）。
+	// 超时只作用于当前 attempt：超时的 attempt 可重试，不影响整轮
+	// run 的其它控制语义。
+	timeout time.Duration
 }
 
 // NewDownloader 构造默认参数的下载器。
@@ -44,6 +56,7 @@ func NewDownloader(remote source.Remote) *Downloader {
 		backoff: func(attempt int) time.Duration {
 			return baseBackoff << (attempt - 1)
 		},
+		jitter: defaultJitter,
 	}
 }
 
@@ -67,22 +80,51 @@ func (d *Downloader) Download(ctx context.Context, logicalPath, localRoot, relPa
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		lastErr = d.downloadOnce(ctx, logicalPath, target, expected)
+		// attemptCtx 把单次 attempt 的传输超时挂在 run 取消链之下：
+		// run 取消立即生效，超时只截断当前 attempt。
+		attemptCtx := ctx
+		if d.timeout > 0 {
+			var cancel context.CancelFunc
+			attemptCtx, cancel = context.WithTimeout(ctx, d.timeout)
+			defer cancel()
+		}
+		lastErr = d.downloadOnce(attemptCtx, logicalPath, target, expected)
 		if lastErr == nil {
 			return nil
 		}
-		if errors.Is(lastErr, context.Canceled) || errors.Is(lastErr, context.DeadlineExceeded) {
+		// 确定性失败（401 / 404 / host key / 权限 / ENOSPC / size
+		// mismatch 等）不做无意义重试；context.Canceled 同理。
+		if !source.IsRetryable(lastErr) {
 			return lastErr
 		}
+		// attempt 超时（DeadlineExceeded）可重试；run 级取消或超时
+		// 必须立即停止——检查的是 run ctx 本身，而不是 attempt 错误。
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if attempt < d.maxAttempts {
+			delay := d.backoff(attempt)
+			if d.jitter != nil {
+				delay += d.jitter()
+			}
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(d.backoff(attempt)):
+			case <-time.After(delay):
 			}
 		}
 	}
 	return lastErr
+}
+
+// defaultJitter 返回 [0, maxJitter) 的有界随机抖动；随机源失败时
+// 退化为无抖动（重试仍然发生，只是节奏可预测）。
+func defaultJitter() time.Duration {
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return 0
+	}
+	return time.Duration(binary.BigEndian.Uint64(buf[:]) % uint64(maxJitter))
 }
 
 // downloadOnce 执行单次下载：临时文件写入、校验、原子替换。
@@ -128,9 +170,11 @@ func copyAndVerify(tempPath string, rc io.Reader, expected source.Fingerprint) e
 		return fmt.Errorf("transfer to %s: %w", tempPath, copyErr)
 	}
 	// 严格校验落地字节数：零字节声明同样适用——「声明 0 但 body 非空」
-	// 视为传输损坏，不落地。
+	// 视为传输损坏，不落地。size mismatch 属确定性失败（远端稳定
+	// metadata 与快照不一致），不重试；下一轮 run 经 pending metadata
+	// 重新传输收敛。
 	if written != expected.Size {
-		return fmt.Errorf("size mismatch for %s: got %d bytes, want %d", tempPath, written, expected.Size)
+		return source.MarkPermanent(fmt.Errorf("size mismatch for %s: got %d bytes, want %d", tempPath, written, expected.Size))
 	}
 	return nil
 }

@@ -86,6 +86,21 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 		logging.Infof("recovered %d stale running sync run(s) as failed", recovered)
 	}
 
+	// Job 仓库提前装配：启动期清理需要枚举已配置 Job 的 LocalRoot。
+	jobRepo := jobsqlite.NewRepository(db)
+
+	// crash 遗留的传输临时文件清理：此刻 Runner / Scheduler 尚未
+	// 启动、没有任何 active transfer，按内部临时前缀删除普通文件是
+	// 安全的。清理是尽力而为：枚举或删除失败只记录告警，不阻断启动
+	//（失败的传输本身由 pending metadata 机制在下一轮继续收敛）。
+	if jobList, lerr := jobRepo.List(context.Background()); lerr != nil {
+		logging.Warnf("enumerate jobs for stale temp cleanup: %v", lerr)
+	} else if removed, cerr := syncjob.RemoveStaleTempFiles(context.Background(), jobLocalRoots(jobList)); cerr != nil {
+		logging.Warnf("remove stale transfer temp files: %v", cerr)
+	} else if removed > 0 {
+		logging.Infof("stale_temp_files_removed=%d", removed)
+	}
+
 	// 装配 Source 领域：SQLite 仓库 + 协议注册表 + 应用服务。协议
 	// dispatch 只发生在 registry 一处，业务层不出现协议分支；
 	// REST / Web UI / MCP 共用该服务层。
@@ -98,12 +113,12 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 	// 装配 Sync Job 领域：仓库共享同一 DB（FK RESTRICT / CASCADE 生效），
 	// 应用服务带 LocalRoot 归属保护，Runner 提供手动运行并以持久化
 	// 历史为运行状态事实来源；并发上限来自运行配置。
-	jobRepo := jobsqlite.NewRepository(db)
 	managedRepo := jobsqlite.NewManagedRepository(db)
 	jobs := syncjob.NewService(jobRepo, sources, cfg.DataDir)
 	runner := syncjob.NewRunner(jobRepo, managedRepo, sources, runs)
 	runner.MaxConcurrentJobs = cfg.MaxConcurrentJobs
 	runner.MaxConcurrentTransfers = cfg.MaxConcurrentTransfers
+	runner.TransferTimeout = cfg.TransferTimeout
 	scheduler := syncjob.NewScheduler(jobRepo, runner, runs)
 
 	// 装配文件浏览：Remote 浏览复用 Source 服务的统一远端入口，
@@ -173,4 +188,19 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 	}
 	logging.Infof("bye")
 	return nil
+}
+
+// jobLocalRoots 汇总全部 Job 的 LocalRoot（去重），供启动期临时文件
+// 清理枚举。
+func jobLocalRoots(jobs []syncjob.Job) []string {
+	seen := make(map[string]bool, len(jobs))
+	roots := make([]string, 0, len(jobs))
+	for _, j := range jobs {
+		if j.LocalRoot == "" || seen[j.LocalRoot] {
+			continue
+		}
+		seen[j.LocalRoot] = true
+		roots = append(roots, j.LocalRoot)
+	}
+	return roots
 }

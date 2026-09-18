@@ -27,6 +27,9 @@ type RunOptions struct {
 	//（独立调用）退化为本地单传输串行。远端下载 I/O 并行，SQLite
 	// 状态推进始终串行。
 	Transfers *TransferLimiter
+	// TransferTimeout 是单文件单次 attempt 的传输超时；0 表示不启用
+	//（由运行配置注入，默认保持既有行为）。
+	TransferTimeout time.Duration
 }
 
 // ItemRecorder 接收文件级变更明细。返回错误视为本轮失败：历史明细缺失
@@ -108,6 +111,7 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 	}
 
 	downloader := NewDownloader(opts.Remote)
+	downloader.timeout = opts.TransferTimeout
 	now := time.Now().UTC()
 
 	// recordItem 记录文件级明细；记录失败使本轮失败（不静默丢历史）。

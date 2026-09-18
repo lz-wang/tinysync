@@ -53,6 +53,7 @@ func NewCommand(webFS fs.FS) *cli.Command {
 						Port:                   c.Int("port"),
 						MaxConcurrentJobs:      c.Int("max-concurrent-jobs"),
 						MaxConcurrentTransfers: c.Int("max-concurrent-transfers"),
+						TransferTimeout:        c.Duration("transfer-timeout"),
 					}, webFS)
 				},
 			},
@@ -268,6 +269,13 @@ func serveFlags() []cli.Flag {
 			Usage:   "同时进行的远端文件下载上限",
 			Value:   config.DefaultMaxConcurrentTransfers,
 			Sources: cli.EnvVars("TINYSYNC_MAX_CONCURRENT_TRANSFERS"),
+		},
+		&cli.DurationFlag{
+			Name: "transfer-timeout",
+			Usage: "单个文件单次传输尝试的超时（如 1h、30m；0 = 不启用。" +
+				"超时的尝试会重试，不影响整轮运行的控制语义）",
+			Value:   0,
+			Sources: cli.EnvVars("TINYSYNC_TRANSFER_TIMEOUT"),
 		},
 	}
 }

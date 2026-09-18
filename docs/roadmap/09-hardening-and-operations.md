@@ -55,18 +55,18 @@ Shutdown → Release lock
 
 - [x] 重试分类：只重试 transient error；协议错误判断只能在 adapter
       boundary 内完成（`internal/syncjob` 不出现协议分支）
-- [ ] permanent error（401 / 403 / 404、invalid path、host-key mismatch、
+- [x] permanent error（401 / 403 / 404、invalid path、host-key mismatch、
       invalid credentials、本地 permission / ENOSPC、path safety violation、
       size mismatch）不做无意义重试
-- [ ] transient error（connection reset、临时网络故障、超时、HTTP
+- [x] transient error（connection reset、临时网络故障、超时、HTTP
       408 / 429 / 5xx、S3 / SFTP 瞬时故障、远端流中断）按策略重试
-- [ ] context cancellation / timeout 立即停止 retry
-- [ ] 重试策略：max attempts = 3；attempt 2 → ~250ms、attempt 3 → ~500ms，
+- [x] context cancellation / timeout 立即停止 retry
+- [x] 重试策略：max attempts = 3；attempt 2 → ~250ms、attempt 3 → ~500ms，
       指数退避 + 有界 jitter，jitter 可注入保证测试确定性
-- [ ] Transfer timeout 可配置（`--transfer-timeout` /
+- [x] Transfer timeout 可配置（`--transfer-timeout` /
       `TINYSYNC_TRANSFER_TIMEOUT`，默认 0 = 不启用，保持既有行为）；
       超时作用于单文件单次 attempt，不影响整轮 run 的其它控制语义
-- [ ] crash 遗留的 transfer 临时文件在启动 Runner / Scheduler 之前
+- [x] crash 遗留的 transfer 临时文件在启动 Runner / Scheduler 之前
       安全清理：枚举已配置 Job 的 LocalRoot、WalkDir 不跟随 symlink、
       只删除匹配内部临时前缀的普通文件，记录
       `stale_temp_files_removed=N`；不删除其它隐藏文件
@@ -252,12 +252,12 @@ regression fixes、文档与发布为核心，不再大规模设计新机制。
 路径已验证，关键领域回归测试与性能基准能够支撑 v1.0 验收。验收清单：
 
 - [x] 同一 datadir 不允许两个 TinySync serve 实例同时运行
-- [ ] crash 后 stale running run 自动收敛
-- [ ] crash 遗留 transfer temp file 自动安全清理
-- [ ] transient remote error 可以重试
-- [ ] permanent error 不发生无意义重试
-- [ ] context cancellation / timeout 立即停止 retry
-- [ ] transfer timeout 可配置且默认保持兼容行为
+- [x] crash 后 stale running run 自动收敛
+- [x] crash 遗留 transfer temp file 自动安全清理
+- [x] transient remote error 可以重试
+- [x] permanent error 不发生无意义重试
+- [x] context cancellation / timeout 立即停止 retry
+- [x] transfer timeout 可配置且默认保持兼容行为
 - [x] SQLite quick_check / foreign_key_check 可执行
 - [x] migration 前 corruption 不继续迁移
 - [x] operator 可以生成一致性数据库备份

@@ -113,6 +113,9 @@ type Runner struct {
 	// MaxConcurrentTransfers 是全进程同时进行的远端文件下载上限，
 	// 由所有 Job 的同步引擎经共享 transfer limiter 消费；必须为正整数。
 	MaxConcurrentTransfers int
+	// TransferTimeout 是单文件单次 attempt 的传输超时；0 表示不启用。
+	// 由应用装配从运行配置注入。
+	TransferTimeout time.Duration
 
 	mu           sync.Mutex
 	active       map[string]*activeRun // jobID → 进行中的运行
@@ -342,12 +345,13 @@ func (r *Runner) runOne(ctx context.Context, job Job, run *activeRun) {
 	// 会话）；关闭失败不影响本轮终态。
 	defer func() { _ = remote.Close() }()
 	stats, runErr := Run(ctx, RunOptions{
-		Remote:    remote,
-		Job:       job,
-		Managed:   r.managed,
-		Items:     runItemRecorder{repo: r.history},
-		RunID:     run.runID,
-		Transfers: run.transfers,
+		Remote:          remote,
+		Job:             job,
+		Managed:         r.managed,
+		Items:           runItemRecorder{repo: r.history},
+		RunID:           run.runID,
+		Transfers:       run.transfers,
+		TransferTimeout: r.TransferTimeout,
 	})
 	r.finalize(ctx, run, stats, runErr)
 }

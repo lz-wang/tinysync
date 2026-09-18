@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 )
 
 // DefaultPort 是 tinysync serve 的默认监听端口。
@@ -32,6 +33,9 @@ type Config struct {
 	MaxConcurrentJobs int
 	// MaxConcurrentTransfers 是全进程同时进行的远端文件下载上限。
 	MaxConcurrentTransfers int
+	// TransferTimeout 是单文件单次传输 attempt 的超时；0 表示不启用
+	//（HomeLab 大文件可能合法传输很久，默认保持既有行为）。
+	TransferTimeout time.Duration
 }
 
 // Default 返回内置默认配置。
@@ -51,6 +55,8 @@ type Options struct {
 	// 并发参数为 0 表示未提供（回退默认值）。
 	MaxConcurrentJobs      int
 	MaxConcurrentTransfers int
+	// TransferTimeout 为 0 表示未提供 / 不启用；负值非法。
+	TransferTimeout time.Duration
 }
 
 // Load 用传入参数装配 Config：空缺项回退默认值，DataDir 解析为绝对路径，
@@ -78,6 +84,12 @@ func Load(opts Options) (*Config, error) {
 	}
 	if cfg.MaxConcurrentTransfers < 1 {
 		return nil, fmt.Errorf("max-concurrent-transfers %d must be a positive integer", cfg.MaxConcurrentTransfers)
+	}
+	if opts.TransferTimeout != 0 {
+		cfg.TransferTimeout = opts.TransferTimeout
+	}
+	if cfg.TransferTimeout < 0 {
+		return nil, fmt.Errorf("transfer-timeout %s must not be negative (0 disables)", cfg.TransferTimeout)
 	}
 	if !filepath.IsAbs(cfg.DataDir) {
 		abs, err := filepath.Abs(cfg.DataDir)
