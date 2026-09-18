@@ -122,6 +122,87 @@ func TestDBRestoreAbortsWhenSafetyBackupFailsOnHealthyDB(t *testing.T) {
 	}
 }
 
+// corruptMiddlePage 覆盖数据库文件第二个数据页（offset = 默认页大小
+// 4096 起）为 0xFF：保留 header 的页级损坏——storage.Open 仍可打开，
+// quick_check 失败。与 storage 包测试同一手法。
+func corruptMiddlePage(t *testing.T, dbPath string) {
+	t.Helper()
+	f, err := os.OpenFile(dbPath, os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("open db for corruption: %v", err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		t.Fatalf("stat db: %v", err)
+	}
+	if info.Size() < 8192 {
+		t.Fatal("database smaller than two pages; cannot corrupt middle page")
+	}
+	if _, err := f.WriteAt(make([]byte, 512), 4096); err != nil {
+		t.Fatalf("corrupt middle page: %v", err)
+	}
+	if err := f.Sync(); err != nil {
+		t.Fatalf("sync corrupted db: %v", err)
+	}
+}
+
+// 「可 Open 但已损坏」的库必须允许恢复：Open 成功 + integrity check
+// 失败 → corrupted → 告警并继续 restore。损坏库的 VACUUM INTO safety
+// backup 大概率失败，若据此中止恢复，最需要救灾的场景反而被损坏库
+// 自身阻断。
+func TestDBRestoreProceedsWhenOpenableDBCorrupted(t *testing.T) {
+	dataDir := t.TempDir()
+	db := bootstrapDBDataDir(t, dataDir)
+	backupPath := backupHealthyDB(t, dataDir)
+
+	// 关闭连接、清掉 sidecar 后制造页级损坏（遗留 WAL 可能把内容写回）。
+	if err := db.Close(); err != nil {
+		t.Fatalf("close bootstrap db: %v", err)
+	}
+	for _, sidecar := range []string{"-wal", "-shm"} {
+		if err := os.Remove(filepath.Join(dataDir, storage.DatabaseFileName+sidecar)); err != nil && !os.IsNotExist(err) {
+			t.Fatalf("remove sidecar: %v", err)
+		}
+	}
+	corruptMiddlePage(t, filepath.Join(dataDir, storage.DatabaseFileName))
+
+	// 前置状态确认：Open 成功、Check 失败——本测试针对的真实形态。
+	ctx := context.Background()
+	opened, err := storage.Open(dataDir)
+	if err != nil {
+		t.Fatalf("precondition: open corrupted db should succeed: %v", err)
+	}
+	if _, cerr := storage.Check(ctx, opened); cerr == nil {
+		opened.Close()
+		t.Fatal("precondition: Check on corrupted db should fail")
+	}
+	_ = opened.Close()
+
+	stdout, stderr, err := runDB(t, dbInput{DataDir: dataDir, From: backupPath, Force: true})
+	if err != nil {
+		t.Fatalf("restore on openable-corrupted db = %v, want success", err)
+	}
+	_ = stdout
+	if !strings.Contains(stderr, "corrupted") {
+		t.Errorf("stderr %q missing corrupted-db warning", stderr)
+	}
+
+	// 恢复后的库健康且业务数据回来。
+	restored, err := storage.Open(dataDir)
+	if err != nil {
+		t.Fatalf("reopen restored db: %v", err)
+	}
+	defer restored.Close()
+	if _, err := storage.Check(ctx, restored); err != nil {
+		t.Errorf("integrity check after restore: %v", err)
+	}
+	var count int
+	if err := restored.QueryRow("SELECT count(*) FROM sync_jobs WHERE id = 'job_rt'").Scan(&count); err != nil || count != 1 {
+		t.Errorf("job after corrupted-db restore = (%d, %v), want restored", count, err)
+	}
+}
+
 // 当前库不可打开（损坏）时恢复语义不变：跳过 safety backup、告警并
 // 继续恢复——restore 本来就是救灾入口。
 func TestDBRestoreProceedsWhenCurrentDBDamaged(t *testing.T) {

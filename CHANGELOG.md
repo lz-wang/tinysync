@@ -31,9 +31,10 @@ GitHub Release 摘要一致。
   schema 版本完整性报告）、`tinysync db backup`（VACUUM INTO 一致性
   快照写入 `<datadir>/backups/`，POSIX 权限 0600）与
   `tinysync db restore --from <file> --force`（离线恢复：先校验备份、
-  自动生成当前库 safety backup——当前库健康时备份失败即在任何替换
-  前中止，当前库已损坏不可打开时告警并继续救灾、staging + fsync 后
-  原子替换并清理遗留 WAL）。三个命令与 `serve` 互斥执行（同一把
+  自动生成当前库 safety backup——「健康」（可打开且通过完整性检查）
+  的库备份失败即在任何替换前中止，打不开或可打开但已损坏（页级
+  损坏等）的库告警并继续救灾、staging + fsync 后原子替换并清理
+  遗留 WAL）。三个命令与 `serve` 互斥执行（同一把
   datadir 锁）；schema
   比当前二进制新的备份拒绝恢复，较旧的备份恢复后由下次 `serve` 正常
   向前迁移。数据库迁移前的自动备份行为不变。

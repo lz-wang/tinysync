@@ -86,13 +86,13 @@ func execDBBackup(ctx context.Context, in dbInput, stdout, stderr io.Writer) err
 }
 
 // execDBRestore 执行 tinysync db restore：validate source backup →
-// 备份当前 DB（safety backup；当前库健康时必须成功，失败即在任何
-// 替换发生前中止——磁盘空间不足、权限错误或 backup 目录故障时继续
-// 覆盖健康库不可接受；当前库打不开则告警继续，恢复损坏库是本命令
-// 的核心场景）→ 同目录 staging 文件 + fsync → 替换数据库 → 清理
-// 遗留 -wal / -shm → reopen + integrity check。schema 较旧的备份
-// 恢复成功，下次 serve 正常向前迁移；schema 较新的备份拒绝恢复
-// （不做 downgrade migration）。
+// 备份当前 DB（safety backup；「健康」= 可打开且通过完整性检查，
+// 此时备份必须成功，失败即在任何替换发生前中止——磁盘空间不足、
+// 权限错误或 backup 目录故障时继续覆盖健康库不可接受；打不开或
+// 可打开但已损坏的库告警后跳过备份继续恢复——restore 是救灾入口）→
+// 同目录 staging 文件 + fsync → 替换数据库 → 清理遗留 -wal / -shm →
+// reopen + integrity check。schema 较旧的备份恢复成功，下次 serve
+// 正常向前迁移；schema 较新的备份拒绝恢复（不做 downgrade migration）。
 func execDBRestore(ctx context.Context, in dbInput, stdout, stderr io.Writer) error {
 	if !in.Force {
 		return fmt.Errorf("restore replaces the live database; re-run with --force to confirm")
@@ -114,13 +114,18 @@ func execDBRestore(ctx context.Context, in dbInput, stdout, stderr io.Writer) er
 		return fmt.Errorf("validate backup %s: %w", in.From, err)
 	}
 
-	// 2. pre-restore safety backup：当前库健康（可打开）时备份必须
-	//    成功，路径或 VACUUM 失败即中止——健康的库不能在丢失最后
-	//    快照的情况下被继续覆盖；当前库打不开（典型原因：正在恢复
-	//    一个损坏的库）则告警继续，restore 是救灾入口。
+	// 2. pre-restore safety backup：「健康」的判定是可打开且通过完整
+	//    性检查——两者都满足时备份必须成功，路径或 VACUUM 失败即在
+	//    任何替换发生前中止（健康的库不能在丢失最后快照的情况下被
+	//    覆盖）；打不开，或可打开但 Check 失败（页级损坏等）的库，
+	//    告警后跳过备份继续恢复——restore 是救灾入口，不能被损坏库
+	//    自身的 VACUUM 失败阻断。
 	db, err := storage.Open(cfg.DataDir)
 	if err != nil {
 		fmt.Fprintf(stderr, "warning: current database unavailable, skipping pre-restore backup: %v\n", err)
+	} else if _, cerr := storage.Check(ctx, db); cerr != nil {
+		_ = db.Close()
+		fmt.Fprintf(stderr, "warning: current database is corrupted, skipping pre-restore backup: %v\n", cerr)
 	} else {
 		target, perr := storage.PreRestoreBackupPath(cfg.DataDir)
 		if perr != nil {
