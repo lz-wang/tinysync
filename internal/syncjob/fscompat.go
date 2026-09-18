@@ -85,9 +85,10 @@ func checkWindowsFilename(component string) error {
 //     先下载的平台相关结果。
 //
 // 校验覆盖计划内全部本地映射路径（download / update / skip /
-// delete）。LocalRoot 不存在时跳过大小写探测（文件名规则仍然生效；
-// 此时新建目录的大小写语义由首次下载的原子替换兜底——冲突在
-// O_EXCL 创建处失败，同样不会静默覆盖）。
+// delete）。LocalRoot 尚不存在（首次同步）时，向上寻找最近存在的
+// 祖先目录、在其所在文件系统上探测大小写语义——尚未创建的
+// LocalRoot 最终会落在该文件系统中；文件名规则始终生效。探测只
+// 创建并随即删除一个探针文件，任何失败都发生在本地 mutation 之前。
 func PreflightFilesystemCompat(localRoot string, plan Plan, policy FilenamePolicy) error {
 	rels := planMappedRelPaths(plan)
 	for _, rel := range rels {
@@ -149,22 +150,25 @@ func checkCaseCollisions(rels []string, caseInsensitive bool) error {
 	return nil
 }
 
-// rootIsCaseInsensitive 探测 LocalRoot 的实际大小写敏感性：在 root
-// 下创建带随机后缀的探针文件，再以翻转大小写的名称 Lstat。root
-// 不存在时返回 false（大小写敏感假设，见 PreflightFilesystemCompat
-// 的兜底说明）。
+// rootIsCaseInsensitive 探测 LocalRoot 的实际大小写敏感性：在探测
+// 目录下创建带随机后缀的探针文件，再以翻转大小写的名称 Lstat。
+// LocalRoot 自身不存在时，向上寻找最近存在的祖先目录探测（见
+// nearestExistingDir）——最终下载会创建的目录落在同一文件系统上，
+// 首次同步同样必须识别 case-insensitive 环境，否则 Foo.txt / foo.txt
+// 会因 rename 替换语义静默互相覆盖。
 func rootIsCaseInsensitive(root string) (bool, error) {
-	if _, err := os.Lstat(root); err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
-		}
+	probeRoot, err := nearestExistingDir(root)
+	if err != nil {
 		return false, err
+	}
+	if probeRoot == "" {
+		return false, nil
 	}
 	buf := make([]byte, 6)
 	if _, err := rand.Read(buf); err != nil {
 		return false, fmt.Errorf("generate probe name: %w", err)
 	}
-	f, err := os.CreateTemp(root, ".tinysync-case-probe-"+hex.EncodeToString(buf)+"-*")
+	f, err := os.CreateTemp(probeRoot, ".tinysync-case-probe-"+hex.EncodeToString(buf)+"-*")
 	if err != nil {
 		return false, err
 	}
@@ -173,13 +177,37 @@ func rootIsCaseInsensitive(root string) (bool, error) {
 	defer func() { _ = os.Remove(f.Name()) }()
 
 	flipped := flipCase(name)
-	if _, err := os.Lstat(filepath.Join(root, flipped)); err != nil {
+	if _, err := os.Lstat(filepath.Join(probeRoot, flipped)); err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
 		}
 		return false, err
 	}
 	return true, nil
+}
+
+// nearestExistingDir 返回 path 自身及逐级父目录中最近存在的目录
+// 路径；逐级都不存在（极端情况）时返回空串——无从探测时按大小写
+// 敏感假设处理。只读探测，不创建任何目录。
+func nearestExistingDir(path string) (string, error) {
+	current := path
+	for {
+		info, err := os.Lstat(current)
+		if err == nil {
+			if !info.IsDir() {
+				return "", fmt.Errorf("nearest existing ancestor %s is not a directory", current)
+			}
+			return current, nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", nil
+		}
+		current = parent
+	}
 }
 
 // flipCase 翻转字符串中第一个字母的大小写；无字母时原样返回。

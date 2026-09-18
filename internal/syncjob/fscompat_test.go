@@ -129,6 +129,39 @@ func TestPreflightFilesystemCompat(t *testing.T) {
 	}
 }
 
+// LocalRoot 本身不存在（首次同步）时，大小写探测必须落在最近存在
+// 的祖先目录所在文件系统上：case-insensitive 文件系统上冲突计划仍
+// 要在任何 mutation 之前失败，且探测过程不得创建 LocalRoot。
+func TestPreflightFilesystemCompatMissingRootCaseCollision(t *testing.T) {
+	base := t.TempDir()
+	insensitive, err := rootIsCaseInsensitive(base)
+	if err != nil {
+		t.Fatalf("probe case sensitivity: %v", err)
+	}
+
+	collision := Plan{Downloads: []planEntry{{relPath: "Foo.txt"}, {relPath: "foo.txt"}}}
+	for _, missing := range []string{
+		filepath.Join(base, "new-job"),
+		filepath.Join(base, "deep", "nested", "new-job"),
+	} {
+		err := PreflightFilesystemCompat(missing, collision, FilenamePolicy{})
+		if insensitive && err == nil {
+			t.Errorf("collision plan on missing root %q (insensitive fs) = nil, want error", missing)
+		}
+		if !insensitive && err != nil {
+			t.Errorf("collision plan on missing root %q (sensitive fs) = %v, want nil", missing, err)
+		}
+		if _, err := os.Lstat(missing); !os.IsNotExist(err) {
+			t.Errorf("missing root %s was created by preflight: %v", missing, err)
+		}
+	}
+
+	clean := Plan{Downloads: []planEntry{{relPath: "docs/唯一.txt"}}}
+	if err := PreflightFilesystemCompat(filepath.Join(base, "new-job"), clean, FilenamePolicy{}); err != nil {
+		t.Errorf("clean plan on missing root = %v, want nil", err)
+	}
+}
+
 // flipCase 翻转字符串中第一个字母的大小写（含扩展名内的字母）。
 func TestFlipCase(t *testing.T) {
 	cases := map[string]string{
@@ -172,5 +205,34 @@ func TestRunAbortsOnCaseCollisionBeforeMutation(t *testing.T) {
 	}
 	for _, e := range entries {
 		t.Errorf("local mutation happened before preflight failure: %s", e.Name())
+	}
+}
+
+// 引擎集成：LocalRoot 不存在（首次同步）+ case-insensitive 文件系统
+// 上，Foo.txt / foo.txt 冲突必须整轮失败且零本地变更——不得创建
+// LocalRoot，更不允许后下载覆盖先下载。
+func TestRunAbortsOnCaseCollisionWithMissingRoot(t *testing.T) {
+	f := newEngineFixture(t, ModeCopy)
+	insensitive, err := rootIsCaseInsensitive(f.root)
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if !insensitive {
+		t.Skip("local root is case-sensitive; collision abort semantics not applicable here")
+	}
+	if err := os.Remove(f.root); err != nil {
+		t.Fatalf("remove local root: %v", err)
+	}
+
+	remote := buildRemote(map[string]string{
+		"/Foo.txt": "upper",
+		"/foo.txt": "lower",
+	}, nil)
+
+	if _, runErr := f.run(remote); runErr == nil {
+		t.Fatal("run with case collision on missing root = nil, want preflight failure")
+	}
+	if _, err := os.Lstat(f.root); !os.IsNotExist(err) {
+		t.Fatalf("missing local root was created by run: %v", err)
 	}
 }
