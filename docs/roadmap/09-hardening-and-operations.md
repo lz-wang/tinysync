@@ -201,16 +201,16 @@ files_created files_updated files_deleted error
 
 ### Goals
 
-- [ ] `make hardening`：reliability E2E、large directory、database
+- [x] `make hardening`：reliability E2E、large directory、database
       restore、filesystem failure、short fuzz runs
-- [ ] `make benchmark`：BenchmarkPlan10K、BenchmarkManagedSearch100K、
+- [x] `make benchmark`：BenchmarkPlan10K、BenchmarkManagedSearch100K、
       BenchmarkSQLiteManaged100K、BenchmarkSmallFileSync、
       BenchmarkLargeFileTransfer、BenchmarkRemotePagination10K，
       输出 ns/op、B/op、allocs/op，先建立 baseline
-- [ ] benchmark 只作为优化依据，不使用不稳定的 wall-clock CI threshold
-- [ ] 10k listing / 100k managed metadata 基准已记录；只有实测不可接受
+- [x] benchmark 只作为优化依据，不使用不稳定的 wall-clock CI threshold
+- [x] 10k listing / 100k managed metadata 基准已记录；只有实测不可接受
       才追加独立优化 commit（如 repository 内查询），否则不提前优化
-- [ ] hardening CI：`.github/workflows/hardening.yml`（可复用、ref
+- [x] hardening CI：`.github/workflows/hardening.yml`（可复用、ref
       输入），Build 链路 test → integration → hardening → build →
       native smoke；Release 链路 release checks → integration →
       hardening → native smoke → publish
@@ -272,7 +272,9 @@ regression fixes、文档与发布为核心，不再大规模设计新机制。
 - [x] Windows invalid filename fail-fast
 - [x] case-insensitive filesystem collision fail-fast
 - [x] permission / ENOSPC / rename failure 不破坏旧文件
-- [ ] WebDAV / S3 / SFTP 通过统一 Remote contract
+- [x] WebDAV / S3 / SFTP 通过统一 Remote contract（S3 契约随 MinIO
+      integration gate 执行，本地 MinIO 实测通过；分页跟随用例以
+      limit=2 避开参考服务器 MaxKeys=1 的续页丢失缺陷，见 s3 List 注释）
 - [x] transient network fault E2E 通过
 - [x] 10k directory scenario 通过
 - [x] large streaming transfer 通过

@@ -90,6 +90,16 @@ jobs:
     with:
       ref: ${{ github.sha }}
 
+  # Hardening gate：可靠性 E2E、规模场景、数据库 restore 与 fuzz。
+  # 实现在 hardening.yml 可复用 workflow，与 Release workflow 共用；
+  # 与 integration 相同的 ref 语义。
+  hardening:
+    name: Hardening gate
+    needs: prepare
+    uses: ./.github/workflows/hardening.yml
+    with:
+      ref: ${{ github.sha }}
+
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
     needs: [prepare, test]
@@ -210,9 +220,9 @@ jobs:
 
   notify:
     name: Pushover notification
-    # integration 是 workflow 整体结论的一部分：通知必须如实反映
-    # protocol integration 的结果，不允许 gate 红了仍推送"构建成功"。
-    needs: [prepare, test, integration, build, smoke]
+    # integration / hardening 是 workflow 整体结论的一部分：通知必须
+    # 如实反映各 gate 的结果，不允许 gate 红了仍推送"构建成功"。
+    needs: [prepare, test, integration, hardening, build, smoke]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -230,9 +240,10 @@ jobs:
 
           TEST_RESULT="${{ needs.test.result }}"
           INTEGRATION_RESULT="${{ needs.integration.result }}"
+          HARDENING_RESULT="${{ needs.hardening.result }}"
           BUILD_RESULT="${{ needs.build.result }}"
           SMOKE_RESULT="${{ needs.smoke.result }}"
-          if [[ "${TEST_RESULT}" == "success" && "${INTEGRATION_RESULT}" == "success" && "${BUILD_RESULT}" == "success" && "${SMOKE_RESULT}" == "success" ]]; then
+          if [[ "${TEST_RESULT}" == "success" && "${INTEGRATION_RESULT}" == "success" && "${HARDENING_RESULT}" == "success" && "${BUILD_RESULT}" == "success" && "${SMOKE_RESULT}" == "success" ]]; then
             PRIORITY="0"
             TITLE="TinySync 构建成功"
           else
@@ -244,6 +255,7 @@ jobs:
           <b>TinySync 构建通知</b>
           <u>测试结果</u>: ${TEST_RESULT}
           <u>协议集成</u>: ${INTEGRATION_RESULT}
+          <u>Hardening</u>: ${HARDENING_RESULT}
           <u>构建结果</u>: ${BUILD_RESULT}
           <u>三平台 Smoke</u>: ${SMOKE_RESULT}
           <u>版本</u>: <font color="#0000ff">${{ needs.prepare.outputs.version }}</font>

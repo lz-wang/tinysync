@@ -130,6 +130,16 @@ jobs:
     with:
       ref: ${{ needs.prepare.outputs.tag }}
 
+  # Hardening gate 是发布门禁的一部分：可靠性 / 规模 / restore / fuzz
+  # 与 Build workflow 共用同一套证据（hardening.yml 可复用 workflow）；
+  # ref 固定为发布 tag，与 integration 相同的 ref 语义。
+  hardening:
+    name: Hardening gate
+    needs: prepare
+    uses: ./.github/workflows/hardening.yml
+    with:
+      ref: ${{ needs.prepare.outputs.tag }}
+
   smoke:
     name: Smoke ${{ matrix.os }}
     needs: prepare
@@ -181,7 +191,7 @@ jobs:
 
   publish:
     name: Publish GitHub Release and WebDAV mirror
-    needs: [prepare, test, integration, smoke]
+    needs: [prepare, test, integration, hardening, smoke]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -260,7 +270,7 @@ jobs:
 
   notify:
     name: Pushover notification
-    needs: [prepare, test, integration, smoke, publish]
+    needs: [prepare, test, integration, hardening, smoke, publish]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -277,9 +287,10 @@ jobs:
 
           TEST_RESULT="${{ needs.test.result }}"
           INTEGRATION_RESULT="${{ needs.integration.result }}"
+          HARDENING_RESULT="${{ needs.hardening.result }}"
           SMOKE_RESULT="${{ needs.smoke.result }}"
           PUBLISH_RESULT="${{ needs.publish.result }}"
-          if [[ "${TEST_RESULT}" == "success" && "${INTEGRATION_RESULT}" == "success" && "${SMOKE_RESULT}" == "success" && "${PUBLISH_RESULT}" == "success" ]]; then
+          if [[ "${TEST_RESULT}" == "success" && "${INTEGRATION_RESULT}" == "success" && "${HARDENING_RESULT}" == "success" && "${SMOKE_RESULT}" == "success" && "${PUBLISH_RESULT}" == "success" ]]; then
             PRIORITY="0"
             TITLE="TinySync 发布成功"
           else
@@ -291,6 +302,7 @@ jobs:
           <b>TinySync 发布通知</b>
           <u>测试结果</u>: ${TEST_RESULT}
           <u>协议集成</u>: ${INTEGRATION_RESULT}
+          <u>Hardening</u>: ${HARDENING_RESULT}
           <u>三平台 Smoke</u>: ${SMOKE_RESULT}
           <u>GitHub Release</u>: ${PUBLISH_RESULT}
           <u>版本</u>: <font color="#0000ff">${RELEASE_TAG}</font>

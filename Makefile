@@ -6,7 +6,7 @@
 
 .PHONY: \
 	build build-all build-os package-os dist \
-	test coverage check format setup clean version help ci integration \
+	test coverage check format setup clean version help ci integration hardening benchmark \
 	web-install web-ci-install web-lint web-typecheck web-build web-format \
 	_build-platform _package-platform _check-platform \
 	_install-go-tools _check-go-format _check-go-mod
@@ -220,6 +220,24 @@ coverage:
 		-html="$(BACKEND_COVERAGE)" \
 		-o "$(BACKEND_COVERAGE_HTML)"
 	@go tool cover -func="$(BACKEND_COVERAGE)" | tail -1
+
+## Run the v0.9 hardening quality gate: full test suite with hardening
+## scenarios (reliability E2E, 10k directory, 32MiB transfer, database
+## restore, filesystem failure injection) plus short fuzz runs.
+## 不含 benchmark：性能基准只作优化依据，不做 wall-clock CI 门禁。
+hardening:
+	@echo "[tinysync] hardening"
+	@$(GOENV) TINYSYNC_HARDENING=1 $(GO) test -count=1 -timeout 900s ./...
+	@$(GOENV) $(GO) test -run '^$$' -fuzz FuzzValidateLogicalPath -fuzztime 10s ./internal/filesafe/
+	@$(GOENV) $(GO) test -run '^$$' -fuzz FuzzResolveWithinRoot -fuzztime 10s ./internal/filesafe/
+	@$(GOENV) $(GO) test -run '^$$' -fuzz FuzzLocalMapping -fuzztime 10s ./internal/syncjob/
+
+## Run performance benchmarks and record ns/op, B/op, allocs/op.
+## 仅建立 baseline / 对比优化效果，不作为 CI 门禁。
+benchmark:
+	@echo "[tinysync] benchmark"
+	@$(GOENV) $(GO) test -run '^$$' -bench . -benchmem -timeout 900s \
+		./internal/browser/ ./internal/source/webdav/ ./internal/syncjob/ ./internal/syncjob/sqlite/
 
 ## Run read-only static checks and tests.
 check: _check-go-format _check-go-mod

@@ -1,0 +1,42 @@
+name: Hardening Gate
+
+# 可复用的 v0.9 hardening 质量门禁：可靠性 E2E（网络故障、crash 恢复、
+# 幂等）、10k 目录与 32 MiB 流式传输、数据库 restore、文件系统故障
+# 注入与短时 fuzz。Build 与 Release workflow 共用本 workflow；ref 为
+# 必填输入，语义与 integration.yml 一致——被验证的 commit 就是被
+# 构建 / 发布的 commit。
+#
+# 不包含 benchmark：性能基准（make benchmark）只作优化依据，不使用
+# 不稳定的 wall-clock CI threshold 做门禁。
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Commit SHA or tag to checkout and test"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CGO_ENABLED: "0"
+
+jobs:
+  hardening:
+    name: Hardening (reliability, scale, restore, fuzz)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+
+      - name: Run hardening gate
+        run: make hardening
