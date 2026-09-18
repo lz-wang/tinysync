@@ -19,7 +19,7 @@ Local Files）、调度及同步历史链路（自动触发、持久化运行历
 并发控制）、文件浏览及发布链路（Remote / Local 浏览、Publish
 Policy、`/published/*path` 公开 serving）与认证及 API Token 链路
 （单一 Local Admin、Web Session、scoped API Token、REST
-default-deny）已完成实现并发布；MCP 已完成实现待发布。
+default-deny）与 MCP 链路均已完成实现并发布。
 
 ## 当前状态与优先级
 
@@ -31,7 +31,7 @@ default-deny）已完成实现并发布；MCP 已完成实现待发布。
 - **已发布**：认证与 API Token（单一 Local Admin、Argon2id 密码
   凭据与 CLI bootstrap、Web Session、scoped API Token、REST
   default-deny 与 CSRF 防护）。
-- **已完成实现待发布**：MCP 集成（`POST /mcp` Streamable HTTP、
+- **已发布**：MCP 集成（`POST /mcp` Streamable HTTP、
   固定 `2026-07-28` sessionless、API Token Bearer、7 tools、
   managed 文件搜索、小型 UTF-8 resource、大文件经现有 HTTP）。
 - **尚未实现**：无（v0.9 可靠性与运维未开始）。
@@ -145,12 +145,14 @@ Runner 启动错误映射为可判定 tool error；无数据库 migration。
 认证 MCP 存活检查并在 macOS 实测通过（2026-07-28 sessionless
 请求形态 + 旧版本头 400），MCP E2E 覆盖认证矩阵、授权矩阵、
 run 生命周期（HTTP 请求结束不取消运行）、文件发现、resource
-与 Range 下载。状态保持「已完成实现」，待打 tag 发布。
-发布前静态评审收尾已修复列表超大 offset 溢出、Tool Annotation
-（`run_sync` 非幂等且 open-world、只读工具 closed-world）、managed 搜索
-错误 / `truncated` 语义与未知 `/mcp/*` 的 SPA fallback；本地 `make check`
-和 `make build` 已复验通过。修复后的远端 Build 与正式 Release 尚未执行，
-不得以修复前 `52be3f0` 的 Build 结果替代。
+与 Range 下载。发布前静态评审收尾修复列表超大 offset 溢出、Tool
+Annotation（`run_sync` 非幂等且 open-world、只读工具 closed-world）、
+managed 搜索错误 / `truncated` 语义与未知 `/mcp/*` 的 SPA fallback。
+本地 `make check`、`make build` 与发布 workflow 的 Release checks、MinIO
+integration、三平台 native smoke 均通过。
+v0.8.0 已正式发布：annotated tag `v0.8.0` 指向 `f4a8f31`，Release
+workflow run `35300671765` 成功；六平台发行档与 `checksums.txt` 已按公开
+资产 digest 核验，WebDAV mirror 与 Pushover 通知步骤均成功。
 
 ## 架构与边界
 
@@ -179,7 +181,7 @@ run 生命周期（HTTP 请求结束不取消运行）、文件发现、resource
 | v0.5.0 | [S3 与 SFTP](docs/roadmap/05-s3-and-sftp.md) | 已完成实现 | 同一同步引擎支持三种协议，上层不依赖协议分支 |
 | v0.6.0 | [文件浏览与发布](docs/roadmap/06-file-browser-and-publishing.md) | 已发布 | 只读远端浏览、本地下载与选择性 HTTP 发布，限制访问根目录 |
 | v0.7.0 | [认证与 API Token](docs/roadmap/07-authentication-and-tokens.md) | 已发布 | 单一 Local Admin + Web Session + scoped API Token，REST default-deny 与 CSRF 防护 |
-| v0.8.0 | [MCP 集成](docs/roadmap/08-mcp-integration.md) | 已完成实现 | 复用应用服务与鉴权，查询/运行任务，大文件经 HTTP 获取 |
+| v0.8.0 | [MCP 集成](docs/roadmap/08-mcp-integration.md) | 已发布 | 复用应用服务与鉴权，查询/运行任务，大文件经 HTTP 获取 |
 | v0.9.0 | [可靠性与运维](docs/roadmap/09-hardening-and-operations.md) | 规划 | 恢复、安全、协议兼容、跨平台、性能及回归验证具备证据 |
 | v1.0.0 | [单节点稳定版](docs/roadmap/10-stable-release.md) | 规划 | 多协议端到端同步、升级/恢复及完整质量门禁通过 |
 

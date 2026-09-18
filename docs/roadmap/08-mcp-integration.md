@@ -415,6 +415,9 @@ annotation、受管文件搜索的错误与截断语义，以及 `/mcp/*` 的 SP
 边界。对应本地 `make check` 与 `make build` 已通过。
 
 此前 Build run `35295781867` 验证的是修复前的 `52be3f0`，不能作为本次
-修复后的远端验收证据。当前仍保持「已完成实现待发布」：应在这些 commits
-推送后取得新的 Build 结果，再按既有流程创建 `v0.8.0` Release 并验收第
-23 条；在此之前不得标记为已发布。
+修复后的远端验收证据。修复后的 `v0.8.0` annotated tag 指向 `f4a8f31`，
+Release workflow run `35300671765` 已成功：Release checks、MinIO
+integration 与 Ubuntu/macOS/Windows native smoke 全绿；GitHub Release
+包含六个平台发行档和 `checksums.txt`，后者的六项值与 GitHub 公开资产
+digest 逐项核验一致。WebDAV mirror 和 Pushover 通知步骤均成功，第 23 条
+验收完成。
