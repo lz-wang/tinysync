@@ -87,7 +87,3 @@ func registerTools(server *mcp.Server, deps Deps) {
 	registerRunTools(server, deps)
 	registerFileTools(server, deps)
 }
-
-// registerResources 注册 MCP resources；实现见 resource.go。
-func registerResources(_ *mcp.Server, _ Deps) {
-}
