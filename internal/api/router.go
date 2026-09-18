@@ -53,6 +53,13 @@ func NewRouter(webFS fs.FS, deps Dependencies) *gin.Engine {
 	}
 	// /published/*path 显式注册：公开服务不落入 SPA fallback。
 	registerPublicServingRoutes(router, deps.Publish)
+	// /mcp 显式注册：MCP adapter 自带认证与跨源防护链（auth 只认
+	// Bearer API Token），不走 Gin 中间件。nil 时路径不存在（fail
+	// closed：不会出现无认证的 MCP 端点）。Any 而非 POST：GET / DELETE
+	// 等方法由 MCP handler 自己回应（stateless 下 GET/DELETE 为 405）。
+	if deps.MCP != nil {
+		router.Any("/mcp", gin.WrapH(deps.MCP))
+	}
 	router.NoRoute(handleWeb(webFS))
 	return router
 }
@@ -76,6 +83,10 @@ type Dependencies struct {
 	// Publish 是发布策略应用服务；为 nil 时不注册发布端点与公开
 	// serving 路由。
 	Publish *publish.Service
+	// MCP 是已装配完成的 MCP endpoint handler（自带 Bearer 认证与
+	// 跨源防护）。api 层只认识 http.Handler，不接触 MCP SDK。为 nil
+	// 时不注册 /mcp（fail closed）。
+	MCP http.Handler
 }
 
 // handleHealth 报告服务健康状态。

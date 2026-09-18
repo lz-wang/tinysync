@@ -16,6 +16,7 @@ import (
 	"tinysync/internal/browser"
 	"tinysync/internal/config"
 	"tinysync/internal/logging"
+	"tinysync/internal/mcp"
 	"tinysync/internal/publish"
 	publishsqlite "tinysync/internal/publish/sqlite"
 	"tinysync/internal/source"
@@ -100,6 +101,16 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 	// 记录，serving 与 CRUD 共用同一服务层。
 	policies := publish.NewService(publishsqlite.NewRepository(db), jobs, managedRepo)
 
+	// 装配 MCP adapter：复用同一批应用服务，自带 Bearer 认证与跨源
+	// 防护；REST / Web UI / MCP 至此共用一个 composition root。
+	mcpHandler := mcp.New(mcp.Deps{
+		Auth:       authService,
+		Sources:    sources,
+		Jobs:       jobs,
+		Runner:     runner,
+		LocalFiles: localFiles,
+	})
+
 	server := api.NewServer(cfg, webFS, api.Dependencies{
 		Auth:       authService,
 		Sources:    sources,
@@ -108,6 +119,7 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 		Browser:    files,
 		LocalFiles: localFiles,
 		Publish:    policies,
+		MCP:        mcpHandler,
 	})
 
 	serveErr := make(chan error, 1)
