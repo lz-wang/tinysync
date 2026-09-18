@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -86,6 +87,9 @@ func TestCheckFailsOnForeignKeyViolation(t *testing.T) {
 	if err == nil {
 		t.Fatal("Check with fk violation = nil, want error")
 	}
+	if !errors.Is(err, ErrIntegrity) {
+		t.Errorf("error %v, want ErrIntegrity classification", err)
+	}
 	if !strings.Contains(err.Error(), "foreign key violation") {
 		t.Errorf("error %v does not mention foreign key violation", err)
 	}
@@ -103,8 +107,69 @@ func TestCheckFailsOnNewerSchema(t *testing.T) {
 	if err == nil {
 		t.Fatal("Check newer schema = nil, want error")
 	}
+	if !errors.Is(err, ErrNewerSchema) {
+		t.Errorf("error %v, want ErrNewerSchema classification", err)
+	}
+	if errors.Is(err, ErrIntegrity) {
+		t.Errorf("error %v must not be classified as integrity failure", err)
+	}
 	if !strings.Contains(err.Error(), "newer than supported") {
 		t.Errorf("error %v does not mention version boundary", err)
+	}
+}
+
+// 页级损坏（可打开但 quick_check 非 ok）归类为 ErrIntegrity：db
+// restore 的救灾分流据此与兼容性 / 运维失败区分。
+func TestCheckClassifiesPageCorruptionAsIntegrityFailure(t *testing.T) {
+	dataDir := t.TempDir()
+	db := openMigrated(t, dataDir)
+	if err := db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	dbPath := filepath.Join(dataDir, DatabaseFileName)
+	for _, sidecar := range []string{"-wal", "-shm"} {
+		if err := os.Remove(dbPath + sidecar); err != nil && !os.IsNotExist(err) {
+			t.Fatalf("remove sidecar: %v", err)
+		}
+	}
+	if err := corruptMiddlePage(dbPath); err != nil {
+		t.Fatalf("corrupt db: %v", err)
+	}
+
+	reopened, err := Open(dataDir)
+	if err != nil {
+		t.Fatalf("open corrupted db: %v", err)
+	}
+	defer reopened.Close()
+	_, err = Check(context.Background(), reopened)
+	if err == nil {
+		t.Fatal("Check corrupted pages = nil, want error")
+	}
+	if !errors.Is(err, ErrIntegrity) {
+		t.Errorf("error %v, want ErrIntegrity classification", err)
+	}
+	if errors.Is(err, ErrNewerSchema) {
+		t.Errorf("error %v must not be classified as schema boundary failure", err)
+	}
+}
+
+// context 取消不是损坏：Check 的失败原样传播，绝不能改写为
+// ErrIntegrity / ErrNewerSchema——db restore 对「不确定」的失败
+// 一律中止而非继续救灾。
+func TestCheckPropagatesContextCancellationUnclassified(t *testing.T) {
+	db := openMigrated(t, t.TempDir())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := Check(ctx, db)
+	if err == nil {
+		t.Fatal("Check with canceled context = nil, want error")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("error %v, want context.Canceled propagated as-is", err)
+	}
+	if errors.Is(err, ErrIntegrity) || errors.Is(err, ErrNewerSchema) {
+		t.Errorf("error %v must not be classified as integrity/schema failure", err)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -89,10 +90,14 @@ func execDBBackup(ctx context.Context, in dbInput, stdout, stderr io.Writer) err
 // 备份当前 DB（safety backup；「健康」= 可打开且通过完整性检查，
 // 此时备份必须成功，失败即在任何替换发生前中止——磁盘空间不足、
 // 权限错误或 backup 目录故障时继续覆盖健康库不可接受；打不开或
-// 可打开但已损坏的库告警后跳过备份继续恢复——restore 是救灾入口）→
-// 同目录 staging 文件 + fsync → 替换数据库 → 清理遗留 -wal / -shm →
-// reopen + integrity check。schema 较旧的备份恢复成功，下次 serve
-// 正常向前迁移；schema 较新的备份拒绝恢复（不做 downgrade migration）。
+// 可打开但真实损坏（ErrIntegrity）的库告警后跳过备份继续恢复——
+// restore 是救灾入口；Check 失败不默认等价于损坏：schema 比本
+// 二进制新（ErrNewerSchema）与 context / I/O 等运维失败一律在任何
+// 替换前中止，旧 binary 覆盖健康的更高版本库是 downgrade
+// data-loss 而非救灾）→ 同目录 staging 文件 + fsync → 替换数据库 →
+// 清理遗留 -wal / -shm → reopen + integrity check。schema 较旧的
+// 备份恢复成功，下次 serve 正常向前迁移；schema 较新的备份拒绝
+// 恢复（不做 downgrade migration）。
 func execDBRestore(ctx context.Context, in dbInput, stdout, stderr io.Writer) error {
 	if !in.Force {
 		return fmt.Errorf("restore replaces the live database; re-run with --force to confirm")
@@ -117,15 +122,25 @@ func execDBRestore(ctx context.Context, in dbInput, stdout, stderr io.Writer) er
 	// 2. pre-restore safety backup：「健康」的判定是可打开且通过完整
 	//    性检查——两者都满足时备份必须成功，路径或 VACUUM 失败即在
 	//    任何替换发生前中止（健康的库不能在丢失最后快照的情况下被
-	//    覆盖）；打不开，或可打开但 Check 失败（页级损坏等）的库，
-	//    告警后跳过备份继续恢复——restore 是救灾入口，不能被损坏库
-	//    自身的 VACUUM 失败阻断。
+	//    覆盖）；可打开但 Check 判定为真实损坏（ErrIntegrity：页级
+	//    损坏 / 外键违规）的库，告警后跳过备份继续恢复——restore 是
+	//    救灾入口，不能被损坏库自身的 VACUUM 失败阻断。Check 失败
+	//    不默认等价于损坏：schema 比本二进制新（ErrNewerSchema，正确
+	//    动作是升级 binary 而非降级覆盖）与 context 取消 / I/O 等
+	//    运维失败一律在任何替换发生前中止。
 	db, err := storage.Open(cfg.DataDir)
 	if err != nil {
 		fmt.Fprintf(stderr, "warning: current database unavailable, skipping pre-restore backup: %v\n", err)
 	} else if _, cerr := storage.Check(ctx, db); cerr != nil {
 		_ = db.Close()
-		fmt.Fprintf(stderr, "warning: current database is corrupted, skipping pre-restore backup: %v\n", cerr)
+		switch {
+		case errors.Is(cerr, storage.ErrNewerSchema):
+			return fmt.Errorf("current database schema is newer than this binary supports; upgrade tinysync instead of restoring an older backup: %w", cerr)
+		case errors.Is(cerr, storage.ErrIntegrity):
+			fmt.Fprintf(stderr, "warning: current database is corrupted, skipping pre-restore backup: %v\n", cerr)
+		default:
+			return fmt.Errorf("check current database failed; restore aborted before replacing it: %w", cerr)
+		}
 	} else {
 		target, perr := storage.PreRestoreBackupPath(cfg.DataDir)
 		if perr != nil {

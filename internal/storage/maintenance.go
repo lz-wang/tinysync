@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"modernc.org/sqlite"
 )
 
 // IntegrityReport 是一次数据库完整性检查的结果汇总。
@@ -35,11 +37,54 @@ func dsnForReadonly(dbPath string) string {
 	return encodeSQLiteURI(dbPath) + inspectDSNQuery
 }
 
+// Check 失败的分类化哨兵错误：调用方（尤其 db restore 的救灾分流）
+// 必须用 errors.Is 区分「数据库确实损坏」与「兼容性 / 运维失败」——
+// 只有 ErrIntegrity 构成跳过 safety backup 继续 restore 的理由；
+// context 取消、I/O 故障等其它错误原样传播，绝不改写为损坏。
+var (
+	// ErrIntegrity 表示页级 / 结构损坏：quick_check 非 ok 或外键违规。
+	ErrIntegrity = errors.New("database integrity failure")
+	// ErrNewerSchema 表示 schema 版本高于本二进制支持：正确动作是
+	// 升级 tinysync，任何 downgrade 式覆盖（含 restore）都必须拒绝。
+	ErrNewerSchema = errors.New("database schema newer than supported")
+)
+
+// SQLite 结果码中代表「数据库文件本身损坏」的稳定值（SQLite 公开
+// 结果码表定义，跨版本不变）：SQLITE_CORRUPT 页级损坏、SQLITE_NOTADB
+// 文件不是 SQLite 数据库。modernc.org/sqlite 未导出这些常量，按公开
+// 数值本地定义。
+const (
+	sqliteCorruptCode = 11
+	sqliteNotADBCode  = 26
+)
+
+// asIntegrityFailure 归类完整性检查语句自身的查询级失败：驱动报告
+// SQLITE_CORRUPT / SQLITE_NOTADB 时是真实损坏（损坏不一定表现为
+// quick_check 的结果行，也可能让查询本身失败）→ ErrIntegrity；
+// context 取消、SQLITE_BUSY / I/O 等其它失败原样返回，绝不改写——
+// restore 的救灾分流只信「确定的损坏」。
+func asIntegrityFailure(err error) error {
+	if err == nil {
+		return nil
+	}
+	var sqliteErr *sqlite.Error
+	if errors.As(err, &sqliteErr) {
+		switch sqliteErr.Code() {
+		case sqliteCorruptCode, sqliteNotADBCode:
+			return fmt.Errorf("%w: %v", ErrIntegrity, err)
+		}
+	}
+	return err
+}
+
 // Check 对已打开的数据库执行完整性检查：quick_check、外键一致性
 // 与 schema 版本边界。契约：
-//   - quick_check != ok → 失败；
-//   - 存在外键违规 → 失败；
-//   - schema 版本高于本二进制支持 → 失败（提示升级二进制）；
+//   - quick_check != ok → ErrIntegrity；
+//   - 存在外键违规 → ErrIntegrity；
+//   - schema 版本高于本二进制支持 → ErrNewerSchema（提示升级二进制）；
+//   - 检查语句以 SQLITE_CORRUPT / SQLITE_NOTADB 查询错误失败同样
+//     归类为 ErrIntegrity（损坏不总是表现为结果行）；
+//   - context 取消 / I/O 等其它错误原样传播，不做分类改写；
 //   - 不自动「修复」数据库，不静默忽略 corruption。
 func Check(ctx context.Context, db *sql.DB) (IntegrityReport, error) {
 	report := IntegrityReport{}
@@ -51,20 +96,20 @@ func Check(ctx context.Context, db *sql.DB) (IntegrityReport, error) {
 
 	quick, err := quickCheck(ctx, db)
 	if err != nil {
-		return report, err
+		return report, asIntegrityFailure(err)
 	}
 	report.QuickCheck = quick
 	if quick != "ok" {
-		return report, fmt.Errorf("integrity check failed: quick_check reports %q", quick)
+		return report, fmt.Errorf("%w: quick_check reports %q", ErrIntegrity, quick)
 	}
 
 	violations, err := foreignKeyViolations(ctx, db)
 	if err != nil {
-		return report, err
+		return report, asIntegrityFailure(err)
 	}
 	report.ForeignKeyViolations = violations
 	if violations > 0 {
-		return report, fmt.Errorf("integrity check failed: %d foreign key violation(s)", violations)
+		return report, fmt.Errorf("%w: %d foreign key violation(s)", ErrIntegrity, violations)
 	}
 
 	version, err := CurrentVersion(ctx, db)
@@ -73,7 +118,7 @@ func Check(ctx context.Context, db *sql.DB) (IntegrityReport, error) {
 	}
 	report.UserVersion = version
 	if version > latest {
-		return report, fmt.Errorf("database schema version %d is newer than supported %d; upgrade tinysync first", version, latest)
+		return report, fmt.Errorf("%w: schema version %d is newer than supported %d; upgrade tinysync first", ErrNewerSchema, version, latest)
 	}
 	return report, nil
 }

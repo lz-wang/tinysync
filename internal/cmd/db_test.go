@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -200,6 +202,93 @@ func TestDBRestoreProceedsWhenOpenableDBCorrupted(t *testing.T) {
 	var count int
 	if err := restored.QueryRow("SELECT count(*) FROM sync_jobs WHERE id = 'job_rt'").Scan(&count); err != nil || count != 1 {
 		t.Errorf("job after corrupted-db restore = (%d, %v), want restored", count, err)
+	}
+}
+
+// 当前 live database 完全健康、仅 schema 比本二进制新时，restore
+// 必须在任何替换发生前失败：这是兼容性边界（正确动作是升级
+// binary），绝不能被当成「corrupted」跳过 safety backup 后用旧备份
+// 覆盖健康的更高版本库（downgrade / data-loss，方向与「newer
+// schema → 先升级 tinysync」的既有安全策略正好相反）。
+func TestDBRestoreAbortsWhenLiveDBSchemaNewerThanBinary(t *testing.T) {
+	dataDir := t.TempDir()
+	db := bootstrapDBDataDir(t, dataDir)
+	ctx := context.Background()
+	report, err := storage.Check(ctx, db)
+	if err != nil {
+		t.Fatalf("Check live db: %v", err)
+	}
+
+	// 恢复来源：binary 支持范围内的合法备份（schema = latest）。
+	backupPath := backupHealthyDB(t, dataDir)
+
+	// live database：完整性完全健康，仅 user_version = latest+1，
+	// 模拟「数据目录已被更新版本的 tinysync 升级、随后误用旧 binary
+	// 执行 restore」的真实场景。
+	if _, err := db.Exec(fmt.Sprintf("PRAGMA user_version = %d", report.LatestVersion+1)); err != nil {
+		t.Fatalf("bump live schema: %v", err)
+	}
+
+	_, stderr, err := runDB(t, dbInput{DataDir: dataDir, From: backupPath, Force: true})
+	if err == nil {
+		t.Fatal("restore onto healthy newer-schema live db = nil, want abort")
+	}
+	if !errors.Is(err, storage.ErrNewerSchema) {
+		t.Errorf("restore error %v, want ErrNewerSchema classification", err)
+	}
+	if strings.Contains(stderr, "corrupted") {
+		t.Errorf("stderr %q must not treat a healthy newer-schema db as corrupted", stderr)
+	}
+
+	// live database 原样保留：版本仍是 latest+1（复本会通过 Check，
+	// 这里必须仍以 ErrNewerSchema 失败），业务数据未动，没有产生
+	// pre-restore safety backup。
+	alive, err := storage.Open(dataDir)
+	if err != nil {
+		t.Fatalf("reopen live db: %v", err)
+	}
+	defer alive.Close()
+	if _, cerr := storage.Check(ctx, alive); !errors.Is(cerr, storage.ErrNewerSchema) {
+		t.Errorf("live db after aborted restore: Check = %v, want still newer-than-supported (db must be untouched)", cerr)
+	}
+	var count int
+	if err := alive.QueryRow("SELECT count(*) FROM sync_jobs WHERE id = 'job_rt'").Scan(&count); err != nil || count != 1 {
+		t.Errorf("job after aborted restore = (%d, %v), want live db data intact", count, err)
+	}
+	matches, err := filepath.Glob(filepath.Join(dataDir, "backups", "tinysync-prerestore-*.db"))
+	if err != nil || len(matches) != 0 {
+		t.Errorf("prerestore backup glob = %v (%v), want none (aborted before any replacement)", matches, err)
+	}
+}
+
+// context 取消不是 corruption：restore 在任何替换发生前中止，live
+// database 原样保留。取消可能落在流程任何一步（备份校验或当前库
+// Check）；「取消落在当前库 Check 上不得归为损坏」的分类契约由
+// storage 的单测覆盖——restore 对非损坏类 Check 失败一律中止。
+func TestDBRestoreAbortsWhenContextCanceled(t *testing.T) {
+	dataDir := t.TempDir()
+	bootstrapDBDataDir(t, dataDir)
+	backupPath := backupHealthyDB(t, dataDir)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var stdout, stderr bytes.Buffer
+	if err := execDBRestore(ctx, dbInput{DataDir: dataDir, From: backupPath, Force: true}, &stdout, &stderr); err == nil {
+		t.Fatal("restore with canceled context = nil, want abort")
+	}
+
+	// live database 原样保留。
+	alive, err := storage.Open(dataDir)
+	if err != nil {
+		t.Fatalf("reopen live db: %v", err)
+	}
+	defer alive.Close()
+	if _, cerr := storage.Check(context.Background(), alive); cerr != nil {
+		t.Errorf("live db after aborted restore: Check = %v, want healthy untouched db", cerr)
+	}
+	var count int
+	if err := alive.QueryRow("SELECT count(*) FROM sync_jobs WHERE id = 'job_rt'").Scan(&count); err != nil || count != 1 {
+		t.Errorf("job after aborted restore = (%d, %v), want live db data intact", count, err)
 	}
 }
 
