@@ -13,7 +13,7 @@ import (
 )
 
 // BenchmarkRemotePagination10K：10,000 条目目录上的全量分页枚举
-//（limit 500，21 页游标流转）。基线证据：切片分页策略的成本记录。
+// （limit 500，21 页游标流转）。基线证据：切片分页策略的成本记录。
 func BenchmarkRemotePagination10K(b *testing.B) {
 	fs := xnetdav.NewMemFS()
 	ctx := context.Background()
