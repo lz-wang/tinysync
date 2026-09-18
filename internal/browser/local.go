@@ -234,6 +234,7 @@ type SearchResult struct {
 // LocalRelPath 的大小写不敏感子串，结果按 LocalRelPath 字典序稳定
 // 排序。每条返回前经 statWithin 获取当前实际文件状态（与 Stat 同一
 // filesafe 边界），本地已不存在的记录跳过，不信任数据库旧 size/mtime。
+// 其他文件系统错误原样返回，避免把权限或 I/O 故障伪装成「没有结果」。
 func (s *LocalService) SearchManaged(ctx context.Context, jobID string, opts SearchOptions) (SearchResult, error) {
 	query := strings.ToLower(strings.TrimSpace(opts.Query))
 	if query == "" {
@@ -281,15 +282,18 @@ func (s *LocalService) SearchManaged(ctx context.Context, jobID string, opts Sea
 		if ctx.Err() != nil {
 			return SearchResult{}, ctx.Err()
 		}
+		entry, err := statWithin(job.LocalRoot, managedSet, "/"+rel)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return SearchResult{}, err
+		}
+		// 截断取决于是否存在第 limit+1 条实际可返回的记录；已删除的
+		// managed 记录不会错误地令结果标记为 truncated。
 		if len(result.Entries) == limit {
 			result.Truncated = true
 			break
-		}
-		// 本地已删除 / 暂不可读的记录不返回；confinement 失败同样
-		// 视为当前不可达，不作为搜索错误传播。
-		entry, err := statWithin(job.LocalRoot, managedSet, "/"+rel)
-		if err != nil {
-			continue
 		}
 		result.Entries = append(result.Entries, entry)
 	}

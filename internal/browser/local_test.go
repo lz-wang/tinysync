@@ -402,6 +402,41 @@ func TestLocalServiceSearchManagedLimitAndTruncated(t *testing.T) {
 	if len(full.Entries) != 5 || full.Truncated {
 		t.Fatalf("entries = %d truncated = %v, want 5 not truncated", len(full.Entries), full.Truncated)
 	}
+
+	// 仅第 limit+1 条实际可返回记录才截断；失效记录不应令结果误报。
+	if err := os.Remove(filepath.Join(fx.root, "dir", "file-01.txt")); err != nil {
+		t.Fatalf("remove stale managed file: %v", err)
+	}
+	limited, err := fx.svc.SearchManaged(context.Background(), fx.jobID, SearchOptions{Query: "file-", Limit: 1})
+	if err != nil {
+		t.Fatalf("search with stale candidate: %v", err)
+	}
+	if len(limited.Entries) != 1 || !limited.Truncated {
+		t.Fatalf("entries = %d truncated = %v, want 1 + truncated while later valid entries remain", len(limited.Entries), limited.Truncated)
+	}
+
+	for i := 2; i < 5; i++ {
+		if err := os.Remove(filepath.Join(fx.root, "dir", fmt.Sprintf("file-%02d.txt", i))); err != nil {
+			t.Fatalf("remove stale managed file %d: %v", i, err)
+		}
+	}
+	limited, err = fx.svc.SearchManaged(context.Background(), fx.jobID, SearchOptions{Query: "file-", Limit: 1})
+	if err != nil {
+		t.Fatalf("search with only stale remainder: %v", err)
+	}
+	if len(limited.Entries) != 1 || limited.Truncated {
+		t.Fatalf("entries = %d truncated = %v, want 1 without false truncation", len(limited.Entries), limited.Truncated)
+	}
+}
+
+func TestLocalServiceSearchManagedPropagatesUnexpectedStatError(t *testing.T) {
+	fx := newLocalFixture(t)
+	fx.write(t, "blocked", "not a directory")
+	setManagedSynced(t, fx, []string{"blocked/file.txt"}, nil)
+
+	if _, err := fx.svc.SearchManaged(context.Background(), fx.jobID, SearchOptions{Query: "file"}); err == nil || errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("search error = %v, want unexpected filesystem error", err)
+	}
 }
 
 func TestLocalServiceSearchManagedDeletedAndSymlink(t *testing.T) {
