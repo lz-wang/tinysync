@@ -11,7 +11,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -79,13 +78,17 @@ func migrate(ctx context.Context, db *sql.DB, dataDir string, fsys fs.FS) error 
 		return nil
 	}
 
-	// 已有数据的库升级前先做一致性备份；全新库（无业务表）跳过，
-	// 不为空升级生成空备份。
+	// 已有数据的库升级前先做完整性检查与一致性备份；全新库（无业务表）
+	// 跳过，不为空升级生成空备份。corruption 守卫在备份之前：已损坏的
+	// 数据库不再继续 migration，避免在坏数据上继续写版本号。
 	hasTables, err := hasUserTables(ctx, db)
 	if err != nil {
 		return err
 	}
 	if hasTables {
+		if err := verifyIntegrity(ctx, db); err != nil {
+			return err
+		}
 		if err := backupDatabase(ctx, db, dataDir, current); err != nil {
 			return err
 		}
@@ -180,16 +183,5 @@ func backupDatabase(ctx context.Context, db *sql.DB, dataDir string, fromVersion
 	name := fmt.Sprintf("tinysync-v%d-%s-%s.db",
 		fromVersion, time.Now().Format("20060102T150405"), suffix)
 	target := filepath.Join(backupDir, name)
-	// 路径中的单引号按 SQL 字符串规则转义；斜杠统一为 /（Windows 可接受）。
-	quoted := strings.ReplaceAll(filepath.ToSlash(target), "'", "''")
-	if _, err := db.ExecContext(ctx, "VACUUM INTO '"+quoted+"'"); err != nil {
-		return fmt.Errorf("vacuum into %s: %w", target, err)
-	}
-	// 备份含密码明文，与主库同样收敛权限（POSIX 生效）。
-	if runtime.GOOS != "windows" {
-		if err := os.Chmod(target, 0o600); err != nil {
-			return fmt.Errorf("chmod %s: %w", target, err)
-		}
-	}
-	return nil
+	return Backup(ctx, db, target)
 }

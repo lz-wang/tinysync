@@ -56,6 +56,12 @@ var dsnPathEscaper = strings.NewReplacer(
 // Windows 盘符路径归一为 /C:/... 形式，避免盘符被 URI 解析为 authority，
 // POSIX 绝对路径输出为 file:/// 前缀，相对路径保持相对语义。
 func BuildDSN(dbPath string) string {
+	return encodeSQLiteURI(dbPath) + "?" + pragmaQuery
+}
+
+// encodeSQLiteURI 把数据库文件路径编码为 SQLite URI 的 scheme + path
+// 部分（不含 query）。
+func encodeSQLiteURI(dbPath string) string {
 	p := filepath.ToSlash(dbPath)
 	if vol := filepath.VolumeName(p); vol != "" && !strings.HasPrefix(p, "/") {
 		p = "/" + p
@@ -64,7 +70,7 @@ func BuildDSN(dbPath string) string {
 	if strings.HasPrefix(p, "/") {
 		scheme = "file://"
 	}
-	return scheme + dsnPathEscaper.Replace(p) + "?" + pragmaQuery
+	return scheme + dsnPathEscaper.Replace(p)
 }
 
 // Open 打开（必要时创建）数据目录下的 SQLite 数据库并验证连接可用。

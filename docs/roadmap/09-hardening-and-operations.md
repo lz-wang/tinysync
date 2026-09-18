@@ -82,11 +82,11 @@ Shutdown → Release lock
 
 ### Goals
 
-- [ ] 数据库完整性原语：`Check`（quick_check / foreign_key_check /
+- [x] 数据库完整性原语：`Check`（quick_check / foreign_key_check /
       user_version）、`Backup`（VACUUM INTO）、`Inspect`（按路径打开）
-- [ ] `quick_check != ok`、外键违规、schema 比 binary 新 → 显式失败；
+- [x] `quick_check != ok`、外键违规、schema 比 binary 新 → 显式失败；
       不自动「修复」数据库，不静默忽略 corruption
-- [ ] Migrate 之前先做 integrity check：已损坏的数据库不再继续 migration
+- [x] Migrate 之前先做 integrity check：已损坏的数据库不再继续 migration
 - [ ] operator 命令：`tinysync db check` / `tinysync db backup` /
       `tinysync db restore --from <file> --force`，全部持有 datadir lock
 - [ ] backup 默认输出 `<datadir>/backups/tinysync-manual-<时间戳>-<随机>.db`
@@ -258,8 +258,8 @@ regression fixes、文档与发布为核心，不再大规模设计新机制。
 - [ ] permanent error 不发生无意义重试
 - [ ] context cancellation / timeout 立即停止 retry
 - [ ] transfer timeout 可配置且默认保持兼容行为
-- [ ] SQLite quick_check / foreign_key_check 可执行
-- [ ] migration 前 corruption 不继续迁移
+- [x] SQLite quick_check / foreign_key_check 可执行
+- [x] migration 前 corruption 不继续迁移
 - [ ] operator 可以生成一致性数据库备份
 - [ ] operator 可以离线恢复备份
 - [ ] restore 前自动生成当前数据库 safety backup
