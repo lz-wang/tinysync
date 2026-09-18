@@ -52,15 +52,20 @@ TinySync 是一个面向 HomeLab 的文件同步服务：单一 Go 二进制，�
 ```bash
 tinysync serve            # 启动服务（默认 :9466，数据目录 ./data）
 tinysync auth set-password  # 初始化 / 重置管理员密码
+tinysync db check         # 数据库完整性检查
+tinysync db backup        # 数据库一致性备份
+tinysync db restore       # 从备份离线恢复（需 --force）
 tinysync version          # 打印版本号（同 --version）
 tinysync --version        # 打印版本号
 ```
 
 环境变量 `TINYSYNC_DATADIR`、`TINYSYNC_PORT`、`TINYSYNC_MAX_CONCURRENT_JOBS`、
-`TINYSYNC_MAX_CONCURRENT_TRANSFERS` 可作为 `--datadir`、`--port`、
-`--max-concurrent-jobs`（同时运行的同步 Job 数上限，默认 1）、
-`--max-concurrent-transfers`（同时进行的远端文件下载上限，默认 4）
-的默认值；命令行参数优先。
+`TINYSYNC_MAX_CONCURRENT_TRANSFERS`、`TINYSYNC_TRANSFER_TIMEOUT`
+可作为 `--datadir`、`--port`、`--max-concurrent-jobs`（同时运行的
+同步 Job 数上限，默认 1）、`--max-concurrent-transfers`（同时进行
+的远端文件下载上限，默认 4）、`--transfer-timeout`（单文件单次传输
+尝试的超时，默认 0 = 不启用；超时的尝试会自动重试）的默认值；
+命令行参数优先。
 
 ## 认证与 API Token
 
@@ -167,6 +172,64 @@ tinysync://jobs/{job_id}/files/{path}
 binary 与大文件不经 MCP 搬运：`get_file_info` 返回 relative
 `download_url`，客户端携带同一 Bearer token 请求现有
 `/api/v1/jobs/:id/files/download`（支持 Range 断点）。
+
+## Operations：运维与恢复
+
+### 数据目录单实例
+
+`serve` 在整个运行生命周期持有 `<datadir>/tinysync.lock` 独占锁
+（POSIX flock / Windows LockFileEx，纯 Go）。同一数据目录的第二个
+实例启动立即失败并说明占用情况；进程异常退出后由操作系统自动释放
+锁，锁文件本身保留无害。不同数据目录的实例可并存。
+
+```text
+同一 datadir = 同一时刻至多一个 TinySync 进程
+```
+
+`tinysync db check|backup|restore` 与 `serve` 使用同一把锁：维护
+操作执行期间不会有并发写入者；serve 运行中执行 db 命令会被拒绝。
+
+### 备份与恢复
+
+```bash
+# 一致性备份（VACUUM INTO 快照，非裸复制；写入 <datadir>/backups/）
+tinysync db backup --datadir ./data
+
+# 完整性检查（quick_check / 外键 / schema 版本）
+tinysync db check --datadir ./data
+
+# 离线恢复（破坏性，必须 --force；恢复前自动生成当前库 safety backup）
+tinysync db restore --datadir ./data --from ./data/backups/tinysync-manual-XXXX.db --force
+```
+
+restore 流程：校验备份（非法 / 损坏 / schema 较新的备份在改动前
+拒绝）→ 备份当前库 → 原子替换 → 清理遗留 WAL → 重开并复验。
+
+> `backups/*.db` 包含 Source credentials 与认证数据，应按与主数据库
+> 相同的敏感级别保护（备份文件权限已收敛为 0600，POSIX 生效）。
+
+### 损坏处理与升级
+
+- 数据库 schema 升级前自动执行完整性检查并生成一致性备份
+  （`<datadir>/backups/tinysync-v<版本>-*.db`）；quick_check 或外键
+  校验失败的数据库拒绝继续迁移，不会在坏数据上继续写 schema 版本。
+- 优雅关闭按「停止调度 → 运行终态落库 → 排空请求 → WAL checkpoint
+  截断 → 关闭数据库 → 释放锁」收口；干净退出后不遗留膨胀的 WAL 文件。
+- 升级：直接替换二进制重启，migration 自动完成（先备份、后迁移）。
+- 降级限制：不支持降级迁移——schema 高于当前二进制的数据库拒绝启动；
+  低版本备份经 `db restore` 恢复后，由新版二进制的 `serve` 正常向前
+  迁移。
+
+### 日志与 crash 恢复
+
+- 日志位置：`<datadir>/logs/tinysync.log`（50 MB 轮转、保留 7 份、
+  gzip 压缩；stderr 仅 INFO 及以上）。每个 HTTP 请求携带
+  `X-Request-ID` 响应头并与 access log 关联；每轮同步输出
+  `event=sync_run` 事件。
+- 进程 crash 后的重启收敛自动完成：遗留的 running 运行记录收敛为
+  failed、crash 遗留的下载临时文件（`.tinysync-part-*`）被安全清理、
+  未完成的传输经 pending metadata 在下一轮继续收敛；数据正确性由
+  SQLite WAL recovery 保证，不依赖任何清理逻辑。
 
 ## Sources：多协议同步源
 

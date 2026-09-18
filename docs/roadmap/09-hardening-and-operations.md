@@ -215,6 +215,21 @@ files_created files_updated files_deleted error
       native smoke；Release 链路 release checks → integration →
       hardening → native smoke → publish
 
+## Benchmark baseline（记录于 2026-09-18）
+
+环境：darwin/arm64（Apple Silicon，本机），Go 1.26，`make benchmark`
+输出。基线只作优化对比依据；100k managed metadata 与 10k listing
+实测结果不构成优化压力，不提前引入 cache / index / FTS。
+
+```text
+BenchmarkPlan10K                 ~3.9 ms/op   ~12.3 MB/op   ~20k allocs/op
+BenchmarkSmallFileSync           ~101 µs/op
+BenchmarkLargeFileTransfer       ~12.9 ms/op（32 MiB，~2.6 GB/s）
+BenchmarkSQLiteManaged100K       ~146 ms/op   ~167 MB/op    ~1.6M allocs/op
+BenchmarkManagedSearch100K       ~162 ms/op   ~171 MB/op    ~1.5M allocs/op
+BenchmarkRemotePagination10K     ~2.8 s/op    ~2.77 GB/op   ~46.5M allocs/op
+```
+
 ## 明确排除（推迟到 v1.0 之后）
 
 ```text
@@ -283,8 +298,8 @@ regression fixes、文档与发布为核心，不再大规模设计新机制。
 - [x] access log 有 method/status/duration/bytes
 - [x] sync run log 有 job_id/run_id/source_id/status/duration/bytes
 - [x] secret/token/password 不进入日志
-- [ ] benchmark baseline 已记录（100k managed metadata / 10k listing /
+- [x] benchmark baseline 已记录（100k managed metadata / 10k listing /
       large transfer）
-- [ ] `make check` / `make build` / `make integration` / `make hardening`
-- [ ] 三平台 native smoke 与六平台 build 通过
+- [x] `make check` / `make build` / `make integration` / `make hardening`
+- [ ] 三平台 native smoke 与六平台 build 通过（随发布流程在远端 CI 执行）
 - [ ] Release assets + checksums 核对；WebDAV 镜像独立验收

@@ -34,10 +34,26 @@ default-deny）与 MCP 链路均已完成实现并发布。
 - **已发布**：MCP 集成（`POST /mcp` Streamable HTTP、
   固定 `2026-07-28` sessionless、API Token Bearer、7 tools、
   managed 文件搜索、小型 UTF-8 resource、大文件经现有 HTTP）。
-- **进行中**：v0.9 可靠性与运维。v0.9 契约已重定义（datadir 单实例、
-  retry 分类与超时、SQLite 恢复与备份/恢复、文件系统跨平台 preflight、
-  协议契约测试、可观测性与性能基线），按
-  [阶段方案](docs/roadmap/09-hardening-and-operations.md)逐项实现中。
+- **已完成实现**：v0.9 可靠性与运维（2026-09-18）。datadir 单实例
+  独占锁（`tinysync.lock`，serve / db 命令互斥，native smoke 覆盖
+  双实例拒绝）；数据库完整性原语与迁移前 corruption 守卫、
+  `tinysync db check / backup / restore` 维护命令、干净关闭 WAL
+  checkpoint 截断；远端错误 transient / permanent 分类（协议判断
+  收敛在 adapter boundary）、只重试瞬时错误、指数退避 + 有界 jitter、
+  `--transfer-timeout` 单文件单次尝试超时（默认 0 = 不启用）、启动
+  期 crash 临时文件安全清理；本地映射 preflight（Windows 保留名 /
+  非法字符、case-insensitive 冲突 fail-fast，先于任何本地变更）；
+  filesafe 路径 fuzz（3 目标）与 downloader 文件系统故障注入；
+  三协议统一 Remote contract suite（WebDAV / SFTP 随 make check，
+  S3 随 MinIO integration gate，据此修复 S3 列目录含目录自身的
+  契约违反）；可靠性 E2E（503 / 断连重试、401 不重试、真实
+  app.Run 重启的 crash 收敛、幂等收敛）与规模场景（10k 目录、
+  32 MiB 流式传输，TINYSYNC_HARDENING 门控）；请求 / 同步日志关联
+  （X-Request-ID、access log、event=sync_run / sync_file_failed）；
+  hardening 质量门禁（`make hardening` + 可复用 workflow，纳入
+  Build 与 Release 链路）与性能基线（`make benchmark` 6 项基准）。
+  本地 `make check` / `make build` / `make hardening` / 
+  `make benchmark` 全绿。
 
 v0.2.0 持久化与 Source 管理已发布：远端 Release workflow 成功（2026-09-15），
 六平台发行档与 `checksums.txt` 核对到位，WebDAV 镜像与通知独立验收通过。
@@ -185,7 +201,7 @@ workflow run `35300671765` 成功；六平台发行档与 `checksums.txt` 已按
 | v0.6.0 | [文件浏览与发布](docs/roadmap/06-file-browser-and-publishing.md) | 已发布 | 只读远端浏览、本地下载与选择性 HTTP 发布，限制访问根目录 |
 | v0.7.0 | [认证与 API Token](docs/roadmap/07-authentication-and-tokens.md) | 已发布 | 单一 Local Admin + Web Session + scoped API Token，REST default-deny 与 CSRF 防护 |
 | v0.8.0 | [MCP 集成](docs/roadmap/08-mcp-integration.md) | 已发布 | 复用应用服务与鉴权，查询/运行任务，大文件经 HTTP 获取 |
-| v0.9.0 | [可靠性与运维](docs/roadmap/09-hardening-and-operations.md) | 进行中 | 恢复、安全、协议兼容、跨平台、性能及回归验证具备证据 |
+| v0.9.0 | [可靠性与运维](docs/roadmap/09-hardening-and-operations.md) | 已完成实现 | 恢复、安全、协议兼容、跨平台、性能及回归验证具备证据 |
 | v1.0.0 | [单节点稳定版](docs/roadmap/10-stable-release.md) | 规划 | 多协议端到端同步、升级/恢复及完整质量门禁通过 |
 
 ## 非目标与后续候选
