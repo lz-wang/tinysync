@@ -28,6 +28,20 @@ const (
 // 不夸大为 OS 保证的严格原子操作）。
 const tempPrefix = ".tinysync-part-"
 
+// fileHooks 是文件系统操作的注入点：生产路径全部为 nil（直连 os），
+// 测试经此注入 create temp / 写入（ENOSPC）/ fsync / rename 失败，
+// 不依赖 chmod 000（Windows 与 root CI 下结果不可靠）。
+type fileHooks struct {
+	// createTemp 接管临时文件创建。
+	createTemp func(path string) (*os.File, error)
+	// wrapWriter 包装 io.Copy 的写入目标（ENOSPC 注入点）。
+	wrapWriter func(f *os.File) io.Writer
+	// syncFile 接管关闭前的 Sync。
+	syncFile func(f *os.File) error
+	// renameFile 接管原子替换。
+	renameFile func(old, new string) error
+}
+
 // Downloader 把远端文件原子下载到 LocalRoot 之下的目标路径：
 // remote.Open → 同目录临时文件 → io.Copy → 大小校验 → Sync/Close →
 // rename 替换目标。任何失败都清理临时文件且不触碰已有目标；
@@ -46,6 +60,8 @@ type Downloader struct {
 	// 超时只作用于当前 attempt：超时的 attempt 可重试，不影响整轮
 	// run 的其它控制语义。
 	timeout time.Duration
+	// hooks 是文件系统操作注入点；nil 表示直连 os。
+	hooks *fileHooks
 }
 
 // NewDownloader 构造默认参数的下载器。
@@ -139,29 +155,51 @@ func (d *Downloader) downloadOnce(ctx context.Context, logicalPath, target strin
 	}
 	defer rc.Close()
 
-	if err := copyAndVerify(tempPath, rc, expected); err != nil {
+	if err := d.copyAndVerify(tempPath, rc, expected); err != nil {
 		_ = os.Remove(tempPath)
 		return err
 	}
 	// rename 替换既有目标；此刻起新文件生效，失败前旧目标完好。
-	if err := os.Rename(tempPath, target); err != nil {
+	if err := d.renameFile(tempPath, target); err != nil {
 		_ = os.Remove(tempPath)
 		return fmt.Errorf("replace %s: %w", target, err)
 	}
 	return nil
 }
 
+// renameFile 按注入点执行原子替换（nil 直连 os.Rename）。
+func (d *Downloader) renameFile(old, new string) error {
+	if d.hooks != nil && d.hooks.renameFile != nil {
+		return d.hooks.renameFile(old, new)
+	}
+	return os.Rename(old, new)
+}
+
 // copyAndVerify 把远端内容写入临时文件并校验字节数；取消传播依赖
 // 远端 reader（response body 绑定 request context）。每一步失败都
 // 由调用方负责清理临时文件。
-func copyAndVerify(tempPath string, rc io.Reader, expected source.Fingerprint) error {
-	out, err := os.OpenFile(tempPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+func (d *Downloader) copyAndVerify(tempPath string, rc io.Reader, expected source.Fingerprint) error {
+	var out *os.File
+	var err error
+	if d.hooks != nil && d.hooks.createTemp != nil {
+		out, err = d.hooks.createTemp(tempPath)
+	} else {
+		out, err = os.OpenFile(tempPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	}
 	if err != nil {
 		return fmt.Errorf("create temp %s: %w", tempPath, err)
 	}
-	written, copyErr := io.Copy(out, rc)
+	var w io.Writer = out
+	if d.hooks != nil && d.hooks.wrapWriter != nil {
+		w = d.hooks.wrapWriter(out)
+	}
+	written, copyErr := io.Copy(w, rc)
 	if copyErr == nil {
-		copyErr = out.Sync()
+		if d.hooks != nil && d.hooks.syncFile != nil {
+			copyErr = d.hooks.syncFile(out)
+		} else {
+			copyErr = out.Sync()
+		}
 	}
 	if closeErr := out.Close(); copyErr == nil {
 		copyErr = closeErr

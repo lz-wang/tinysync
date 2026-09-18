@@ -128,10 +128,10 @@ Shutdown → Release lock
 - [x] case collision：检测 LocalRoot 实际大小写敏感性；case-insensitive
       文件系统上本轮计划内出现 `Foo.txt` / `foo.txt` 冲突时整体失败，
       不允许后下载覆盖先下载（平台相关结果）
-- [ ] path fuzz（FuzzValidateLogicalPath / FuzzResolveWithinRoot /
+- [x] path fuzz（FuzzValidateLogicalPath / FuzzResolveWithinRoot /
       FuzzLocalMapping）无 panic、无 root 逃逸、不把 traversal 归一成
       合法路径、不接受 NUL、无绝对路径注入
-- [ ] downloader 文件系统故障注入（permission denied / ENOSPC / rename
+- [x] downloader 文件系统故障注入（permission denied / ENOSPC / rename
       failure / fsync failure / create temp failure）：经小型
       file-operation abstraction 注入，不依赖 chmod 000（Windows 与
       root CI 下不可靠）；失败必须证明——已有目标完好、临时文件清理、
@@ -267,11 +267,11 @@ regression fixes、文档与发布为核心，不再大规模设计新机制。
 - [x] older schema restore 后可以正常向前迁移
 - [x] clean shutdown WAL checkpoint 正常
 - [x] unclean shutdown WAL recovery 正常
-- [ ] path fuzz 无 panic / escape
-- [ ] symlink confinement 不回归
+- [x] path fuzz 无 panic / escape
+- [x] symlink confinement 不回归
 - [x] Windows invalid filename fail-fast
 - [x] case-insensitive filesystem collision fail-fast
-- [ ] permission / ENOSPC / rename failure 不破坏旧文件
+- [x] permission / ENOSPC / rename failure 不破坏旧文件
 - [ ] WebDAV / S3 / SFTP 通过统一 Remote contract
 - [ ] transient network fault E2E 通过
 - [ ] 10k directory scenario 通过
