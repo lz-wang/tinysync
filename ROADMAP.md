@@ -201,7 +201,7 @@ workflow run `35300671765` 成功；六平台发行档与 `checksums.txt` 已按
 | v0.6.0 | [文件浏览与发布](docs/roadmap/06-file-browser-and-publishing.md) | 已发布 | 只读远端浏览、本地下载与选择性 HTTP 发布，限制访问根目录 |
 | v0.7.0 | [认证与 API Token](docs/roadmap/07-authentication-and-tokens.md) | 已发布 | 单一 Local Admin + Web Session + scoped API Token，REST default-deny 与 CSRF 防护 |
 | v0.8.0 | [MCP 集成](docs/roadmap/08-mcp-integration.md) | 已发布 | 复用应用服务与鉴权，查询/运行任务，大文件经 HTTP 获取 |
-| v0.9.0 | [可靠性与运维](docs/roadmap/09-hardening-and-operations.md) | 收尾中 | 恢复、安全、协议兼容、跨平台、性能及回归验证具备证据 |
+| v0.9.0 | [可靠性与运维](docs/roadmap/09-hardening-and-operations.md) | 已完成实现 | 恢复、安全、协议兼容、跨平台、性能及回归验证具备证据 |
 | v1.0.0 | [单节点稳定版](docs/roadmap/10-stable-release.md) | 规划 | 多协议端到端同步、升级/恢复及完整质量门禁通过 |
 
 ## 非目标与后续候选

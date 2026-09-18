@@ -282,6 +282,83 @@ func TestSFTPReconnectResolvesCurrentRoot(t *testing.T) {
 	}
 }
 
+// 超时隔离的并发语义（v0.9 收尾验证）：停滞传输（A）触发共享连接
+// 拆除时，同连接上的健康传输（B）会被连带中断——按 transient 重试
+// 必须收敛，健康文件不得因邻居的超时而最终失败。若本测试不稳定或
+// 失败，才需要考虑 per-transfer 独立 SSH 连接；当前设计只验证行为。
+func TestSFTPTimeoutIsolationUnderConcurrentTransfers(t *testing.T) {
+	root := t.TempDir()
+	seedFile(t, root, "stalled.txt", strings.Repeat("A-content-", 500))
+	bContent := strings.Repeat("B-content-", 8192) // 80 KiB，跨多个读取块
+	seedFile(t, root, "healthy.txt", bContent)
+	ts := startTestServer(t)
+
+	cfg := sftpSourceConfig(ts, root, source.SFTPAuthPassword)
+	r := newSFTPFactoryRemote(t, ts, cfg, source.Credentials{SFTP: &source.SFTPCredentials{
+		Password: testPassword,
+	}})
+
+	// 健康流 B 先建立并读入首批数据：证明停滞发生前传输正常推进。
+	rcB, err := r.Open(context.Background(), "/healthy.txt")
+	if err != nil {
+		t.Fatalf("B Open: %v", err)
+	}
+	defer rcB.Close()
+	head := make([]byte, 32)
+	if _, err := io.ReadFull(rcB, head); err != nil {
+		t.Fatalf("B initial read: %v", err)
+	}
+
+	// 停滞流 A：Open 成功后服务端停摆 → Read 阻塞 → 300ms attempt
+	// 超时拆除连接。
+	attemptCtx, cancelA := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancelA()
+	rcA, err := r.Open(attemptCtx, "/stalled.txt")
+	if err != nil {
+		t.Fatalf("A Open: %v", err)
+	}
+	ts.stall.Store(true)
+	readA := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 64)
+		_, aerr := rcA.Read(buf)
+		readA <- aerr
+	}()
+	select {
+	case aerr := <-readA:
+		if aerr == nil {
+			t.Fatal("A stalled read returned data, want timeout error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("A stalled read not interrupted by attempt timeout")
+	}
+	_ = rcA.Close()
+
+	// A 的超时连带中断了 B 的在途流（transient 语义）：B 按 Downloader
+	// 的重试形态重新打开后必须完整收敛，内容与传输前一致。
+	ts.stall.Store(false)
+	rest, berr := io.ReadAll(rcB)
+	if berr == nil {
+		t.Logf("healthy stream survived teardown without collateral error (len=%d)", len(rest))
+	}
+	got := string(head) + string(rest)
+	if berr != nil {
+		rcRetry, oerr := r.Open(context.Background(), "/healthy.txt")
+		if oerr != nil {
+			t.Fatalf("B retry Open: %v", oerr)
+		}
+		defer rcRetry.Close()
+		data, rerr := io.ReadAll(rcRetry)
+		if rerr != nil {
+			t.Fatalf("B retry read: %v", rerr)
+		}
+		got = string(data)
+	}
+	if got != bContent {
+		t.Errorf("B content after collateral interruption = %d bytes, want full %d bytes", len(got), len(bContent))
+	}
+}
+
 // 并发操作 + 反复 teardown：无 panic、无死锁，任何成功的返回都必须
 // 与当前 root 的真实内容一致（不存在跨代际的错误组合）；压测结束后
 // 惰性重连仍然可用。go test -race 下同时验证 root 读写无数据竞争。
