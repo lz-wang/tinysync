@@ -221,34 +221,36 @@ func (r *remote) connect(ctx context.Context) error {
 	return nil
 }
 
-// session 返回当前 SFTP 会话：连接尚未建立或已被超时拆除时惰性重连
-// （RealPath 重新解析，与首次创建一致）。closed 之后的操作不再重连。
-// 已返回的会话可能在并发 teardown 后失效，操作返回连接丢失错误——
-// 与 run 取消打断在途读取同一语义，由上层按 transient 重试收敛。
-func (r *remote) session(ctx context.Context) (*sftp.Client, error) {
+// session 返回当前 SFTP 会话与其解析 root 的代际快照：连接尚未建立
+// 或已被超时拆除时惰性重连（RealPath 重新解析，与首次创建一致）。
+// client 与 root 必须成对使用——路径映射基于快照 root，操作落在同
+// 一快照的连接上，杜绝「旧 root 路径打在新连接上」的跨代际组合；
+// 快照随后被并发 teardown 拆除时，操作返回连接丢失错误，由上层按
+// transient 重试（重试会取得新一代快照）。closed 之后不再重连。
+func (r *remote) session(ctx context.Context) (*sftp.Client, string, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	r.mu.RLock()
 	if r.sftp != nil {
-		c := r.sftp
+		c, root := r.sftp, r.root
 		r.mu.RUnlock()
-		return c, nil
+		return c, root, nil
 	}
 	r.mu.RUnlock()
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
-		return nil, fmt.Errorf("sftp remote is closed")
+		return nil, "", fmt.Errorf("sftp remote is closed")
 	}
 	if r.sftp != nil {
-		return r.sftp, nil
+		return r.sftp, r.root, nil
 	}
 	if err := r.connect(ctx); err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return r.sftp, nil
+	return r.sftp, r.root, nil
 }
 
 // teardown 关闭当前 SSH/SFTP 连接并清空引用：attempt 超时或 run 取消
@@ -273,15 +275,17 @@ func (r *remote) teardown() {
 // remoteAbs 把 Source-relative logical path 映射为远端绝对路径
 // （全部 path 语义，不用 filepath），并双重防御 root escape：
 // logical path 经 ValidateLogicalPath 保证 clean，映射结果仍显式
-// 验证落在解析后的真实 root 之内。
-func (r *remote) remoteAbs(logicalPath string) (string, error) {
+// 验证落在给定 root 之内。root 必须来自 session 快照——路径映射与
+// 连接代际绑定，重连切换 root 后不会出现旧 root 路径打在新连接上
+// 的组合，r.root 也因此只在锁内读写。
+func remoteAbs(root, logicalPath string) (string, error) {
 	cleaned := path.Clean(logicalPath)
-	abs := r.root
+	abs := root
 	if cleaned != "/" {
-		abs = r.root + cleaned
+		abs = root + cleaned
 	}
-	if abs != r.root && !strings.HasPrefix(abs, r.root+"/") {
-		return "", fmt.Errorf("%w: sftp path %q escapes remote root %q", source.ErrInvalid, logicalPath, r.root)
+	if abs != root && !strings.HasPrefix(abs, root+"/") {
+		return "", fmt.Errorf("%w: sftp path %q escapes remote root %q", source.ErrInvalid, logicalPath, root)
 	}
 	return abs, nil
 }
@@ -308,11 +312,11 @@ func (r *remote) Stat(ctx context.Context, logicalPath string) (source.FileInfo,
 	if err := source.ValidateLogicalPath(logicalPath); err != nil {
 		return source.FileInfo{}, err
 	}
-	abs, err := r.remoteAbs(logicalPath)
+	c, root, err := r.session(ctx)
 	if err != nil {
 		return source.FileInfo{}, err
 	}
-	c, err := r.session(ctx)
+	abs, err := remoteAbs(root, logicalPath)
 	if err != nil {
 		return source.FileInfo{}, err
 	}
@@ -335,11 +339,11 @@ func (r *remote) List(ctx context.Context, logicalDir string, opts source.ListOp
 	if err := source.ValidateLogicalPath(logicalDir); err != nil {
 		return source.FilePage{}, err
 	}
-	abs, err := r.remoteAbs(logicalDir)
+	c, root, err := r.session(ctx)
 	if err != nil {
 		return source.FilePage{}, err
 	}
-	c, err := r.session(ctx)
+	abs, err := remoteAbs(root, logicalDir)
 	if err != nil {
 		return source.FilePage{}, err
 	}
@@ -387,11 +391,11 @@ func (r *remote) Open(ctx context.Context, logicalPath string) (io.ReadCloser, e
 	if err := source.ValidateLogicalPath(logicalPath); err != nil {
 		return nil, err
 	}
-	abs, err := r.remoteAbs(logicalPath)
+	c, root, err := r.session(ctx)
 	if err != nil {
 		return nil, err
 	}
-	c, err := r.session(ctx)
+	abs, err := remoteAbs(root, logicalPath)
 	if err != nil {
 		return nil, err
 	}

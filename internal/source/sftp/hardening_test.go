@@ -3,8 +3,10 @@ package sftp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -51,9 +53,9 @@ func TestSFTPCancellationClosesConnection(t *testing.T) {
 	_ = r.Close()
 }
 
-// remoteAbs 的 root escape 双重防御：越出真实 root 的映射一律拒绝。
+// remoteAbs 的 root escape 双重防御：越出给定 root 的映射一律拒绝。
 func TestSFTPRootEscapeRejected(t *testing.T) {
-	r := &remote{root: "/srv/backups"}
+	const root = "/srv/backups"
 	cases := []struct {
 		logical string
 		want    string
@@ -64,7 +66,7 @@ func TestSFTPRootEscapeRejected(t *testing.T) {
 		{logical: "/x/b.txt", want: "/srv/backups/x/b.txt"},
 	}
 	for _, tc := range cases {
-		got, err := r.remoteAbs(tc.logical)
+		got, err := remoteAbs(root, tc.logical)
 		if tc.wantEr {
 			if err == nil {
 				t.Errorf("remoteAbs(%q) = %q, want error", tc.logical, got)
@@ -79,8 +81,7 @@ func TestSFTPRootEscapeRejected(t *testing.T) {
 	// root 为 "/srv/backups" 时不存在能逃逸的 clean logical path：
 	// 该防御分支保护 root 解析形态变化（如 RealPath 结果异常）时
 	// 不产生越界访问，本身对合法输入透明。
-	weird := &remote{root: "/srv/backups"}
-	abs, err := weird.remoteAbs("/ok")
+	abs, err := remoteAbs(root, "/ok")
 	if err != nil || abs != "/srv/backups/ok" {
 		t.Errorf("remoteAbs(/ok) = %q, %v; want /srv/backups/ok", abs, err)
 	}
@@ -220,5 +221,131 @@ func TestSFTPTransferTimeoutInterruptsStalledBody(t *testing.T) {
 	}
 	if string(data) != content {
 		t.Error("content mismatch after reconnect")
+	}
+}
+
+// readAllVia 打开 logicalPath 并读取全部内容（每次调用独立 Open）。
+func readAllVia(t *testing.T, r source.Remote, logicalPath string) string {
+	t.Helper()
+	rc, err := r.Open(context.Background(), logicalPath)
+	if err != nil {
+		t.Fatalf("Open %s: %v", logicalPath, err)
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("ReadAll %s: %v", logicalPath, err)
+	}
+	return string(data)
+}
+
+// 重连必须重新解析 remote root：路径映射与连接代际绑定，绝不允许
+// 「旧 root 算出的绝对路径打在新连接上」——否则远端 root 解析结果
+// 在重连间隙变化时会静默读旧目录，resolved root confinement 语义
+// 也随之失效。进程内 server 的 RealPath 是词法解析（不解析
+// symlink），因此以重连间隙改变 rootCfg 模拟真实服务器的 root
+// 重定向：新代际必须按新 root 解析，绝不能读到旧 root 下的同名文件。
+func TestSFTPReconnectResolvesCurrentRoot(t *testing.T) {
+	base := t.TempDir()
+	dirA := filepath.Join(base, "A")
+	dirB := filepath.Join(base, "B")
+	for _, d := range []string{dirA, dirB} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+	}
+	seedFile(t, dirA, "f.txt", "content-A")
+	seedFile(t, dirB, "f.txt", "content-B")
+	ts := startTestServer(t)
+
+	cfg := sftpSourceConfig(ts, dirA, source.SFTPAuthPassword)
+	r := newSFTPFactoryRemote(t, ts, cfg, source.Credentials{SFTP: &source.SFTPCredentials{
+		Password: testPassword,
+	}})
+	tr := r.(*remote)
+
+	// 首次连接解析到 A。
+	if got := readAllVia(t, r, "/f.txt"); got != "content-A" {
+		t.Fatalf("content via initial root = %q, want content-A", got)
+	}
+
+	// 拆除连接，并在重连间隙切换 root 解析目标（等价于真实服务器上
+	// remote_root symlink 目标变化）。
+	tr.teardown()
+	tr.mu.Lock()
+	tr.rootCfg = dirB
+	tr.mu.Unlock()
+
+	// 重连后必须按新 root 解析：读到 B 的内容，绝不能是旧 root 的 A。
+	if got := readAllVia(t, r, "/f.txt"); got != "content-B" {
+		t.Fatalf("content after reconnect = %q, want content-B (stale root leaked)", got)
+	}
+}
+
+// 并发操作 + 反复 teardown：无 panic、无死锁，任何成功的返回都必须
+// 与当前 root 的真实内容一致（不存在跨代际的错误组合）；压测结束后
+// 惰性重连仍然可用。go test -race 下同时验证 root 读写无数据竞争。
+func TestSFTPConcurrentOpsWithTeardown(t *testing.T) {
+	base := t.TempDir()
+	seedFile(t, base, "x.txt", "content-X")
+	seedFile(t, base, "y.txt", "content-Y")
+	ts := startTestServer(t)
+
+	cfg := sftpSourceConfig(ts, base, source.SFTPAuthPassword)
+	r := newSFTPFactoryRemote(t, ts, cfg, source.Credentials{SFTP: &source.SFTPCredentials{
+		Password: testPassword,
+	}})
+	tr := r.(*remote)
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	// teardown 扰动方：周期性拆除连接，模拟并发 attempt 超时。
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(10 * time.Millisecond):
+				tr.teardown()
+			}
+		}
+	}()
+	// 操作方：路径 → 期望内容。
+	expect := map[string]string{"/x.txt": "content-X", "/y.txt": "content-Y"}
+	for path, want := range expect {
+		wg.Add(1)
+		go func(path, want string) {
+			defer wg.Done()
+			deadline := time.Now().Add(500 * time.Millisecond)
+			for time.Now().Before(deadline) {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				rc, err := r.Open(context.Background(), path)
+				if err != nil {
+					continue // 并发 teardown 下的连接失败可接受
+				}
+				data, err := io.ReadAll(rc)
+				_ = rc.Close()
+				if err != nil {
+					continue // 在途读取被拆除打断可接受
+				}
+				if string(data) != want {
+					panic(fmt.Sprintf("concurrent read of %s = %q, want %q (cross-generation state)", path, data, want))
+				}
+			}
+		}(path, want)
+	}
+	time.Sleep(300 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+
+	// 压测结束后远端仍可用（惰性重连生效）。
+	if got := readAllVia(t, r, "/x.txt"); got != "content-X" {
+		t.Fatalf("post-hammer read = %q, want content-X", got)
 	}
 }
