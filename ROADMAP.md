@@ -19,11 +19,11 @@ Local Files）、调度及同步历史链路（自动触发、持久化运行历
 并发控制）、文件浏览及发布链路（Remote / Local 浏览、Publish
 Policy、`/published/*path` 公开 serving）与认证及 API Token 链路
 （单一 Local Admin、Web Session、scoped API Token、REST
-default-deny）、MCP 链路与 v0.9 可靠性与运维改造均已完成实现并发布。
+default-deny）、MCP 链路与 v0.9 可靠性与运维改造均已完成实现并发布；当前进入 v0.10 Web UI 与 UX 稳定化阶段，在 v1.0 前集中完成 WebUI 重构与交互收口。
 
 ## 当前状态与优先级
 
-本地核对日期：2026-09-18。当前实现、测试和 workflow 支持以下判断。
+本地核对日期：2026-09-19。当前实现、测试和 workflow 支持以下判断。
 
 - **已实现**：`serve`、`version` / `--version`、数据目录与端口配置、日志、HTTP 生命周期、health/version API、内嵌状态页及 fallback 构建；SQLite 持久化与 migration、多协议 Source 领域（typed config / credentials 模型、Remote Registry、WebDAV / S3 / SFTP 只读 adapter、协议无关 logical path 校验、remote identity 保护、应用服务）、Source CRUD 与连接测试 REST API（discriminated config）、Sources Web 管理界面；Sync Job 领域（模型、Selector、remote scanner、planner、原子下载、Copy/Mirror engine、手动运行 Runner、SQLite Repository）、Jobs REST API 与 Web 管理界面、端到端与跨重启持久化测试；调度与历史（Schedule 模型与持久化、Scheduler、多 Job Runner、有界并发传输、`sync_runs` / `sync_run_items` 持久化、runs REST API、History Web UI、并发配置）；文件访问与发布（Remote.List 分页抽象、filesafe 受限路径原语、browser Remote / Local 浏览服务、Job namespace 本地浏览与 managed 标记、published_files 持久化与迁移 `0006_published_files.sql`、发布 CRUD 与 `/published/*path` 公开 serving、Files Web UI）。
 - **已有工程配置**：Git 版本注入、Go 测试、前端静态检查、Codecov、六平台构建、三平台原生 Smoke、Build/Release 分离及 WebDAV 镜像。
@@ -55,6 +55,7 @@ default-deny）、MCP 链路与 v0.9 可靠性与运维改造均已完成实现�
   Build 与 Release 链路）与性能基线（`make benchmark` 6 项基准）。
   本地 `make check` / `make build` / `make hardening` / 
   `make benchmark` 全绿。
+- **当前阶段：v0.10 Web UI 与 UX 稳定化**：允许对现有 Web UI 做系统性重构，包括应用壳、导航、页面结构、组件组织、表单与状态反馈、响应式与可访问性；只保留必要边界——保持单向同步及既有后端领域语义，REST / MCP / SQLite 契约原则上保持兼容，认证与文件访问安全边界不得因 UI 重构弱化。
 
 v0.2.0 持久化与 Source 管理已发布：远端 Release workflow 成功（2026-09-15），
 六平台发行档与 `checksums.txt` 核对到位，WebDAV 镜像与通知独立验收通过。
@@ -187,7 +188,7 @@ workflow run `35300671765` 成功；六平台发行档与 `checksums.txt` 已按
 - 默认保护本地数据：Mirror 仅删除 `managed_files` 明确归属于当前 Job 的文件，不用 `local_root - remote_listing` 删除未知文件；下载采用临时文件与原子替换，失败不破坏原文件。
 - Web UI、REST API、MCP 共用应用服务层；优先简单、稳定、可恢复，不引入分布式架构和无需求支撑的复杂能力。
 
-## 主线 10 个阶段
+## 主线 11 个阶段
 
 版本表示目标里程碑，不承诺发布日期。阶段细项、模型草案和完成标准见对应链接；
 未标记为完成的后续版本均为规划，示例 API 与 schema 不属于当前命令契约。
@@ -203,7 +204,8 @@ workflow run `35300671765` 成功；六平台发行档与 `checksums.txt` 已按
 | v0.7.0 | [认证与 API Token](docs/roadmap/07-authentication-and-tokens.md) | 已发布 | 单一 Local Admin + Web Session + scoped API Token，REST default-deny 与 CSRF 防护 |
 | v0.8.0 | [MCP 集成](docs/roadmap/08-mcp-integration.md) | 已发布 | 复用应用服务与鉴权，查询/运行任务，大文件经 HTTP 获取 |
 | v0.9.0 | [可靠性与运维](docs/roadmap/09-hardening-and-operations.md) | 已发布 | 恢复、安全、协议兼容、跨平台、性能及回归验证具备证据 |
-| v1.0.0 | [单节点稳定版](docs/roadmap/10-stable-release.md) | 规划 | 多协议端到端同步、升级/恢复及完整质量门禁通过 |
+| v0.10.0 | [Web UI 与 UX 稳定化](docs/roadmap/10-web-ui-stabilization.md) | 规划 | 大规模重构 WebUI，统一核心工作流与交互体验，在不改变核心同步语义的前提下为 v1.0 收口 |
+| v1.0.0 | [单节点稳定版](docs/roadmap/11-stable-release.md) | 规划 | 多协议端到端同步、升级/恢复及完整质量门禁通过 |
 
 ## 非目标与后续候选
 
