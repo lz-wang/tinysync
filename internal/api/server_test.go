@@ -78,6 +78,22 @@ func TestUnknownAPIPathReturns404(t *testing.T) {
 	}
 }
 
+// MCP namespace 的未知子路径必须 404，不能被 SPA fallback 吞掉；精确
+// /mcp 由装配的 MCP handler 接管，本测试覆盖未注册的 namespace 边界。
+func TestUnknownMCPPathReturns404(t *testing.T) {
+	for _, path := range []string{"/mcp", "/mcp/", "/mcp/not-found"} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", path, nil)
+		NewRouter(testWebFS(), Dependencies{}).ServeHTTP(rec, req)
+		if rec.Code != 404 {
+			t.Errorf("GET %s status = %d, want 404", path, rec.Code)
+		}
+		if strings.Contains(rec.Body.String(), "<title>TinySync</title>") {
+			t.Errorf("GET %s unexpectedly returned SPA fallback", path)
+		}
+	}
+}
+
 // 非 GET 方法返回 405，并按 RFC 7231 携带 Allow 头（Gin
 // HandleMethodNotAllowed 行为）。
 func TestMethodNotAllowed(t *testing.T) {
