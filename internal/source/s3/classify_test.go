@@ -13,8 +13,10 @@ import (
 	"tinysync/internal/source"
 )
 
-// adapter boundary 的 S3 协议错误分类：NoSuchKey / 401 / 403 permanent，
-// 408 / 429 / 5xx transient，其余交给通用规则。
+// adapter boundary 的 S3 协议错误分类：408 / 429 / 5xx transient，
+// 其余全部 4xx（含 NoSuchKey / 401 / 403 / 404 / 400 / 409 / 412 等）
+// permanent——客户端错误重连不会改变结果；无状态码可判定的错误
+// 交给通用规则兜底。
 func TestClassifyS3Error(t *testing.T) {
 	statusErr := func(code int) error {
 		return &smithy.OperationError{
@@ -41,6 +43,9 @@ func TestClassifyS3Error(t *testing.T) {
 		{"429 slow down", statusErr(429), true},
 		{"500 internal error", statusErr(500), true},
 		{"503 service unavailable", statusErr(503), true},
+		{"400 bad request", statusErr(400), false},
+		{"409 conflict", statusErr(409), false},
+		{"412 precondition failed", statusErr(412), false},
 		// 无状态码可判定的错误：通用规则兜底（默认 transient）。
 		{"generic wrapped", fmt.Errorf("serialization failed: %w", errors.New("boom")), true},
 		{"nil", nil, false},

@@ -10,8 +10,10 @@ import (
 	"tinysync/internal/source"
 )
 
-// adapter boundary 的错误响应分类：401 / 403 / 404 permanent，
-// 408 / 429 / 5xx transient，transport 错误走通用规则。
+// adapter boundary 的错误响应分类：408 / 429 / 5xx transient，
+// 其余全部 4xx（400 / 401 / 403 / 404 / 405 / 409 / 410 / 412 /
+// 418 等）permanent——客户端错误重连不会改变结果；transport 错误
+// 走通用规则。
 func TestHTTPStatusClassification(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -25,7 +27,12 @@ func TestHTTPStatusClassification(t *testing.T) {
 		{"429 too many requests", http.StatusTooManyRequests, true},
 		{"500 internal", http.StatusInternalServerError, true},
 		{"503 service unavailable", http.StatusServiceUnavailable, true},
-		{"418 unexpected", http.StatusTeapot, true},
+		{"400 bad request", http.StatusBadRequest, false},
+		{"405 method not allowed", http.StatusMethodNotAllowed, false},
+		{"409 conflict", http.StatusConflict, false},
+		{"410 gone", http.StatusGone, false},
+		{"412 precondition failed", http.StatusPreconditionFailed, false},
+		{"418 teapot", http.StatusTeapot, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

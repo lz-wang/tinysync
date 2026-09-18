@@ -390,10 +390,11 @@ func wrapOp(op, logicalPath string, err error) error {
 	return fmt.Errorf("s3 %s %s: %w", op, logicalPath, classifyS3Error(err))
 }
 
-// classifyS3Error 按协议语义标记错误：NoSuchKey / NotFound（对象或
-// 服务不存在）与 401 / 403（认证、授权）为 permanent；408 / 429 / 5xx
-// （请求超时、限流、瞬时服务故障）为 transient；其余错误不带标记，
-// 由 source.IsRetryable 的通用规则兜底（默认 transient）。
+// classifyS3Error 按协议语义标记错误：408 / 429 / 5xx（请求超时、
+// 限流、瞬时服务故障）为 transient；其余全部 4xx（NoSuchKey /
+// NotFound、401 / 403 认证授权、400 / 409 / 412 等客户端错误——
+// 重连不会改变结果）为 permanent。无状态码可判定的错误不带标记，
+// 由 source.IsRetryable 的通用规则兜底。
 func classifyS3Error(err error) error {
 	if err == nil {
 		return nil
@@ -404,10 +405,10 @@ func classifyS3Error(err error) error {
 	var respErr interface{ HTTPStatusCode() int }
 	if errors.As(err, &respErr) {
 		switch code := respErr.HTTPStatusCode(); {
-		case code == 401 || code == 403:
-			return source.MarkPermanent(err)
 		case code == 408 || code == 429 || code >= 500:
 			return source.MarkTransient(err)
+		case code >= 400:
+			return source.MarkPermanent(err)
 		}
 	}
 	return err

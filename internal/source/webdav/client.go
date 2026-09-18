@@ -276,16 +276,18 @@ func (e *webdavStatusError) Error() string {
 	return fmt.Sprintf("webdav: http status %d %s", e.code, http.StatusText(e.code))
 }
 
-// classifyWebDAVStatus 按状态码分类并标记：401 / 403（认证、授权）
-// 与 404（目标不存在）为 permanent；408 / 429 / 5xx（请求超时、限流、
-// 服务端故障）为 transient；其余状态不带标记，由通用规则兜底。
+// classifyWebDAVStatus 按状态码分类并标记：408 / 429 / 5xx（请求
+// 超时、限流、服务端故障）为 transient；其余全部 4xx（400 / 401 /
+// 403 / 404 / 405 / 409 / 410 / 412 等，客户端错误重连不会改变
+// 结果）为 permanent。transport 层错误不经此函数，交给
+// source.IsRetryable 的通用传输层规则。
 func classifyWebDAVStatus(code int) error {
 	err := &webdavStatusError{code: code}
 	switch {
-	case code == http.StatusUnauthorized || code == http.StatusForbidden || code == http.StatusNotFound:
-		return source.MarkPermanent(err)
 	case code == http.StatusRequestTimeout || code == http.StatusTooManyRequests || code >= 500:
 		return source.MarkTransient(err)
+	case code >= http.StatusBadRequest:
+		return source.MarkPermanent(err)
 	}
 	return err
 }
