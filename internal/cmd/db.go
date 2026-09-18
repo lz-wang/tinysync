@@ -86,10 +86,12 @@ func execDBBackup(ctx context.Context, in dbInput, stdout, stderr io.Writer) err
 }
 
 // execDBRestore 执行 tinysync db restore：validate source backup →
-// 备份当前 DB（safety backup；当前库损坏时跳过并告警，恢复损坏库是
-// 本命令的核心场景）→ 同目录 staging 文件 + fsync → 替换数据库 →
-// 清理遗留 -wal / -shm → reopen + integrity check。schema 较旧的
-// 备份恢复成功，下次 serve 正常向前迁移；schema 较新的备份拒绝恢复
+// 备份当前 DB（safety backup；当前库健康时必须成功，失败即在任何
+// 替换发生前中止——磁盘空间不足、权限错误或 backup 目录故障时继续
+// 覆盖健康库不可接受；当前库打不开则告警继续，恢复损坏库是本命令
+// 的核心场景）→ 同目录 staging 文件 + fsync → 替换数据库 → 清理
+// 遗留 -wal / -shm → reopen + integrity check。schema 较旧的备份
+// 恢复成功，下次 serve 正常向前迁移；schema 较新的备份拒绝恢复
 // （不做 downgrade migration）。
 func execDBRestore(ctx context.Context, in dbInput, stdout, stderr io.Writer) error {
 	if !in.Force {
@@ -112,20 +114,24 @@ func execDBRestore(ctx context.Context, in dbInput, stdout, stderr io.Writer) er
 		return fmt.Errorf("validate backup %s: %w", in.From, err)
 	}
 
-	// 2. pre-restore safety backup：能打开当前库就备份；打不开（典型
-	//    原因：正在恢复一个损坏的库）则告警继续，不阻断恢复。
+	// 2. pre-restore safety backup：当前库健康（可打开）时备份必须
+	//    成功，路径或 VACUUM 失败即中止——健康的库不能在丢失最后
+	//    快照的情况下被继续覆盖；当前库打不开（典型原因：正在恢复
+	//    一个损坏的库）则告警继续，restore 是救灾入口。
 	db, err := storage.Open(cfg.DataDir)
 	if err != nil {
 		fmt.Fprintf(stderr, "warning: current database unavailable, skipping pre-restore backup: %v\n", err)
 	} else {
 		target, perr := storage.PreRestoreBackupPath(cfg.DataDir)
 		if perr != nil {
-			fmt.Fprintf(stderr, "warning: pre-restore backup path failed: %v\n", perr)
-		} else if berr := storage.Backup(ctx, db, target); berr != nil {
-			fmt.Fprintf(stderr, "warning: pre-restore backup failed: %v\n", berr)
-		} else {
-			fmt.Fprintf(stdout, "pre-restore safety backup: %s\n", target)
+			_ = db.Close()
+			return fmt.Errorf("pre-restore safety backup failed; restore aborted before replacing the healthy database: %w", perr)
 		}
+		if berr := storage.Backup(ctx, db, target); berr != nil {
+			_ = db.Close()
+			return fmt.Errorf("pre-restore safety backup failed; restore aborted before replacing the healthy database: %w", berr)
+		}
+		fmt.Fprintf(stdout, "pre-restore safety backup: %s\n", target)
 		_ = db.Close()
 	}
 

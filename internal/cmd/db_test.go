@@ -54,6 +54,112 @@ func runDB(t *testing.T, in dbInput) (string, string, error) {
 	return stdout.String(), stderr.String(), err
 }
 
+// backupHealthyDB 做一份手动备份并返回其路径。
+func backupHealthyDB(t *testing.T, dataDir string) string {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	if err := execDBBackup(context.Background(), dbInput{DataDir: dataDir}, &stdout, &stderr); err != nil {
+		t.Fatalf("db backup: %v", err)
+	}
+	backupPath := strings.TrimSpace(strings.TrimPrefix(stdout.String(), "backup written to "))
+	if backupPath == "" || !strings.HasSuffix(backupPath, ".db") {
+		t.Fatalf("cannot parse backup path from %q", stdout.String())
+	}
+	return backupPath
+}
+
+// 当前库健康时，pre-restore safety backup 失败必须在任何替换发生前
+// 中止 restore（fail-closed）：健康库在丢失最后快照的情况下继续覆盖
+// 不可接受。backups 路径被同名普通文件占住即可注入 backup 失败。
+func TestDBRestoreAbortsWhenSafetyBackupFailsOnHealthyDB(t *testing.T) {
+	dataDir := t.TempDir()
+	bootstrapDBDataDir(t, dataDir)
+	backupPath := backupHealthyDB(t, dataDir)
+
+	// 备份之后向当前库写入标记：restore 若被替换则标记随旧库消失。
+	raw, err := sql.Open("sqlite", "file:"+filepath.Join(dataDir, storage.DatabaseFileName))
+	if err != nil {
+		t.Fatalf("open for marker: %v", err)
+	}
+	if _, err := raw.Exec("CREATE TABLE restore_marker (id INTEGER)"); err != nil {
+		t.Fatalf("create marker: %v", err)
+	}
+	if _, err := raw.Exec("INSERT INTO restore_marker VALUES (1)"); err != nil {
+		t.Fatalf("insert marker: %v", err)
+	}
+	_ = raw.Close()
+
+	// 注入 backup 失败：来源备份先挪出 backups 目录，再把 backups
+	// 目录位置用同名文件占住（PreRestoreBackupPath 的 MkdirAll 失败）。
+	movedBackup := filepath.Join(dataDir, "source-backup.db")
+	if err := os.Rename(backupPath, movedBackup); err != nil {
+		t.Fatalf("move source backup: %v", err)
+	}
+	if err := os.RemoveAll(filepath.Join(dataDir, "backups")); err != nil {
+		t.Fatalf("remove backups dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "backups"), []byte("not a dir"), 0o600); err != nil {
+		t.Fatalf("write backups decoy: %v", err)
+	}
+
+	_, _, err = runDB(t, dbInput{DataDir: dataDir, From: movedBackup, Force: true})
+	if err == nil {
+		t.Fatal("restore with failing safety backup on healthy db = nil, want abort")
+	}
+	if !strings.Contains(err.Error(), "pre-restore safety backup") {
+		t.Errorf("restore error %v, want safety backup failure", err)
+	}
+
+	// 当前库未被替换：标记仍在。
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(dataDir, storage.DatabaseFileName))
+	if err != nil {
+		t.Fatalf("reopen current db: %v", err)
+	}
+	defer db.Close()
+	var marked int
+	if err := db.QueryRow("SELECT count(*) FROM restore_marker").Scan(&marked); err != nil || marked != 1 {
+		t.Errorf("marker query = (%d, %v), want healthy db left untouched", marked, err)
+	}
+}
+
+// 当前库不可打开（损坏）时恢复语义不变：跳过 safety backup、告警并
+// 继续恢复——restore 本来就是救灾入口。
+func TestDBRestoreProceedsWhenCurrentDBDamaged(t *testing.T) {
+	dataDir := t.TempDir()
+	bootstrapDBDataDir(t, dataDir)
+	backupPath := backupHealthyDB(t, dataDir)
+
+	// 当前库整体替换为非 SQLite 垃圾字节并清掉 sidecar（遗留 WAL 会
+	// 把内容恢复回来）：库不可打开。
+	if err := os.WriteFile(filepath.Join(dataDir, storage.DatabaseFileName), []byte("definitely not a sqlite database"), 0o600); err != nil {
+		t.Fatalf("corrupt db: %v", err)
+	}
+	for _, sidecar := range []string{"-wal", "-shm"} {
+		if err := os.Remove(filepath.Join(dataDir, storage.DatabaseFileName+sidecar)); err != nil && !os.IsNotExist(err) {
+			t.Fatalf("remove sidecar: %v", err)
+		}
+	}
+
+	_, restoreStderr, err := runDB(t, dbInput{DataDir: dataDir, From: backupPath, Force: true})
+	if err != nil {
+		t.Fatalf("restore on damaged db: %v", err)
+	}
+	if !strings.Contains(restoreStderr, "current database unavailable") {
+		t.Errorf("stderr %q missing damaged-db warning", restoreStderr)
+	}
+
+	// 恢复后的库健康且业务数据回来。
+	restored, err := storage.Open(dataDir)
+	if err != nil {
+		t.Fatalf("reopen restored db: %v", err)
+	}
+	defer restored.Close()
+	var count int
+	if err := restored.QueryRow("SELECT count(*) FROM sync_jobs WHERE id = 'job_rt'").Scan(&count); err != nil || count != 1 {
+		t.Errorf("job after damaged-db restore = (%d, %v), want restored", count, err)
+	}
+}
+
 // 备份 → 破坏 → restore → 原数据回来：secret / 管理员凭据 / Job 全部
 // 恢复，restore 自身产生 pre-restore safety backup。
 func TestDBBackupRestoreRoundTrip(t *testing.T) {
