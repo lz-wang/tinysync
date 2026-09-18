@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"tinysync/internal/source"
 )
@@ -151,5 +152,73 @@ func TestSFTPRootResolution(t *testing.T) {
 	}
 	if len(page.Entries) != 1 || page.Entries[0].Path != "/in-root.txt" {
 		t.Fatalf("entries = %+v, want /in-root.txt resolved through symlinked root", page.Entries)
+	}
+}
+
+// transfer timeout 契约（v0.9）：Open 成功后服务端停摆 body 响应，
+// attempt context 超时必须实际中断阻塞中的 Read。SFTP v1 无请求级
+// 取消、File.Close 因内部互斥量无法中断 pending Read，中断只能经
+// 连接拆除实现；拆除后下一次 Open 惰性重连，Downloader 的重试语义
+// 因此成立（单次超时不终结整轮 run）。
+func TestSFTPTransferTimeoutInterruptsStalledBody(t *testing.T) {
+	root := t.TempDir()
+	content := strings.Repeat("stall-body-", 400)
+	seedFile(t, root, "big.txt", content)
+	ts := startTestServer(t)
+
+	cfg := sftpSourceConfig(ts, root, source.SFTPAuthPassword)
+	r := newSFTPFactoryRemote(t, ts, cfg, source.Credentials{SFTP: &source.SFTPCredentials{
+		Password: testPassword,
+	}})
+
+	// attempt 1：Open 成功，随后服务端停摆 → Read 阻塞 → attempt
+	// 超时（300ms）经连接拆除中断 Read。
+	attemptCtx, cancelAttempt := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancelAttempt()
+	rc, err := r.Open(attemptCtx, "/big.txt")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	ts.stall.Store(true)
+
+	type readResult struct {
+		n   int
+		err error
+	}
+	readDone := make(chan readResult, 1)
+	start := time.Now()
+	go func() {
+		n, readErr := rc.Read(make([]byte, 32))
+		readDone <- readResult{n: n, err: readErr}
+	}()
+	var res readResult
+	select {
+	case res = <-readDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stalled read still blocked after attempt timeout; transfer timeout is not enforced on SFTP body reads")
+	}
+	elapsed := time.Since(start)
+	_ = rc.Close()
+	if res.err == nil {
+		t.Fatal("stalled read returned data, want error after attempt timeout")
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("stalled read unblocked after %v, want prompt interrupt by the 300ms attempt timeout", elapsed)
+	}
+
+	// attempt 2（Downloader 重试形态）：恢复服务端响应 → 惰性重连 →
+	// 完整读取成功，证明单次超时不终结后续传输。
+	ts.stall.Store(false)
+	rc2, err := r.Open(context.Background(), "/big.txt")
+	if err != nil {
+		t.Fatalf("Open after connection teardown: %v", err)
+	}
+	defer rc2.Close()
+	data, err := io.ReadAll(rc2)
+	if err != nil {
+		t.Fatalf("read after reconnect: %v", err)
+	}
+	if string(data) != content {
+		t.Error("content mismatch after reconnect")
 	}
 }

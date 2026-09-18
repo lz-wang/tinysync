@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/pkg/sftp"
@@ -29,6 +30,9 @@ type testServer struct {
 	clientKeyPEM       string        // 供 private_key 认证使用
 	clientKeySigner    ssh.Signer    // 供服务端 PublicKeyCallback 比对
 	acceptDone         chan struct{} // accept 循环退出（Close 后）
+	// stall 置位后吞掉服务端 → 客户端的响应数据：模拟服务端停摆
+	// （收到请求但不回应），用于验证读取阻塞被 attempt 超时中断。
+	stall atomic.Bool
 }
 
 const (
@@ -111,8 +115,22 @@ func (ts *testServer) serve(config *ssh.ServerConfig) {
 	}
 }
 
+// stallableConn 在 stall 置位时吞掉写方向（服务端 → 客户端）的数据：
+// 请求仍被服务端处理，但响应永不到达客户端，客户端读取阻塞。
+func (c *stallableConn) Write(p []byte) (int, error) {
+	if c.stall.Load() {
+		return len(p), nil
+	}
+	return c.Conn.Write(p)
+}
+
+type stallableConn struct {
+	net.Conn
+	stall *atomic.Bool
+}
+
 func (ts *testServer) handleConn(conn net.Conn, config *ssh.ServerConfig) {
-	sshConn, chans, reqs, err := ssh.NewServerConn(conn, config)
+	sshConn, chans, reqs, err := ssh.NewServerConn(&stallableConn{Conn: conn, stall: &ts.stall}, config)
 	if err != nil {
 		return
 	}
