@@ -338,7 +338,7 @@ func (r *Runner) transferLimiter() *TransferLimiter {
 func (r *Runner) runOne(ctx context.Context, job Job, run *activeRun) {
 	_, remote, err := r.sources.OpenRemote(ctx, job.SourceID)
 	if err != nil {
-		r.finalize(ctx, run, RunStats{}, fmt.Errorf("create remote for source %s: %w", job.SourceID, err))
+		r.finalize(ctx, run, job.SourceID, RunStats{}, fmt.Errorf("create remote for source %s: %w", job.SourceID, err))
 		return
 	}
 	// 运行结束释放 Remote 连接（有连接生命周期的协议如 SFTP 不遗留
@@ -353,15 +353,17 @@ func (r *Runner) runOne(ctx context.Context, job Job, run *activeRun) {
 		Transfers:       run.transfers,
 		TransferTimeout: r.TransferTimeout,
 	})
-	r.finalize(ctx, run, stats, runErr)
+	r.finalize(ctx, run, job.SourceID, stats, runErr)
 }
 
 // finalize 把终态落库；落库失败只记日志，不改变本轮结果。终态落库与
 // 历史回收不受运行取消影响：Shutdown 取消 runCtx 后 Engine 因取消返回，
 // 此刻正是最需要把 failed 终态写库的时机——用已取消的 ctx 调真实
 // SQLite 会直接失败，遗留 running 行只能等下次启动的 stale 恢复；
-// 优雅关闭应在本进程内完成终态收敛。
-func (r *Runner) finalize(ctx context.Context, run *activeRun, stats RunStats, runErr error) {
+// 优雅关闭应在本进程内完成终态收敛。终态同时输出 event=sync_run
+// 结构化事件（v0.9 可观测性契约：job_id / run_id / source_id /
+// status / duration_ms / bytes / files_* / error）。
+func (r *Runner) finalize(ctx context.Context, run *activeRun, sourceID string, stats RunStats, runErr error) {
 	finishedAt := r.Now()
 	final := RunRecord{
 		ID:           run.runID,
@@ -377,6 +379,11 @@ func (r *Runner) finalize(ctx context.Context, run *activeRun, stats RunStats, r
 		final.State = RunFailed
 		final.Error = runErr.Error()
 	}
+	logging.Infof("event=sync_run job_id=%s run_id=%s source_id=%s status=%s duration_ms=%d bytes=%d files_created=%d files_updated=%d files_deleted=%d error=%q",
+		run.jobID, run.runID, sourceID, final.State,
+		finishedAt.Sub(run.startedAt).Milliseconds(), final.Stats.BytesTransferred,
+		final.Stats.FilesCreated, final.Stats.FilesUpdated, final.Stats.FilesDeleted,
+		final.Error)
 	persistCtx := context.WithoutCancel(ctx)
 	if err := r.history.Finalize(persistCtx, final); err != nil {
 		logging.Errorf("finalize run %s: %v", run.runID, err)
@@ -417,6 +424,8 @@ func (r *Runner) recordSkipped(ctx context.Context, job Job, trigger RunTrigger,
 	if err := r.history.PersistScheduledRun(ctx, run); err != nil {
 		return fmt.Errorf("record skipped run for job %s: %w", job.ID, err)
 	}
+	logging.Infof("event=sync_run job_id=%s run_id=%s source_id=%s status=%s duration_ms=0 bytes=0 files_created=0 files_updated=0 files_deleted=0 error=%q",
+		job.ID, id, job.SourceID, RunSkipped, reason)
 	r.pruneHistory(ctx)
 	return nil
 }

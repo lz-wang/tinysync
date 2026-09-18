@@ -28,10 +28,15 @@ import (
 //     带扩展名的资源路径缺失时 404，不误回 index.html。
 //
 // 引擎用 gin.New() 而非 gin.Default()：项目已有 zap 日志，不再安装 Gin Logger
-// 造成第二份 access log 事实来源；只保留 Recovery 兜底 panic。
+// 造成第二份 access log 事实来源。全局中间件链：RequestID（服务器
+// 生成的请求标识）→ AccessLog（唯一 access log，defer 保证 panic
+// 也留痕）→ Recovery（兜底 panic 为 500，位于链内侧使 access log
+// 能记录恢复后的 500 状态）。
 func NewRouter(webFS fs.FS, deps Dependencies) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
+	router.Use(requestIDMiddleware())
+	router.Use(accessLogMiddleware())
 	router.Use(gin.Recovery())
 	router.HandleMethodNotAllowed = true
 

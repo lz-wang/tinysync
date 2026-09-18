@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"tinysync/internal/logging"
 	"tinysync/internal/source"
 )
 
@@ -288,6 +289,10 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 		inflight--
 		if out.err != nil {
 			fail(transferFailure(fmt.Errorf("transfer %s: %w", out.job.entry.relPath, out.err)))
+			// 文件级失败事件（v0.9 可观测性契约：带 path；成功的单
+			// 文件不逐条输出，避免大目录产生海量日志）。
+			logging.Infof("event=sync_file_failed job_id=%s run_id=%s path=%s error=%q",
+				job.ID, opts.RunID, out.job.entry.relPath, out.err.Error())
 			// 失败明细尽力记录：主错误（传输失败）优先，不被覆盖。
 			// 因取消被中断的在途下载同样如实记 failed。
 			_ = recordItem(RunItem{
@@ -348,6 +353,9 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 				return stats, fmt.Errorf("mirror delete %s: %w", target, err)
 			}
 			if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+				// 文件级失败事件：Mirror 删除失败同样带 path。
+				logging.Infof("event=sync_file_failed job_id=%s run_id=%s path=%s error=%q",
+					job.ID, opts.RunID, rel, err.Error())
 				// 主错误优先；失败明细尽力记录。
 				_ = recordItem(RunItem{
 					Path:   rel,

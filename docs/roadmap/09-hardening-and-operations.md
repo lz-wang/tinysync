@@ -173,29 +173,29 @@ Shutdown → Release lock
 
 ### Goals
 
-- [ ] 全局 Gin middleware：RequestID + AccessLog + Recovery
-- [ ] Request ID 由服务器生成（`req_<128-bit random>`），响应头返回
+- [x] 全局 Gin middleware：RequestID + AccessLog + Recovery
+- [x] Request ID 由服务器生成（`req_<128-bit random>`），响应头返回
       `X-Request-ID`；不无条件信任客户端提供的 request id
-- [ ] access log 至少包含：
+- [x] access log 至少包含：
 
 ```text
 event=request request_id method path status duration_ms bytes
 ```
 
-- [ ] 不记录 Authorization、Cookie、request body、secret；默认不记录
+- [x] 不记录 Authorization、Cookie、request body、secret；默认不记录
       query string
-- [ ] sync run 事件（run 开始 / 结束）：
+- [x] sync run 事件（run 开始 / 结束）：
 
 ```text
 event=sync_run job_id run_id source_id status duration_ms bytes
 files_created files_updated files_deleted error
 ```
 
-- [ ] 文件级失败附加 `path`；成功的单文件不逐条 INFO（10k 文件不产生
+- [x] 文件级失败附加 `path`；成功的单文件不逐条 INFO（10k 文件不产生
       10k 日志）
-- [ ] 应用日志与 access log 保持一个 logger 体系，不引入 Gin Logger +
+- [x] 应用日志与 access log 保持一个 logger 体系，不引入 Gin Logger +
       zap access logger 两个事实来源
-- [ ] secret / token / password 不进入日志
+- [x] secret / token / password 不进入日志
 
 ## 7. Performance Baseline & v1.0 Quality Gate
 
@@ -277,10 +277,10 @@ regression fixes、文档与发布为核心，不再大规模设计新机制。
 - [x] 10k directory scenario 通过
 - [x] large streaming transfer 通过
 - [x] repeated sync 收敛且幂等
-- [ ] 每个管理请求有 request_id
-- [ ] access log 有 method/status/duration/bytes
-- [ ] sync run log 有 job_id/run_id/source_id/status/duration/bytes
-- [ ] secret/token/password 不进入日志
+- [x] 每个管理请求有 request_id
+- [x] access log 有 method/status/duration/bytes
+- [x] sync run log 有 job_id/run_id/source_id/status/duration/bytes
+- [x] secret/token/password 不进入日志
 - [ ] benchmark baseline 已记录（100k managed metadata / 10k listing /
       large transfer）
 - [ ] `make check` / `make build` / `make integration` / `make hardening`

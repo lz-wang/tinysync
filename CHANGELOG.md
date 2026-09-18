@@ -56,6 +56,13 @@ GitHub Release 摘要一致。
   尾随点 / 空格；大小写不敏感的文件系统上，远端同时存在仅大小写
   不同的路径（如 `Foo.txt` 与 `foo.txt`）时整轮同步在变更前失败，
   不再出现后下载覆盖先下载的平台相关结果。
+- 新增请求与同步链路日志关联：每个 HTTP 请求（含 MCP）由服务器
+  生成 `req_<随机>` 请求标识并回写 `X-Request-ID` 响应头，access
+  log 统一记录 event=request、request_id、method、path、status、
+  耗时与响应字节数（不记录 query string、请求体与认证头）；每轮
+  同步结束输出 event=sync_run 事件（job_id / run_id / source_id /
+  status / 耗时 / 字节 / 文件变更统计 / 失败原因），文件级失败附
+  带 path。日志保持单一 zap 文本体系，panic 请求同样留痕。
 
 ## [0.8.0] - 2026-09-18
 
