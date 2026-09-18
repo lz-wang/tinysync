@@ -153,15 +153,15 @@ Shutdown → Release lock
       file / not found / invalid logical path / context cancellation /
       special filename / root confinement 在三个 adapter 上以同一套
       契约验证
-- [ ] transient network fault 场景：首次 503 重试成功、中途断连重试
+- [x] transient network fault 场景：首次 503 重试成功、中途断连重试
       成功、401 不重试、timeout 安全失败
-- [ ] crash 场景：running 记录、pending managed metadata、遗留临时文件
+- [x] crash 场景：running 记录、pending managed metadata、遗留临时文件
       经 restart 后收敛（running → failed、temp 清理、下轮 run 收敛）
-- [ ] idempotency：同一 remote snapshot 连续 run 零变更（Copy 与
+- [x] idempotency：同一 remote snapshot 连续 run 零变更（Copy 与
       Mirror 都覆盖）
-- [ ] large directory：≥ 10,000 remote files 的 scan / selector /
+- [x] large directory：≥ 10,000 remote files 的 scan / selector /
       planner / pagination / browser 场景
-- [ ] large transfer：32–64 MiB 生成流验证真实 streaming 而非整体读入
+- [x] large transfer：32–64 MiB 生成流验证真实 streaming 而非整体读入
       内存
 
 ## 6. Operational Observability
@@ -273,10 +273,10 @@ regression fixes、文档与发布为核心，不再大规模设计新机制。
 - [x] case-insensitive filesystem collision fail-fast
 - [x] permission / ENOSPC / rename failure 不破坏旧文件
 - [ ] WebDAV / S3 / SFTP 通过统一 Remote contract
-- [ ] transient network fault E2E 通过
-- [ ] 10k directory scenario 通过
-- [ ] large streaming transfer 通过
-- [ ] repeated sync 收敛且幂等
+- [x] transient network fault E2E 通过
+- [x] 10k directory scenario 通过
+- [x] large streaming transfer 通过
+- [x] repeated sync 收敛且幂等
 - [ ] 每个管理请求有 request_id
 - [ ] access log 有 method/status/duration/bytes
 - [ ] sync run log 有 job_id/run_id/source_id/status/duration/bytes

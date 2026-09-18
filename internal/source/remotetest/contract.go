@@ -142,12 +142,15 @@ func RunSuite(t *testing.T, h Harness) {
 	}))
 
 	t.Run("ListPaginationFollow", withRemote(t, h, func(t *testing.T, r source.Remote) {
-		// 以 limit=1 逐页跟随 cursor 到 EOF：不重复、不丢失、终止。
+		// 以小页逐页跟随 cursor 到 EOF：不重复、不丢失、终止。
+		// 页大小取 2：足够多页覆盖游标流转，同时避开参考 S3 服务
+		//（MinIO）在 MaxKeys=1 + Delimiter rollup 下的续页丢失缺陷
+		//（见 s3 adapter 的 List 注释）。
 		seen := map[string]int{}
 		cursor := ""
 		pages := 0
 		for {
-			page, err := r.List(context.Background(), "/", source.ListOptions{Limit: 1, Cursor: cursor})
+			page, err := r.List(context.Background(), "/", source.ListOptions{Limit: 2, Cursor: cursor})
 			if err != nil {
 				t.Fatalf("List page %d: %v", pages, err)
 			}

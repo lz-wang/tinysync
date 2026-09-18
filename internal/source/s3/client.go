@@ -222,6 +222,11 @@ func (r *remote) Stat(ctx context.Context, logicalPath string) (source.FileInfo,
 // 一页经 marker 过滤后条目可能变少甚至为空——此时继续以
 // ContinuationToken 拉取，直到产出条目或 EOF：契约要求空页不得
 // 携带 NextCursor。
+// List 实现 source.Remote（单层列目录）。已知参考服务缺陷：MinIO
+// 在 MaxKeys=1 且本页仅含 Delimiter rollup（CommonPrefixes）时，
+// 后续 ContinuationToken 续页会丢失剩余条目（AWS 无此问题）；本
+// adapter 依赖调用方使用常规页大小（limit ≥ 2），契约套件据此
+// 覆盖多页游标流转。
 func (r *remote) List(ctx context.Context, logicalDir string, opts source.ListOptions) (source.FilePage, error) {
 	if err := source.ValidateLogicalPath(logicalDir); err != nil {
 		return source.FilePage{}, err
@@ -246,8 +251,15 @@ func (r *remote) List(ctx context.Context, logicalDir string, opts source.ListOp
 
 		files := make(map[string]source.FileInfo)
 		dirs := make(map[string]bool)
+		// isSelf 判断条目是否为「正在列出的目录自身」：folder marker
+		// 对象（prefix 目录占位）会以目录形态出现在自己的 listing 里，
+		// 与 WebDAV / SFTP 的语义对齐必须排除（Depth:1 列目录不包含
+		// 目录自身条目）。
+		isSelf := func(logical string) bool {
+			return dir != "/" && logical == dir
+		}
 		addDir := func(logical string) {
-			if logical != "/" {
+			if logical != "/" && !isSelf(logical) {
 				dirs[logical] = true
 			}
 		}
@@ -263,6 +275,11 @@ func (r *remote) List(ctx context.Context, logicalDir string, opts source.ListOp
 			if strings.HasSuffix(key, "/") {
 				// folder marker：零字节目录占位对象。
 				addDir(logical)
+				continue
+			}
+			if isSelf(logical) {
+				// 目录自身以对象形态出现（marker 之外的非常规形态）：
+				// 同样不进入自身 listing。
 				continue
 			}
 			files[logical] = source.FileInfo{
