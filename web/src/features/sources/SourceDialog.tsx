@@ -515,15 +515,6 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                         </>
                     )}
 
-                    <FormControlLabel
-                        control={
-                            <Switch
-                                checked={enabled}
-                                onChange={e => setEnabled(e.target.checked)}
-                            />
-                        }
-                        label="启用"
-                    />
                     {type === 'sftp' && (
                         <TextField
                             label="主机密钥指纹（SHA256，可选）"
@@ -539,6 +530,17 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                 </Stack>
             </DialogContent>
             <DialogActions>
+                <FormControlLabel
+                    control={
+                        <Switch
+                            checked={enabled}
+                            onChange={e => setEnabled(e.target.checked)}
+                            disabled={saving}
+                        />
+                    }
+                    label="启用"
+                    sx={{ mr: 'auto' }}
+                />
                 <Button onClick={onClose} disabled={saving}>
                     取消
                 </Button>
