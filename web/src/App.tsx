@@ -10,7 +10,6 @@ import OverviewPage from './pages/OverviewPage'
 import RunDetailPage from './pages/RunDetailPage'
 import SettingsPage from './pages/SettingsPage'
 import SourcesPage from './pages/SourcesPage'
-import TokensPage from './pages/TokensPage'
 
 // App 定义前端路由：/login 独立于应用骨架，其余路由经 RequireAuth
 // 守卫；服务端 SPA fallback 已为深链接预留行为。
@@ -33,7 +32,7 @@ export default function App() {
                     <Route path="history" element={<HistoryPage />} />
                     <Route path="history/:runId" element={<RunDetailPage />} />
                     <Route path="settings" element={<SettingsPage />} />
-                    <Route path="settings/tokens" element={<TokensPage />} />
+                    <Route path="settings/tokens" element={<SettingsPage />} />
                     <Route path="*" element={<Navigate to="/" replace />} />
                 </Route>
             </Routes>
