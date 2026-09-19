@@ -80,6 +80,9 @@ func ValidateConfig(t Type, c Config) error {
 		if err := ValidateEndpoint(c.WebDAV.Endpoint); err != nil {
 			return err
 		}
+		if c.WebDAV.RemoteRoot != "" && (!path.IsAbs(c.WebDAV.RemoteRoot) || path.Clean(c.WebDAV.RemoteRoot) != c.WebDAV.RemoteRoot) {
+			return fmt.Errorf("%w: webdav remote_root %q must be a clean absolute path", ErrInvalid, c.WebDAV.RemoteRoot)
+		}
 	case TypeS3:
 		if c.S3 == nil {
 			return fmt.Errorf("%w: s3 config is required", ErrInvalid)
@@ -104,12 +107,12 @@ func ValidateConfig(t Type, c Config) error {
 	return nil
 }
 
-// validateS3Config 校验 S3 配置：region / bucket / access_key 必填，
+// validateS3Config 校验 S3 配置：endpoint / bucket / access_key 必填，region 可选，
 // endpoint 有值时必须是合法 http(s) URL，prefix 不得以 / 开头
 // （prefix 是 bucket 内的对象键前缀，不是绝对路径）。
 func validateS3Config(c S3Config) error {
-	if strings.TrimSpace(c.Region) == "" {
-		return fmt.Errorf("%w: s3 region is required", ErrInvalid)
+	if strings.TrimSpace(c.Endpoint) == "" {
+		return fmt.Errorf("%w: s3 endpoint is required", ErrInvalid)
 	}
 	if strings.TrimSpace(c.Bucket) == "" {
 		return fmt.Errorf("%w: s3 bucket is required", ErrInvalid)
@@ -117,17 +120,15 @@ func validateS3Config(c S3Config) error {
 	if strings.TrimSpace(c.AccessKey) == "" {
 		return fmt.Errorf("%w: s3 access_key is required", ErrInvalid)
 	}
-	if c.Endpoint != "" {
-		u, err := url.Parse(c.Endpoint)
-		if err != nil {
-			return fmt.Errorf("%w: parse s3 endpoint %q: %v", ErrInvalid, c.Endpoint, err)
-		}
-		if u.Scheme != "http" && u.Scheme != "https" {
-			return fmt.Errorf("%w: s3 endpoint scheme must be http or https, got %q", ErrInvalid, u.Scheme)
-		}
-		if u.Host == "" {
-			return fmt.Errorf("%w: s3 endpoint host is required", ErrInvalid)
-		}
+	u, err := url.Parse(c.Endpoint)
+	if err != nil {
+		return fmt.Errorf("%w: parse s3 endpoint %q: %v", ErrInvalid, c.Endpoint, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("%w: s3 endpoint scheme must be http or https, got %q", ErrInvalid, u.Scheme)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("%w: s3 endpoint host is required", ErrInvalid)
 	}
 	if strings.HasPrefix(c.Prefix, "/") {
 		return fmt.Errorf("%w: s3 prefix is a bucket-relative key prefix and must not start with /", ErrInvalid)
@@ -135,7 +136,8 @@ func validateS3Config(c S3Config) error {
 	return nil
 }
 
-// validateSFTPConfig 校验 SFTP 配置：host / username / remote_root 必填，
+// validateSFTPConfig 校验 SFTP 配置：host / username 必填；remote_root 留空时
+// 由 SFTP 服务器解析为该用户 Home 目录。
 // remote_root 必须是绝对路径，auth_method 显式且合法；可选的
 // host_key_fingerprint 提供时必须是 SHA256:<base64> 形式。
 func validateSFTPConfig(c SFTPConfig) error {
@@ -148,10 +150,10 @@ func validateSFTPConfig(c SFTPConfig) error {
 	if strings.TrimSpace(c.Username) == "" {
 		return fmt.Errorf("%w: sftp username is required", ErrInvalid)
 	}
-	if !path.IsAbs(c.RemoteRoot) {
+	if c.RemoteRoot != "" && !path.IsAbs(c.RemoteRoot) {
 		return fmt.Errorf("%w: sftp remote_root %q must be an absolute path", ErrInvalid, c.RemoteRoot)
 	}
-	if path.Clean(c.RemoteRoot) != c.RemoteRoot {
+	if c.RemoteRoot != "" && path.Clean(c.RemoteRoot) != c.RemoteRoot {
 		return fmt.Errorf("%w: sftp remote_root %q must be a clean path", ErrInvalid, c.RemoteRoot)
 	}
 	switch c.AuthMethod {

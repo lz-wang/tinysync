@@ -79,7 +79,12 @@ func (f *Factory) Create(ctx context.Context, s source.Source, credentials sourc
 	if err != nil {
 		return nil, fmt.Errorf("create webdav client for %s: %w", cfg.Endpoint, err)
 	}
-	return &remote{client: client, hrefPrefix: normalizeHrefPrefix(endpoint.Path)}, nil
+	root := path.Clean("/" + cfg.RemoteRoot)
+	return &remote{
+		client:     client,
+		root:       root,
+		hrefPrefix: normalizeHrefPrefix(path.Join(endpoint.Path, root)),
+	}, nil
 }
 
 // normalizeHrefPrefix 把 endpoint 路径归一为 href 前缀匹配形式：
@@ -130,6 +135,8 @@ func redirectPolicy(req *http.Request, via []*http.Request) error {
 // remote 是 source.Remote 的 WebDAV 实现。
 type remote struct {
 	client *webdav.Client
+	// root 是配置的 WebDAV 子目录；Source 逻辑根目录始终映射到这里。
+	root string
 	// hrefPrefix 是 endpoint 路径的归一化前缀（无尾斜杠，root 为空串），
 	// 用于把服务器 href 转换回 Source-relative logical path。
 	hrefPrefix string
@@ -140,8 +147,8 @@ type remote struct {
 // 路径执行 path.Join(endpoint.Path, rel)，因此以 / 开头的路径会丢失
 // endpoint 的路径前缀、直接变成服务器绝对路径（详见其 ResolveHref）。
 // 归一化同时消除 .. 序列，保证请求不逃逸 Source root。
-func resolveRelative(logicalPath string) string {
-	cleaned := path.Clean("/" + logicalPath)
+func (r *remote) resolveRelative(logicalPath string) string {
+	cleaned := path.Join(r.root, logicalPath)
 	return strings.TrimPrefix(cleaned, "/")
 }
 
@@ -157,7 +164,7 @@ func (r *remote) Stat(ctx context.Context, path string) (source.FileInfo, error)
 	if err := source.ValidateLogicalPath(path); err != nil {
 		return source.FileInfo{}, err
 	}
-	info, err := r.client.Stat(ctx, resolveRelative(path))
+	info, err := r.client.Stat(ctx, r.resolveRelative(path))
 	if err != nil {
 		return source.FileInfo{}, wrapOp("stat", path, err)
 	}
@@ -177,7 +184,7 @@ func (r *remote) List(ctx context.Context, path string, opts source.ListOptions)
 		return source.FilePage{}, err
 	}
 	logical := logicalPath(path)
-	entries, err := r.client.ReadDir(ctx, resolveRelative(path), false)
+	entries, err := r.client.ReadDir(ctx, r.resolveRelative(path), false)
 	if err != nil {
 		return source.FilePage{}, wrapOp("list", path, err)
 	}
@@ -204,7 +211,7 @@ func (r *remote) Open(ctx context.Context, path string) (io.ReadCloser, error) {
 	if err := source.ValidateLogicalPath(path); err != nil {
 		return nil, err
 	}
-	rc, err := r.client.Open(ctx, resolveRelative(path))
+	rc, err := r.client.Open(ctx, r.resolveRelative(path))
 	if err != nil {
 		return nil, wrapOp("open", path, err)
 	}
@@ -220,7 +227,7 @@ func (r *remote) Mkdir(ctx context.Context, path string) error {
 		}
 		return fmt.Errorf("%w: cannot create remote root", source.ErrInvalid)
 	}
-	if err := r.client.Mkdir(ctx, resolveRelative(path)); err != nil {
+	if err := r.client.Mkdir(ctx, r.resolveRelative(path)); err != nil {
 		return wrapOp("mkdir", path, err)
 	}
 	return nil

@@ -72,8 +72,9 @@ type Config struct {
 
 // WebDAVConfig 是 WebDAV Source 的非敏感配置。
 type WebDAVConfig struct {
-	Endpoint string `json:"endpoint"`
-	Username string `json:"username"`
+	Endpoint   string `json:"endpoint"`
+	RemoteRoot string `json:"remote_root"`
+	Username   string `json:"username"`
 }
 
 // S3Config 是 S3 Source 的非敏感配置。AccessKey 本身不按 secret 处理；

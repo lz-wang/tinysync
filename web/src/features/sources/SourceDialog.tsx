@@ -1,3 +1,4 @@
+import FolderOpenOutlinedIcon from '@mui/icons-material/FolderOpenOutlined'
 import {
     Alert,
     Box,
@@ -31,6 +32,7 @@ import {
     updateSource,
     type WebDAVConfig,
 } from '../../api'
+import RemotePathPicker from '../files/RemotePathPicker'
 
 interface SourceDialogProps {
     open: boolean
@@ -57,9 +59,14 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
     const [enabled, setEnabled] = useState(true)
     const [saving, setSaving] = useState(false)
     const [error, setError] = useState<string | null>(null)
+    const [remotePickerOpen, setRemotePickerOpen] = useState(false)
 
     // 各协议非敏感配置字段。
-    const [webdav, setWebdav] = useState<WebDAVConfig>({ endpoint: '', username: '' })
+    const [webdav, setWebdav] = useState<WebDAVConfig>({
+        endpoint: '',
+        remote_root: '/',
+        username: '',
+    })
     const [s3, setS3] = useState<S3Config>({
         endpoint: '',
         region: '',
@@ -98,6 +105,10 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
         setWebdav({
             endpoint:
                 source?.type === 'webdav' ? ((source.config as WebDAVConfig).endpoint ?? '') : '',
+            remote_root:
+                source?.type === 'webdav'
+                    ? ((source.config as WebDAVConfig).remote_root ?? '/')
+                    : '/',
             username:
                 source?.type === 'webdav' ? ((source.config as WebDAVConfig).username ?? '') : '',
         })
@@ -277,11 +288,16 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
             return webdav.endpoint.trim() !== ''
         }
         if (type === 's3') {
-            return s3.region.trim() !== '' && s3.bucket.trim() !== '' && s3.access_key.trim() !== ''
+            return source !== null
+                ? s3.endpoint?.trim() !== '' &&
+                      s3.bucket.trim() !== '' &&
+                      s3.access_key.trim() !== ''
+                : s3.endpoint?.trim() !== '' &&
+                      s3.bucket.trim() !== '' &&
+                      s3.access_key.trim() !== '' &&
+                      secrets['s3.secret_key'].trim() !== ''
         }
-        return (
-            sftp.host.trim() !== '' && sftp.username.trim() !== '' && sftp.remote_root.trim() !== ''
-        )
+        return sftp.host.trim() !== '' && sftp.username.trim() !== ''
     }
 
     const secretChip = (key: SecretKey, label: string) => {
@@ -355,130 +371,186 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                                 placeholder="https://nas.example.com:5006/dav"
                                 sx={{ '& input': { fontFamily: 'monospace' } }}
                             />
-                            <TextField
-                                label="用户名"
-                                value={webdav.username}
-                                onChange={e => setWebdav({ ...webdav, username: e.target.value })}
+                            <RootField
+                                value={webdav.remote_root ?? '/'}
+                                onChange={value => setWebdav({ ...webdav, remote_root: value })}
+                                onBrowse={() => setRemotePickerOpen(true)}
+                                disabled={source === null}
+                                helperText={
+                                    source === null
+                                        ? '保存同步源后可浏览选择目录。'
+                                        : '留在此目录下同步，任务中的路径相对此根目录。'
+                                }
                             />
-                            <SecretField
-                                label="密码"
-                                value={secrets['webdav.password']}
-                                dirty={secretsDirty.has('webdav.password')}
-                                cleared={secretsCleared.has('webdav.password')}
-                                chip={secretChip('webdav.password', '密码')}
-                                onChange={v => setSecret('webdav.password', v)}
-                                onClear={() => clearSecret('webdav.password')}
-                            />
+                            <Box
+                                sx={{
+                                    display: 'grid',
+                                    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                                    gap: 2,
+                                }}
+                            >
+                                <TextField
+                                    label="用户名"
+                                    value={webdav.username}
+                                    onChange={e =>
+                                        setWebdav({ ...webdav, username: e.target.value })
+                                    }
+                                />
+                                <SecretField
+                                    label="密码"
+                                    value={secrets['webdav.password']}
+                                    dirty={secretsDirty.has('webdav.password')}
+                                    cleared={secretsCleared.has('webdav.password')}
+                                    chip={secretChip('webdav.password', '密码')}
+                                    onChange={v => setSecret('webdav.password', v)}
+                                    onClear={() => clearSecret('webdav.password')}
+                                />
+                            </Box>
                         </>
                     )}
 
                     {type === 's3' && (
                         <>
-                            <TextField
-                                label="服务地址（可选，留空使用 AWS 默认地址）"
-                                value={s3.endpoint ?? ''}
-                                onChange={e => setS3({ ...s3, endpoint: e.target.value })}
-                                placeholder="https://s3.example.com"
-                                sx={{ '& input': { fontFamily: 'monospace' } }}
-                            />
-                            <TextField
-                                label="区域"
-                                value={s3.region}
-                                onChange={e => setS3({ ...s3, region: e.target.value })}
-                                required
-                                placeholder="us-east-1"
-                            />
-                            <TextField
-                                label="存储桶"
-                                value={s3.bucket}
-                                onChange={e => setS3({ ...s3, bucket: e.target.value })}
-                                required
-                                sx={{ '& input': { fontFamily: 'monospace' } }}
-                            />
-                            <TextField
-                                label="前缀（可选）"
-                                value={s3.prefix ?? ''}
-                                onChange={e => setS3({ ...s3, prefix: e.target.value })}
-                                placeholder="tinysync"
-                                sx={{ '& input': { fontFamily: 'monospace' } }}
-                            />
-                            <FormControlLabel
-                                control={
-                                    <Switch
-                                        checked={s3.path_style ?? true}
-                                        onChange={e =>
-                                            setS3({ ...s3, path_style: e.target.checked })
-                                        }
-                                    />
-                                }
-                                label="路径风格寻址（MinIO / 自托管）"
-                            />
-                            <TextField
-                                label="访问密钥"
-                                value={s3.access_key}
-                                onChange={e => setS3({ ...s3, access_key: e.target.value })}
-                                required
-                                sx={{ '& input': { fontFamily: 'monospace' } }}
-                            />
-                            <SecretField
-                                label="访问密钥密码"
-                                value={secrets['s3.secret_key']}
-                                dirty={secretsDirty.has('s3.secret_key')}
-                                cleared={secretsCleared.has('s3.secret_key')}
-                                chip={secretChip('s3.secret_key', '访问密钥密码')}
-                                onChange={v => setSecret('s3.secret_key', v)}
-                                onClear={() => clearSecret('s3.secret_key')}
-                            />
+                            <Box
+                                sx={{
+                                    display: 'grid',
+                                    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                                    gap: 2,
+                                }}
+                            >
+                                <TextField
+                                    label="服务地址"
+                                    value={s3.endpoint ?? ''}
+                                    onChange={e => setS3({ ...s3, endpoint: e.target.value })}
+                                    placeholder="https://s3.example.com"
+                                    required
+                                    sx={{ '& input': { fontFamily: 'monospace' } }}
+                                />
+                                <TextField
+                                    label="区域"
+                                    value={s3.region}
+                                    onChange={e => setS3({ ...s3, region: e.target.value })}
+                                    placeholder="us-east-1"
+                                />
+                            </Box>
+                            <Box
+                                sx={{
+                                    display: 'grid',
+                                    gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr) auto',
+                                    gap: 2,
+                                    alignItems: 'center',
+                                }}
+                            >
+                                <TextField
+                                    label="存储桶"
+                                    value={s3.bucket}
+                                    onChange={e => setS3({ ...s3, bucket: e.target.value })}
+                                    required
+                                    sx={{ '& input': { fontFamily: 'monospace' } }}
+                                />
+                                <TextField
+                                    label="前缀（可选）"
+                                    value={s3.prefix ?? ''}
+                                    onChange={e => setS3({ ...s3, prefix: e.target.value })}
+                                    placeholder="tinysync"
+                                    sx={{ '& input': { fontFamily: 'monospace' } }}
+                                />
+                                <FormControlLabel
+                                    control={
+                                        <Switch
+                                            checked={s3.path_style ?? true}
+                                            onChange={e =>
+                                                setS3({ ...s3, path_style: e.target.checked })
+                                            }
+                                        />
+                                    }
+                                    label="路径风格寻址（MinIO / 自托管）"
+                                />
+                            </Box>
+                            <Box
+                                sx={{
+                                    display: 'grid',
+                                    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                                    gap: 2,
+                                }}
+                            >
+                                <TextField
+                                    label="Access Key"
+                                    value={s3.access_key}
+                                    onChange={e => setS3({ ...s3, access_key: e.target.value })}
+                                    required
+                                    sx={{ '& input': { fontFamily: 'monospace' } }}
+                                />
+                                <SecretField
+                                    label="Secret Key"
+                                    value={secrets['s3.secret_key']}
+                                    dirty={secretsDirty.has('s3.secret_key')}
+                                    cleared={secretsCleared.has('s3.secret_key')}
+                                    chip={secretChip('s3.secret_key', 'Secret Key')}
+                                    onChange={v => setSecret('s3.secret_key', v)}
+                                    onClear={() => clearSecret('s3.secret_key')}
+                                />
+                            </Box>
                         </>
                     )}
 
                     {type === 'sftp' && (
                         <>
-                            <TextField
-                                label="主机"
-                                value={sftp.host}
-                                onChange={e => setSftp({ ...sftp, host: e.target.value })}
-                                required
-                                placeholder="nas.example.com"
-                            />
-                            <TextField
-                                label="端口"
-                                type="number"
-                                value={sftp.port ?? 22}
-                                onChange={e => setSftp({ ...sftp, port: Number(e.target.value) })}
-                            />
-                            <TextField
-                                label="用户名"
-                                value={sftp.username}
-                                onChange={e => setSftp({ ...sftp, username: e.target.value })}
-                                required
-                            />
-                            <TextField
-                                label="远端根目录"
-                                value={sftp.remote_root}
-                                onChange={e => setSftp({ ...sftp, remote_root: e.target.value })}
-                                required
-                                placeholder="/srv/backups"
-                                sx={{ '& input': { fontFamily: 'monospace' } }}
-                            />
-                            <FormControl fullWidth>
-                                <InputLabel id="sftp-auth-label">认证方式</InputLabel>
-                                <Select
-                                    labelId="sftp-auth-label"
-                                    value={sftp.auth_method}
-                                    label="认证方式"
+                            <Box
+                                sx={{
+                                    display: 'grid',
+                                    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                                    gap: 2,
+                                }}
+                            >
+                                <TextField
+                                    label="主机"
+                                    value={sftp.host}
+                                    onChange={e => setSftp({ ...sftp, host: e.target.value })}
+                                    required
+                                    placeholder="nas.example.com"
+                                />
+                                <TextField
+                                    label="端口"
+                                    type="number"
+                                    value={sftp.port ?? 22}
                                     onChange={e =>
-                                        setSftp({
-                                            ...sftp,
-                                            auth_method: e.target
-                                                .value as SFTPConfig['auth_method'],
-                                        })
+                                        setSftp({ ...sftp, port: Number(e.target.value) })
                                     }
-                                >
-                                    <MenuItem value="password">密码</MenuItem>
-                                    <MenuItem value="private_key">私钥</MenuItem>
-                                </Select>
-                            </FormControl>
+                                />
+                            </Box>
+                            <Box
+                                sx={{
+                                    display: 'grid',
+                                    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                                    gap: 2,
+                                }}
+                            >
+                                <TextField
+                                    label="用户名"
+                                    value={sftp.username}
+                                    onChange={e => setSftp({ ...sftp, username: e.target.value })}
+                                    required
+                                />
+                                <FormControl fullWidth>
+                                    <InputLabel id="sftp-auth-label">认证方式</InputLabel>
+                                    <Select
+                                        labelId="sftp-auth-label"
+                                        value={sftp.auth_method}
+                                        label="认证方式"
+                                        onChange={e =>
+                                            setSftp({
+                                                ...sftp,
+                                                auth_method: e.target
+                                                    .value as SFTPConfig['auth_method'],
+                                            })
+                                        }
+                                    >
+                                        <MenuItem value="password">密码</MenuItem>
+                                        <MenuItem value="private_key">私钥</MenuItem>
+                                    </Select>
+                                </FormControl>
+                            </Box>
                             {sftp.auth_method === 'password' ? (
                                 <SecretField
                                     label="密码"
@@ -512,6 +584,17 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                                     />
                                 </>
                             )}
+                            <RootField
+                                value={sftp.remote_root ?? ''}
+                                onChange={value => setSftp({ ...sftp, remote_root: value })}
+                                onBrowse={() => setRemotePickerOpen(true)}
+                                disabled={source === null}
+                                helperText={
+                                    source === null
+                                        ? '留空使用该用户 Home；保存同步源后可浏览选择目录。'
+                                        : '留空使用该用户 Home；任务中的路径相对此根目录。'
+                                }
+                            />
                         </>
                     )}
 
@@ -552,7 +635,60 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                     {saving ? '保存中…' : '保存'}
                 </Button>
             </DialogActions>
+            <RemotePathPicker
+                open={remotePickerOpen}
+                onClose={() => setRemotePickerOpen(false)}
+                onPick={path => {
+                    if (type === 'webdav') {
+                        setWebdav({ ...webdav, remote_root: path })
+                    } else {
+                        setSftp({ ...sftp, remote_root: path })
+                    }
+                    setRemotePickerOpen(false)
+                }}
+                boundSourceId={source?.id}
+                initialPath={
+                    type === 'webdav' ? (webdav.remote_root ?? '/') : sftp.remote_root || '/'
+                }
+            />
         </Dialog>
+    )
+}
+
+function RootField({
+    value,
+    onChange,
+    onBrowse,
+    disabled,
+    helperText,
+}: {
+    value: string
+    onChange: (value: string) => void
+    onBrowse: () => void
+    disabled: boolean
+    helperText: string
+}) {
+    return (
+        <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'flex-start', minWidth: 0 }}>
+            <TextField
+                label="远端根目录"
+                value={value}
+                onChange={event => onChange(event.target.value)}
+                placeholder="/"
+                helperText={helperText}
+                sx={{ flex: 1, minWidth: 0, '& input': { fontFamily: 'monospace' } }}
+            />
+            <Button
+                variant="outlined"
+                size="large"
+                startIcon={<FolderOpenOutlinedIcon />}
+                disabled={disabled}
+                onClick={onBrowse}
+                sx={{ mt: 0.5, minWidth: 104, height: 48, flexShrink: 0 }}
+            >
+                浏览
+            </Button>
+        </Box>
     )
 }
 

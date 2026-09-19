@@ -73,7 +73,7 @@ func (f *Factory) Create(ctx context.Context, s source.Source, credentials sourc
 	r := &remote{
 		addr:    addr,
 		sshCfg:  sshConfig,
-		rootCfg: path.Clean(cfg.RemoteRoot),
+		rootCfg: path.Clean(cfg.RemoteRoot), // 空值归一为 "."，由 RealPath 解析用户 Home。
 	}
 	r.mu.Lock()
 	err = r.connect(ctx)

@@ -29,6 +29,7 @@ export type SourceType = 'webdav' | 's3' | 'sftp'
 // WebDAVConfig 是 WebDAV 的非敏感配置。
 export interface WebDAVConfig {
     endpoint: string
+    remote_root?: string
     username: string
 }
 

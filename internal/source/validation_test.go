@@ -112,11 +112,6 @@ func TestValidateConfig(t *testing.T) {
 		config Config
 	}{
 		{"webdav", TypeWebDAV, Config{WebDAV: &WebDAVConfig{Endpoint: "https://example.com/dav"}}},
-		{"s3 aws default endpoint", TypeS3, Config{S3: func() *S3Config {
-			c := validS3Config()
-			c.Endpoint = ""
-			return &c
-		}()}},
 		{"s3 explicit endpoint", TypeS3, Config{S3: ptrS3(validS3Config())}},
 		{"sftp", TypeSFTP, Config{SFTP: ptrSFTP(validSFTPConfig())}},
 		{"sftp without host key verification", TypeSFTP, Config{SFTP: func() *SFTPConfig {
@@ -153,9 +148,9 @@ func TestValidateConfig(t *testing.T) {
 			WebDAV: &WebDAVConfig{Endpoint: "https://x/"},
 			S3:     ptrS3(validS3Config()),
 		}},
-		{"s3 missing region", TypeS3, Config{S3: func() *S3Config {
+		{"s3 missing endpoint", TypeS3, Config{S3: func() *S3Config {
 			c := validS3Config()
-			c.Region = ""
+			c.Endpoint = ""
 			return &c
 		}()}},
 		{"s3 missing bucket", TypeS3, Config{S3: func() *S3Config {

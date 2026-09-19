@@ -226,7 +226,7 @@ func TestSourceCreateThreeProtocolsAPI(t *testing.T) {
 		{
 			name: "s3",
 			body: `{"name": "s3", "type": "s3",
-				"config": {"region": "us-east-1", "bucket": "backup", "path_style": true,
+				"config": {"endpoint": "https://s3.example.com", "region": "us-east-1", "bucket": "backup", "path_style": true,
 					"access_key": "AKID", "prefix": "tinysync"},
 				"credentials": {"secret_key": "TOP_SECRET_KEY"}}`,
 			wantState:  "s3",
