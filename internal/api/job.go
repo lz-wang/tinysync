@@ -148,7 +148,7 @@ func (h *jobHandlers) createLocalDirectory(c *gin.Context) {
 
 // scheduleDTO 是调度配置的 discriminated object：按 type 消费互斥字段，
 // 不暴露 nullable 平铺字段。once 用 at（RFC3339）、interval 用 every
-// （Go duration）、cron 用 expression + timezone（IANA，缺省 UTC）。
+// （Go duration）、cron 用 expression + timezone（IANA，缺省机器本地时区）。
 type scheduleDTO struct {
 	Type       string `json:"type"`
 	At         string `json:"at,omitempty"`

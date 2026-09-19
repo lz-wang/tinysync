@@ -50,7 +50,8 @@ type Schedule struct {
 	// （入库归一为 UTC）；interval 为 Go duration（如 30m、6h）；
 	// cron 为 5-field 表达式（如 0 3 * * *）。
 	Value string
-	// Timezone 仅 cron 有效：IANA 名称（如 Asia/Singapore），空为 UTC。
+	// Timezone 仅 cron 有效：IANA 名称（如 Asia/Singapore），空为运行机器
+	// 的本地时区。
 	Timezone string
 	// AnchorAt 是 interval 的相位基准（持久化）。由 Service 在创建或
 	// 变更 schedule 时设置，REST / Web 输入不携带。
@@ -152,8 +153,8 @@ func (s Schedule) IntervalEvery() (time.Duration, error) {
 	return every, nil
 }
 
-// CronSchedule 解析 cron 表达式并应用时区；Timezone 为空时使用 UTC。
-// DST 歧义与间隙行为交由 cron parser 与 timezone 语义处理。
+// CronSchedule 解析 cron 表达式并应用时区；Timezone 为空时使用运行机器
+// 的本地时区。DST 歧义与间隙行为交由 cron parser 与 timezone 语义处理。
 func (s Schedule) CronSchedule() (cron.Schedule, error) {
 	expr := strings.TrimSpace(s.Value)
 	if expr == "" {
@@ -163,7 +164,11 @@ func (s Schedule) CronSchedule() (cron.Schedule, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: cron expression %q: %v", ErrInvalid, expr, err)
 	}
-	loc := time.UTC
+	// robfig/cron 把精确的 time.Local 指针当作「沿用传入时间的时区」
+	// 特殊处理；调度器的 now 使用 UTC，直接传入会意外退回 UTC。复制
+	// 本地 Location 后可保留机器时区规则，同时避开该 sentinel 语义。
+	machineLocal := *time.Local
+	loc := &machineLocal
 	if tz := strings.TrimSpace(s.Timezone); tz != "" {
 		loc, err = time.LoadLocation(tz)
 		if err != nil {

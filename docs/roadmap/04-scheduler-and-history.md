@@ -47,7 +47,7 @@ S3 / SFTP、发布、认证 / Token、MCP。
 | interval | Go duration 风格（如 `30m`、`6h`），最低 `1m` |
 | interval 基准 | 持久化 `anchor_at`，防止服务重启后调度相位漂移 |
 | cron | 标准 5-field cron，不支持 seconds、不支持 `@descriptors` |
-| timezone | cron 使用 IANA timezone（如 `Asia/Singapore`）；未指定时 `UTC`；内嵌 `time/tzdata` 保证无系统 zoneinfo 环境可用 |
+| cron 时区 | Web UI 创建的 Cron 与单次指定时间一致，使用运行 TinySync 机器的本地时区；自动化 API 仍可选填 IANA timezone |
 
 Schedule 与 Job 严格 1:1 且无独立生命周期，不建 `schedules` 表，直接扩展
 `sync_jobs`。持久化为扁平列，API 不暴露互斥 nullable 字段，而是
@@ -66,7 +66,7 @@ discriminated object：
 ```
 
 ```json
-{"schedule": {"type": "cron", "expression": "0 3 * * *", "timezone": "Asia/Singapore"}}
+{"schedule": {"type": "cron", "expression": "0 3 * * *"}}
 ```
 
 cron 解析只引入窄依赖 `github.com/robfig/cron/v3` 的
@@ -370,7 +370,7 @@ schedule editor 直接加入既有对话框，不另建 Scheduler 管理页面�
 
 1. `docs: 完善 v0.4.0 调度与历史设计`（本文件）
 2. `feat(storage): 增加调度与同步历史 schema`——`0003_scheduler_history.sql`、真实 v2→v3 migration 测试
-3. `feat(syncjob): 增加 schedule 模型与校验`——`ScheduleType / Schedule`、manual/once/interval/cron 校验、IANA timezone、cron parse、interval anchor、`Next()` 计算
+3. `feat(syncjob): 增加 schedule 模型与校验`——`ScheduleType / Schedule`、manual/once/interval/cron 校验、cron parse（缺省机器本地时区）、interval anchor、`Next()` 计算
 4. `feat(syncjob): 持久化 Job schedule`——SQLite Job repository 读写新字段、既有 Job 自动 manual、schedule 变更重设 interval anchor、不影响 mapping reset 事务语义
 5. `feat(syncjob): 增加持久化 run history`——Run / RunItem 模型、RunRepository 接口与 SQLite 实现（Latest / List / Get / Items / Finalize / Prune）、启动时 stale-running recovery
 6. `feat(syncjob): 支持受控的多 Job Runner`——`current` → `active map`、`MaxConcurrentJobs`、run 启动前持久化、same-job overlap 与全局容量拒绝、`StartScheduled` 与 skipped 记录、Wait / Shutdown 改造
@@ -394,7 +394,7 @@ schedule editor 直接加入既有对话框，不另建 Scheduler 管理页面�
 | Once | 正常仅触发一次 |
 | Once missed during downtime | 恢复后触发一次 |
 | Interval | 按持久化 anchor 调度，重启不改变相位 |
-| Cron | IANA timezone 正确，DST 行为交由 timezone / cron parser |
+| Cron | 缺省使用机器本地时区；API 指定 IANA 时区时按该时区，DST 行为交由 timezone / cron parser |
 | Cron / interval downtime | 不补跑历史 missed occurrences |
 | Same Job overlap | scheduled occurrence = skipped |
 | Manual same-job overlap | 409 |
@@ -412,7 +412,7 @@ schedule editor 直接加入既有对话框，不另建 Scheduler 管理页面�
 
 - [x] `0003_scheduler_history.sql`：`sync_jobs` schedule 列、`sync_runs`、`sync_run_items`、索引与 FK，真实 v2→v3 迁移与备份测试。
 - [x] `0004_once_consumption.sql`：`sync_jobs.once_consumed_for` once 消费状态（含存量回填），真实 v3→v4 迁移专项测试。
-- [x] Schedule 模型与校验：manual / once / interval / cron、IANA timezone、interval anchor、Next 计算、非法输入拒绝。
+- [x] Schedule 模型与校验：manual / once / interval / cron、Cron 缺省机器本地时区、interval anchor、Next 计算、非法输入拒绝。
 - [x] SQLite Job repository 读写 schedule 字段；既有 Job 升级后自动 manual。
 - [x] Run / RunItem 模型与 RunRepository（SQLite 实现）；启动时 stale-running recovery。
 - [x] 多 Job Runner：active map、MaxConcurrentJobs、run 先持久化、same-job overlap 与容量控制、StartScheduled 与 skipped 记录。
@@ -448,7 +448,7 @@ schedule editor 直接加入既有对话框，不另建 Scheduler 管理页面�
 实现要点（与契约的对应关系）：
 
 - cron 依赖为 `github.com/robfig/cron/v3` 的 5-field parser，仅
-  parse + Next；`time/tzdata` 内嵌保证无系统 zoneinfo 环境可用。
+  parse + Next；表达式按运行机器的本地时区解释。
 - 调度幂等：interval / cron 由内存游标窗口 (from, now] 保证不补跑，
   once 由 `sync_runs(job_id, trigger_type, scheduled_for)` 消费判定；
   `next_run_at` 运行时计算，不持久化。

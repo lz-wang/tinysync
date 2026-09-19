@@ -1,3 +1,4 @@
+import FolderOpenOutlinedIcon from '@mui/icons-material/FolderOpenOutlined'
 import {
     Alert,
     Box,
@@ -106,7 +107,6 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
     const [onceAt, setOnceAt] = useState('')
     const [intervalEvery, setIntervalEvery] = useState('')
     const [cronExpression, setCronExpression] = useState('')
-    const [cronTimezone, setCronTimezone] = useState('')
     const [saving, setSaving] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [pickerOpen, setPickerOpen] = useState(false)
@@ -129,7 +129,6 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
         setOnceAt(toDatetimeLocal(schedule?.at))
         setIntervalEvery(schedule?.type === 'interval' ? (schedule.every ?? '') : '')
         setCronExpression(schedule?.type === 'cron' ? (schedule.expression ?? '') : '')
-        setCronTimezone(schedule?.type === 'cron' ? (schedule.timezone ?? '') : '')
         setSaving(false)
         setError(null)
     }, [open, job])
@@ -158,11 +157,7 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
                 if (cronExpression.trim() === '') {
                     return null
                 }
-                const spec: ScheduleSpec = { type: 'cron', expression: cronExpression.trim() }
-                if (cronTimezone.trim() !== '') {
-                    spec.timezone = cronTimezone.trim()
-                }
-                return spec
+                return { type: 'cron', expression: cronExpression.trim() }
             }
         }
     }
@@ -263,151 +258,177 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
                         required
                         autoFocus
                     />
-                    <TextField
-                        select
-                        label="同步源"
-                        value={sourceId}
-                        onChange={e => setSourceId(e.target.value)}
-                        required
-                        helperText="从此同步源拉取远端文件"
+                    <Box
+                        sx={{
+                            display: 'grid',
+                            gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                            gap: 2,
+                        }}
                     >
-                        {sources.map(source => (
-                            <MenuItem key={source.id} value={source.id}>
-                                {source.name}
-                                {source.enabled ? '' : '（已停用）'}
-                            </MenuItem>
-                        ))}
-                    </TextField>
-                    <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-start' }}>
                         <TextField
-                            label="远端根目录"
-                            value={remoteRoot}
-                            onChange={e => setRemoteRoot(e.target.value)}
+                            select
+                            label="同步源"
+                            value={sourceId}
+                            onChange={e => setSourceId(e.target.value)}
                             required
-                            placeholder="/photos"
-                            helperText="要同步的远端绝对路径，例如 / 或 /backup/docs"
-                            sx={{ flexGrow: 1, '& input': { fontFamily: 'monospace' } }}
-                        />
-                        <Button
-                            variant="outlined"
-                            onClick={() => setPickerOpen(true)}
-                            sx={{ mt: 1, flexShrink: 0 }}
+                            helperText="从此同步源拉取远端文件"
                         >
-                            浏览…
-                        </Button>
-                    </Box>
-                    <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-start' }}>
+                            {sources.map(source => (
+                                <MenuItem key={source.id} value={source.id}>
+                                    {source.name}
+                                    {source.enabled ? '' : '（已停用）'}
+                                </MenuItem>
+                            ))}
+                        </TextField>
                         <TextField
-                            label="本地根目录"
-                            value={localRoot}
-                            onChange={e => setLocalRoot(e.target.value)}
-                            required
-                            placeholder="/data/photos"
-                            helperText="不存在时会尝试自动创建，且不能与其他同步任务重叠"
-                            sx={{ flexGrow: 1, '& input': { fontFamily: 'monospace' } }}
-                        />
-                        <Button
-                            variant="outlined"
-                            onClick={() => setLocalPickerOpen(true)}
-                            sx={{ mt: 1, flexShrink: 0 }}
+                            select
+                            label="同步规则"
+                            value={mode}
+                            onChange={e => setMode(e.target.value as JobMode)}
+                            helperText="镜像会删除远端已消失的受管理本地文件"
                         >
-                            选择目录…
-                        </Button>
-                    </Box>
-                    <TextField
-                        select
-                        label="同步模式"
-                        value={mode}
-                        onChange={e => setMode(e.target.value as JobMode)}
-                        helperText="镜像会删除远端已消失的受管理本地文件"
-                    >
-                        <MenuItem value="copy">复制 — 不删除本地文件</MenuItem>
-                        <MenuItem value="mirror">镜像 — 删除受管理本地文件</MenuItem>
-                    </TextField>
-                    <TextField
-                        label="包含规则"
-                        value={includeText}
-                        onChange={e => setIncludeText(e.target.value)}
-                        multiline
-                        minRows={3}
-                        placeholder="**/*.jpg"
-                        helperText="每行一个 glob，相对远端根目录；留空包含全部"
-                        sx={{ '& textarea': { fontFamily: 'monospace' } }}
-                    />
-                    <TextField
-                        label="排除规则"
-                        value={excludeText}
-                        onChange={e => setExcludeText(e.target.value)}
-                        multiline
-                        minRows={3}
-                        placeholder="tmp/**"
-                        helperText="每行一个 glob；排除规则优先于包含规则"
-                        sx={{ '& textarea': { fontFamily: 'monospace' } }}
-                    />
-                    <TextField
-                        select
-                        label="运行计划"
-                        value={scheduleType}
-                        onChange={e => setScheduleType(e.target.value as ScheduleType)}
-                        helperText="自动触发与手动运行遵循相同的安全规则"
-                    >
-                        <MenuItem value="manual">手动 — 仅按需运行</MenuItem>
-                        <MenuItem value="once">单次 — 在指定时间运行</MenuItem>
-                        <MenuItem value="interval">间隔 — 按固定周期运行</MenuItem>
-                        <MenuItem value="cron">Cron — 五段表达式</MenuItem>
-                    </TextField>
-                    {scheduleType === 'once' && (
+                            <MenuItem value="copy">复制 — 不删除本地文件</MenuItem>
+                            <MenuItem value="mirror">镜像 — 删除受管理本地文件</MenuItem>
+                        </TextField>
+                        <Box
+                            sx={{
+                                display: 'flex',
+                                gap: 1.5,
+                                alignItems: 'flex-start',
+                                minWidth: 0,
+                            }}
+                        >
+                            <TextField
+                                label="远端根目录"
+                                value={remoteRoot}
+                                onChange={e => setRemoteRoot(e.target.value)}
+                                required
+                                placeholder="/photos"
+                                helperText="要同步的远端绝对路径"
+                                sx={{
+                                    flex: 1,
+                                    minWidth: 0,
+                                    '& input': { fontFamily: 'monospace' },
+                                }}
+                            />
+                            <Button
+                                variant="outlined"
+                                size="large"
+                                startIcon={<FolderOpenOutlinedIcon />}
+                                onClick={() => setPickerOpen(true)}
+                                sx={{ mt: 0.5, minWidth: 104, height: 48, flexShrink: 0 }}
+                            >
+                                浏览
+                            </Button>
+                        </Box>
+                        <Box
+                            sx={{
+                                display: 'flex',
+                                gap: 1.5,
+                                alignItems: 'flex-start',
+                                minWidth: 0,
+                            }}
+                        >
+                            <TextField
+                                label="本地根目录"
+                                value={localRoot}
+                                onChange={e => setLocalRoot(e.target.value)}
+                                required
+                                placeholder="/data/photos"
+                                helperText="不存在时自动创建，且不能与其他任务重叠"
+                                sx={{
+                                    flex: 1,
+                                    minWidth: 0,
+                                    '& input': { fontFamily: 'monospace' },
+                                }}
+                            />
+                            <Button
+                                variant="outlined"
+                                size="large"
+                                startIcon={<FolderOpenOutlinedIcon />}
+                                onClick={() => setLocalPickerOpen(true)}
+                                sx={{ mt: 0.5, minWidth: 104, height: 48, flexShrink: 0 }}
+                            >
+                                浏览
+                            </Button>
+                        </Box>
                         <TextField
-                            label="运行时间"
-                            type="datetime-local"
-                            slotProps={{ input: { inputProps: { step: 1 } } }}
-                            value={onceAt}
-                            onChange={e => setOnceAt(e.target.value)}
-                            helperText="服务恢复后会补跑一次错过的任务"
-                        />
-                    )}
-                    {scheduleType === 'interval' && (
-                        <TextField
-                            label="间隔"
-                            value={intervalEvery}
-                            onChange={e => setIntervalEvery(e.target.value)}
-                            placeholder="30m"
-                            helperText="Go 时长，最小 1m（如 30m、6h）；重启后仍保持周期"
-                            sx={{ '& input': { fontFamily: 'monospace' } }}
-                        />
-                    )}
-                    {scheduleType === 'cron' && (
-                        <>
+                            select
+                            label="运行计划"
+                            value={scheduleType}
+                            onChange={e => setScheduleType(e.target.value as ScheduleType)}
+                            helperText="自动触发与手动运行遵循相同安全规则"
+                        >
+                            <MenuItem value="manual">手动 — 仅按需运行</MenuItem>
+                            <MenuItem value="once">单次 — 在指定时间运行</MenuItem>
+                            <MenuItem value="interval">间隔 — 按固定周期运行</MenuItem>
+                            <MenuItem value="cron">Cron — 五段表达式</MenuItem>
+                        </TextField>
+                        {scheduleType === 'manual' && <Box />}
+                        {scheduleType === 'once' && (
+                            <TextField
+                                label="运行时间"
+                                type="datetime-local"
+                                slotProps={{
+                                    input: { inputProps: { step: 1 } },
+                                    inputLabel: { shrink: true },
+                                }}
+                                value={onceAt}
+                                onChange={e => setOnceAt(e.target.value)}
+                                helperText="服务恢复后会补跑一次错过的任务"
+                            />
+                        )}
+                        {scheduleType === 'interval' && (
+                            <TextField
+                                label="间隔"
+                                value={intervalEvery}
+                                onChange={e => setIntervalEvery(e.target.value)}
+                                placeholder="30m"
+                                helperText="Go 时长，最小 1m（如 30m、6h）"
+                                sx={{ '& input': { fontFamily: 'monospace' } }}
+                            />
+                        )}
+                        {scheduleType === 'cron' && (
                             <TextField
                                 label="Cron 表达式"
                                 value={cronExpression}
                                 onChange={e => setCronExpression(e.target.value)}
                                 placeholder="0 3 * * *"
-                                helperText="标准五段表达式（分 时 日 月 周）"
-                                sx={{ '& input': { fontFamily: 'monospace' } }}
+                                helperText="标准五段表达式，使用运行机器所在时区"
+                                sx={{ minWidth: 0, '& input': { fontFamily: 'monospace' } }}
                             />
-                            <TextField
-                                label="时区"
-                                value={cronTimezone}
-                                onChange={e => setCronTimezone(e.target.value)}
-                                placeholder="Asia/Singapore"
-                                helperText="IANA 时区；留空使用 UTC"
-                                sx={{ '& input': { fontFamily: 'monospace' } }}
-                            />
-                        </>
-                    )}
-                    <FormControlLabel
-                        control={
-                            <Switch
-                                checked={enabled}
-                                onChange={e => setEnabled(e.target.checked)}
-                            />
-                        }
-                        label="启用"
-                    />
+                        )}
+                        <TextField
+                            label="包含规则"
+                            value={includeText}
+                            onChange={e => setIncludeText(e.target.value)}
+                            multiline
+                            minRows={3}
+                            placeholder="**/*.jpg"
+                            helperText="每行一个 glob；留空包含全部"
+                            sx={{ '& textarea': { fontFamily: 'monospace' } }}
+                        />
+                        <TextField
+                            label="排除规则"
+                            value={excludeText}
+                            onChange={e => setExcludeText(e.target.value)}
+                            multiline
+                            minRows={3}
+                            placeholder="tmp/**"
+                            helperText="每行一个 glob；排除优先"
+                            sx={{ '& textarea': { fontFamily: 'monospace' } }}
+                        />
+                    </Box>
                 </Stack>
             </DialogContent>
-            <DialogActions>
+            <DialogActions sx={{ px: 3 }}>
+                <FormControlLabel
+                    sx={{ mr: 'auto' }}
+                    control={
+                        <Switch checked={enabled} onChange={e => setEnabled(e.target.checked)} />
+                    }
+                    label="启用"
+                />
                 <Button onClick={onClose} disabled={saving}>
                     取消
                 </Button>

@@ -105,8 +105,7 @@ func TestScheduleNextRunInterval(t *testing.T) {
 	}
 }
 
-// cron 的 NextRun 按 IANA timezone 计算：03:00 Asia/Singapore 即
-// 前一日 19:00 UTC；DST 语义交由 timezone / parser。
+// cron 的 NextRun 支持显式时区；未指定时按运行机器时区计算。
 func TestScheduleNextRunCronTimezone(t *testing.T) {
 	s := Schedule{Type: ScheduleCron, Value: "0 3 * * *", Timezone: "Asia/Singapore"}
 	now := time.Date(2026, 9, 18, 0, 0, 0, 0, time.UTC) // 08:00 SGT，当日 03:00 SGT 已过
@@ -116,12 +115,15 @@ func TestScheduleNextRunCronTimezone(t *testing.T) {
 		t.Errorf("NextRun = (%v, %v), want (%v, true)", got, ok, want)
 	}
 
-	// 未指定时区按 UTC。
-	utc := Schedule{Type: ScheduleCron, Value: "0 3 * * *"}
-	got, ok = utc.NextRun(now)
-	want = time.Date(2026, 9, 18, 3, 0, 0, 0, time.UTC)
+	local := Schedule{Type: ScheduleCron, Value: "0 3 * * *"}
+	got, ok = local.NextRun(now)
+	localNow := now.In(time.Local)
+	want = time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 3, 0, 0, 0, time.Local)
+	if !want.After(now) {
+		want = want.AddDate(0, 0, 1)
+	}
 	if !ok || !got.Equal(want) {
-		t.Errorf("NextRun UTC = (%v, %v), want (%v, true)", got, ok, want)
+		t.Errorf("NextRun local = (%v, %v), want (%v, true)", got, ok, want)
 	}
 }
 
@@ -146,7 +148,7 @@ func TestScheduleDueOccurrence(t *testing.T) {
 		t.Error("interval due after restart = true, want false (no catch-up)")
 	}
 
-	// cron 窗口到期与时区。
+	// cron 窗口到期与显式时区。
 	cronSg := Schedule{Type: ScheduleCron, Value: "30 3 * * *", Timezone: "Asia/Singapore"}
 	day := time.Date(2026, 9, 19, 0, 0, 0, 0, time.UTC)
 	occ, ok = cronSg.DueOccurrence(day, day.Add(20*time.Hour))

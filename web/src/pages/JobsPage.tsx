@@ -74,7 +74,7 @@ function formatSchedule(schedule: ScheduleSpec): string {
         case 'cron':
             return schedule.timezone !== undefined && schedule.timezone !== ''
                 ? `Cron · ${schedule.expression} (${schedule.timezone})`
-                : `Cron · ${schedule.expression ?? '?'}`
+                : `Cron · ${schedule.expression ?? '?'}（本机时区）`
         default:
             return '手动'
     }

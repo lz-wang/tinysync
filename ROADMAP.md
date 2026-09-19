@@ -66,7 +66,7 @@ workflow run 34998126731 成功（2026-09-16），六平台发行档与
 `checksums.txt` 核对到位，WebDAV 镜像与 Pushover 通知送达确认。
 v0.4.0 调度与同步历史已完成实现（2026-09-16）：Schedule 模型与校验
 （manual / once / interval / cron，once 补执行、interval 锚点相位、
-cron 时区，missed 周期不补跑）、Scheduler、多 Job Runner（重叠跳过、
+cron 缺省机器本地时区，missed 周期不补跑）、Scheduler、多 Job Runner（重叠跳过、
 并发上限、run 先持久化）、有界并行传输与文件级历史、
 `0003_scheduler_history.sql`、runs REST API 与 History Web UI、
 并发运行配置；真实 WebDAV + SQLite + Scheduler 端到端覆盖自动同步、

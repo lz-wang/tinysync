@@ -663,14 +663,17 @@ func TestJobScheduleAPI(t *testing.T) {
 
 	// PATCH 替换为 cron。
 	rec := doJSON(t, router, "PATCH", "/api/v1/jobs/"+id,
-		`{"schedule": {"type": "cron", "expression": "0 3 * * *", "timezone": "Asia/Singapore"}}`)
+		`{"schedule": {"type": "cron", "expression": "0 3 * * *"}}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PATCH schedule status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	updated := decodeJSON(t, rec)
 	schedule, _ = updated["schedule"].(map[string]any)
-	if schedule["type"] != "cron" || schedule["expression"] != "0 3 * * *" || schedule["timezone"] != "Asia/Singapore" {
-		t.Fatalf("patched schedule = %v, want cron with timezone", schedule)
+	if schedule["type"] != "cron" || schedule["expression"] != "0 3 * * *" {
+		t.Fatalf("patched schedule = %v, want cron expression", schedule)
+	}
+	if _, exists := schedule["timezone"]; exists {
+		t.Fatalf("patched schedule = %v, timezone must not be exposed", schedule)
 	}
 
 	// 非法 schedule → 400。
