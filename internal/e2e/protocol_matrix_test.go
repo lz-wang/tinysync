@@ -244,6 +244,18 @@ func (f *s3Fixture) GetObject(ctx context.Context, params *s3.GetObjectInput, op
 	return &s3.GetObjectOutput{Body: nopReader(content)}, nil
 }
 
+func (f *s3Fixture) PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	body, err := io.ReadAll(params.Body)
+	if err != nil {
+		return nil, err
+	}
+	f.objects[deref(params.Key)] = string(body)
+	return &s3.PutObjectOutput{}, nil
+}
+
 type matrixNotFound struct{}
 
 func (e *matrixNotFound) Error() string { return "NoSuchKey" }

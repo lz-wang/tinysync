@@ -392,6 +392,31 @@ func (r *remote) List(ctx context.Context, logicalDir string, opts source.ListOp
 	return source.PageSlice(all, opts)
 }
 
+// Mkdir 实现 source.DirectoryCreator，在当前 Source root 下创建目录。
+func (r *remote) Mkdir(ctx context.Context, logicalPath string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := source.ValidateLogicalPath(logicalPath); err != nil || logicalPath == "/" {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("%w: cannot create remote root", source.ErrInvalid)
+	}
+	c, root, err := r.session(ctx)
+	if err != nil {
+		return err
+	}
+	abs, err := remoteAbs(root, logicalPath)
+	if err != nil {
+		return err
+	}
+	if err := c.Mkdir(abs); err != nil {
+		return wrapOp("mkdir", logicalPath, err)
+	}
+	return nil
+}
+
 // toFileInfo 转换协议无关 FileInfo：symlink 拒绝；SFTP 不提供 ETag，
 // Fingerprint 走 Size + ModifiedAt（planner 既有降级路径）。
 func (r *remote) toFileInfo(logical string, info fs.FileInfo) (source.FileInfo, error) {

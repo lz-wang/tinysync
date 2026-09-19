@@ -1,6 +1,5 @@
-// Package webdav 实现 source.Remote 的 WebDAV 只读 adapter。
-// 底层库虽提供写操作，本包刻意只暴露 Stat / List / Open：
-// v1 的 Source interface 仅含同步所需的 read-only 能力。
+// Package webdav 实现 source.Remote 的 WebDAV adapter。同步主接口保持
+// 只读；目录选择器经可选 DirectoryCreator 能力创建目录。
 package webdav
 
 import (
@@ -210,6 +209,21 @@ func (r *remote) Open(ctx context.Context, path string) (io.ReadCloser, error) {
 		return nil, wrapOp("open", path, err)
 	}
 	return rc, nil
+}
+
+// Mkdir 实现 source.DirectoryCreator，在逻辑路径对应的 WebDAV 目录
+// 建立直接子目录。
+func (r *remote) Mkdir(ctx context.Context, path string) error {
+	if err := source.ValidateLogicalPath(path); err != nil || path == "/" {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("%w: cannot create remote root", source.ErrInvalid)
+	}
+	if err := r.client.Mkdir(ctx, resolveRelative(path)); err != nil {
+		return wrapOp("mkdir", path, err)
+	}
+	return nil
 }
 
 // Close 实现 source.Remote：WebDAV 基于 HTTP、无持久会话，

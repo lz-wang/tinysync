@@ -89,13 +89,15 @@ func (m *memFileManagedRepo) DeleteAllForJob(ctx context.Context, jobID string) 
 
 // fileRemote 是文件浏览 API 测试的可控 Remote。
 type fileRemote struct {
-	entries map[string][]source.FileInfo
-	dirs    map[string]bool
-	exists  map[string]bool
-	content string
-	listErr error
-	openErr error
-	closeN  int
+	entries   map[string][]source.FileInfo
+	dirs      map[string]bool
+	exists    map[string]bool
+	content   string
+	listErr   error
+	openErr   error
+	mkdirErr  error
+	mkdirPath string
+	closeN    int
 }
 
 func (r *fileRemote) Stat(ctx context.Context, path string) (source.FileInfo, error) {
@@ -126,6 +128,18 @@ func (r *fileRemote) Open(ctx context.Context, path string) (io.ReadCloser, erro
 		return nil, r.openErr
 	}
 	return io.NopCloser(strings.NewReader(r.content)), nil
+}
+
+func (r *fileRemote) Mkdir(ctx context.Context, path string) error {
+	if r.mkdirErr != nil {
+		return r.mkdirErr
+	}
+	r.mkdirPath = path
+	if r.dirs == nil {
+		r.dirs = map[string]bool{}
+	}
+	r.dirs[path] = true
+	return nil
 }
 
 func (r *fileRemote) Close() error {
@@ -229,6 +243,32 @@ func TestRemoteFilesListInvalidInput(t *testing.T) {
 	}
 }
 
+func TestRemoteFilesListHidesDotEntriesByDefault(t *testing.T) {
+	remote := &fileRemote{entries: map[string][]source.FileInfo{
+		"/": {
+			{Path: "/visible", IsDir: true},
+			{Path: "/.private", IsDir: true},
+		},
+	}}
+	router, id := newFileRouter(t, remote)
+	base := "/api/v1/sources/" + id + "/files?path=/"
+
+	w := doJSON(t, router, http.MethodGet, base, "")
+	var hidden struct {
+		Entries []browser.Entry `json:"entries"`
+	}
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &hidden) != nil || len(hidden.Entries) != 1 || hidden.Entries[0].Name != "visible" {
+		t.Fatalf("default hidden response = %d %s", w.Code, w.Body.String())
+	}
+	w = doJSON(t, router, http.MethodGet, base+"&hidden=true", "")
+	var all struct {
+		Entries []browser.Entry `json:"entries"`
+	}
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &all) != nil || len(all.Entries) != 2 {
+		t.Fatalf("show hidden response = %d %s", w.Code, w.Body.String())
+	}
+}
+
 // Source 不存在 → 404；远端列表故障 → 502。
 func TestRemoteFilesErrorMapping(t *testing.T) {
 	remote := &fileRemote{listErr: errors.New("connection reset")}
@@ -242,6 +282,26 @@ func TestRemoteFilesErrorMapping(t *testing.T) {
 	w = doJSON(t, router, http.MethodGet, "/api/v1/sources/"+id+"/files?path=/", "")
 	if w.Code != http.StatusBadGateway {
 		t.Errorf("remote failure status = %d, want 502", w.Code)
+	}
+}
+
+func TestRemoteDirectoryCreate(t *testing.T) {
+	remote := &fileRemote{}
+	router, id := newFileRouter(t, remote)
+	base := "/api/v1/sources/" + id + "/directories"
+
+	w := doJSON(t, router, http.MethodPost, base, `{"path":"/docs","name":"reports"}`)
+	if w.Code != http.StatusCreated || remote.mkdirPath != "/docs/reports" {
+		t.Fatalf("create = %d %s, mkdir path = %q", w.Code, w.Body.String(), remote.mkdirPath)
+	}
+	for _, body := range []string{
+		`{"path":"/","name":"../escape"}`,
+		`{"path":"/../escape","name":"reports"}`,
+	} {
+		w = doJSON(t, router, http.MethodPost, base, body)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("invalid request %s = %d, want 400", body, w.Code)
+		}
 	}
 }
 

@@ -136,6 +136,13 @@ type Remote interface {
 	Close() error
 }
 
+// DirectoryCreator 是 Remote 可选的目录创建能力。同步读取契约仍由
+// Remote 保持最小化；仅管理员在 Web UI 中浏览远端根目录时按需断言
+// 此能力，避免把写入操作强加给第三方 Remote 实现。
+type DirectoryCreator interface {
+	Mkdir(ctx context.Context, path string) error
+}
+
 // RemoteFactory 按 Source 配置构造远端客户端。每个协议 adapter 实现
 // 一份，经 RemoteRegistry 按类型 dispatch。
 type RemoteFactory interface {

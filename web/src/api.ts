@@ -321,6 +321,18 @@ export function createLocalDirectory(path: string, name: string): Promise<{ path
     return requestJSON<{ path: string }>('POST', '/api/v1/jobs/local-directories', { path, name })
 }
 
+// createRemoteDirectory 在当前浏览的远端目录内建立一个直接子目录。
+export function createRemoteDirectory(
+    sourceId: string,
+    path: string,
+    name: string,
+): Promise<{ path: string }> {
+    return requestJSON<{ path: string }>('POST', `/api/v1/sources/${sourceId}/directories`, {
+        path,
+        name,
+    })
+}
+
 // CreateJobInput 对应 POST /api/v1/jobs 请求体；enabled / schedule
 // 缺省为 true / manual。
 export interface CreateJobInput {
@@ -525,7 +537,7 @@ export interface FilesPageResponse {
 }
 
 // filesQuery 组装 path / limit / cursor 查询串；path 缺省为根目录。
-function filesQuery(path: string, limit?: number, cursor?: string): string {
+function filesQuery(path: string, limit?: number, cursor?: string, showHidden?: boolean): string {
     const params = new URLSearchParams()
     params.set('path', path)
     if (limit !== undefined) {
@@ -533,6 +545,10 @@ function filesQuery(path: string, limit?: number, cursor?: string): string {
     }
     if (cursor !== undefined && cursor !== '') {
         params.set('cursor', cursor)
+    }
+
+    if (showHidden !== undefined) {
+        params.set('hidden', String(showHidden))
     }
     return params.toString()
 }
@@ -543,9 +559,10 @@ export function listRemoteFiles(
     path = '/',
     limit?: number,
     cursor?: string,
+    showHidden?: boolean,
 ): Promise<FilesPageResponse> {
     return getJSON<FilesPageResponse>(
-        `/api/v1/sources/${sourceId}/files?${filesQuery(path, limit, cursor)}`,
+        `/api/v1/sources/${sourceId}/files?${filesQuery(path, limit, cursor, showHidden)}`,
     )
 }
 

@@ -91,6 +91,7 @@ type API interface {
 	ListObjectsV2(ctx context.Context, params *s3.ListObjectsV2Input, optFns ...func(*s3.Options)) (*s3.ListObjectsV2Output, error)
 	HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
 	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
+	PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
 }
 
 // 编译期断言：SDK client 满足能力面。
@@ -333,6 +334,27 @@ func (r *remote) List(ctx context.Context, logicalDir string, opts source.ListOp
 		}
 		input.ContinuationToken = out.NextContinuationToken
 	}
+}
+
+// Mkdir 实现 source.DirectoryCreator。S3 没有原生目录，创建零字节且以
+// / 结尾的 folder marker，使目录立即可被标准 delimiter listing 发现。
+func (r *remote) Mkdir(ctx context.Context, logicalPath string) error {
+	if err := source.ValidateLogicalPath(logicalPath); err != nil || logicalPath == "/" {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("%w: cannot create remote root", source.ErrInvalid)
+	}
+	key := r.objectKey(logicalPath) + "/"
+	_, err := r.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(r.bucket),
+		Key:    aws.String(key),
+		Body:   strings.NewReader(""),
+	})
+	if err != nil {
+		return wrapOp("mkdir", logicalPath, err)
+	}
+	return nil
 }
 
 // Open 实现 source.Remote：GetObject 返回响应 body。入口统一校验

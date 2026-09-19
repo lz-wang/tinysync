@@ -183,6 +183,18 @@ func (f *fakeS3) GetObject(ctx context.Context, params *s3.GetObjectInput, optFn
 	return &s3.GetObjectOutput{Body: io.NopCloser(strings.NewReader(string(obj.data)))}, nil
 }
 
+func (f *fakeS3) PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(params.Body)
+	if err != nil {
+		return nil, err
+	}
+	f.put(derefStr(params.Key), data, time.Now().UTC(), "")
+	return &s3.PutObjectOutput{}, nil
+}
+
 // notFoundErr 模拟 SDK 的 NoSuchKey / HTTP 404。
 type notFoundErr struct{}
 

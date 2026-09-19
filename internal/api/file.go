@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"path"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -32,6 +33,12 @@ func registerRemoteFileRoutes(group *gin.RouterGroup, svc *browser.RemoteService
 	group.GET("/sources/:id/files", requireScope(auth.ScopeRead), h.remoteList)
 	group.GET("/sources/:id/files/stat", requireScope(auth.ScopeRead), h.remoteStat)
 	group.GET("/sources/:id/files/download", requireScope(auth.ScopeRead), h.remoteDownload)
+	group.POST("/sources/:id/directories", requireScope(auth.ScopeAdmin), h.remoteMkdir)
+}
+
+type createRemoteDirectoryRequest struct {
+	Path string `json:"path"`
+	Name string `json:"name"`
 }
 
 // registerLocalFileRoutes 注册本地文件浏览端点（以 Job 为 namespace）。
@@ -72,16 +79,57 @@ func (h *fileHandlers) remoteList(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	showHidden, err := strconv.ParseBool(c.DefaultQuery("hidden", "false"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "hidden must be a boolean"})
+		return
+	}
 	entries, next, err := h.remote.List(c.Request.Context(), c.Param("id"), p, opts)
 	if err != nil {
 		handleFileError(c, err)
 		return
+	}
+	if !showHidden {
+		visible := entries[:0]
+		for _, entry := range entries {
+			if !strings.HasPrefix(entry.Name, ".") {
+				visible = append(visible, entry)
+			}
+		}
+		entries = visible
 	}
 	c.JSON(http.StatusOK, remoteListResponse{
 		Path:       p,
 		Entries:    entries,
 		NextCursor: next,
 	})
+}
+
+// remoteMkdir 在已浏览的远端目录内创建一个直接子目录。路径与名称分别
+// 校验，禁止利用 name 的分隔符或 dot segment 跳出当前目录。
+func (h *fileHandlers) remoteMkdir(c *gin.Context) {
+	var req createRemoteDirectoryRequest
+	if !strictBind(c, &req) {
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" || name == "." || name == ".." || path.Base(name) != name || strings.ContainsAny(name, `/\\`) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "folder name must be a single non-empty path segment"})
+		return
+	}
+	if err := source.ValidateLogicalPath(req.Path); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	created := path.Join(req.Path, name)
+	if !strings.HasPrefix(created, "/") {
+		created = "/" + created
+	}
+	if err := h.remote.Mkdir(c.Request.Context(), c.Param("id"), created); err != nil {
+		handleFileError(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"path": created})
 }
 
 // remoteStat 读取远端路径元信息：
