@@ -475,6 +475,8 @@ func TestAuthE2EProtectedScopeMatrix(t *testing.T) {
 		{http.MethodPost, "/api/v1/api-tokens/:id/revoke", auth.ScopeAdmin, ""},
 		{http.MethodGet, "/api/v1/auth/session", "", ""},
 		{http.MethodPost, "/api/v1/auth/logout", "", ""},
+		{http.MethodGet, "/api/v1/auth/profile", "", ""},
+		{http.MethodPatch, "/api/v1/auth/profile", "", "{}"},
 	}
 
 	// 双向核对 1：矩阵每行都必须已注册（矩阵本身不可漂移）。

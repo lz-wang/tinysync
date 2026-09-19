@@ -45,8 +45,8 @@ func (r *Repository) GetAdminCredential(ctx context.Context) (auth.AdminCredenti
 		updatedAtMs int64
 	)
 	if err := r.db.QueryRowContext(ctx,
-		"SELECT password_hash, created_at, updated_at FROM admin_credentials WHERE singleton = 1",
-	).Scan(&cred.PasswordHash, &createdAtMs, &updatedAtMs); err != nil {
+		"SELECT password_hash, avatar, created_at, updated_at FROM admin_credentials WHERE singleton = 1",
+	).Scan(&cred.PasswordHash, &cred.Avatar, &createdAtMs, &updatedAtMs); err != nil {
 		return auth.AdminCredential{}, mapGetError("get admin credential", "singleton", err)
 	}
 	cred.CreatedAt = time.UnixMilli(createdAtMs).UTC()
@@ -74,6 +74,24 @@ func (r *Repository) SetAdminPassword(ctx context.Context, passwordHash string, 
 		}
 		return nil
 	})
+}
+
+// SetAdminAvatar 实现 auth.Repository：管理员未初始化时返回 ErrNotFound。
+func (r *Repository) SetAdminAvatar(ctx context.Context, avatar string, now time.Time) error {
+	result, err := r.db.ExecContext(ctx,
+		"UPDATE admin_credentials SET avatar = ?, updated_at = ? WHERE singleton = 1",
+		avatar, now.UnixMilli())
+	if err != nil {
+		return fmt.Errorf("set admin avatar: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count admin avatar update: %w", err)
+	}
+	if count == 0 {
+		return auth.ErrNotFound
+	}
+	return nil
 }
 
 // CreateSession 实现 auth.Repository。

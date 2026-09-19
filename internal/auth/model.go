@@ -77,6 +77,7 @@ var (
 // Argon2id PHC 完整编码值。
 type AdminCredential struct {
 	PasswordHash string
+	Avatar       string
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }

@@ -8,6 +8,7 @@ import JobsPage from './pages/JobsPage'
 import LoginPage from './pages/LoginPage'
 import OverviewPage from './pages/OverviewPage'
 import RunDetailPage from './pages/RunDetailPage'
+import SettingsPage from './pages/SettingsPage'
 import SourcesPage from './pages/SourcesPage'
 import TokensPage from './pages/TokensPage'
 
@@ -31,7 +32,8 @@ export default function App() {
                     <Route path="files" element={<FilesPage />} />
                     <Route path="history" element={<HistoryPage />} />
                     <Route path="history/:runId" element={<RunDetailPage />} />
-                    <Route path="tokens" element={<TokensPage />} />
+                    <Route path="settings" element={<SettingsPage />} />
+                    <Route path="settings/tokens" element={<TokensPage />} />
                     <Route path="*" element={<Navigate to="/" replace />} />
                 </Route>
             </Routes>

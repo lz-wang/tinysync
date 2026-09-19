@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"os"
 	"time"
 
 	"tinysync/internal/api"
@@ -64,15 +65,24 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 		return fmt.Errorf("migrate database: %w", err)
 	}
 
-	// 认证边界：serve 强制要求已初始化管理员密码，不提供绕过开关；
-	// 未初始化时拒绝启动，由 operator 经 CLI 完成 bootstrap。
+	// 首次启动自动 bootstrap：仅在本机当前终端打印一次高熵初始密码，
+	// 随后与既有管理员完全一致地经 HttpOnly Web Session 登录。
 	authService := auth.NewService(authsqlite.NewRepository(db))
 	configured, err := authService.AdminConfigured(context.Background())
 	if err != nil {
 		return fmt.Errorf("check admin credential: %w", err)
 	}
 	if !configured {
-		return fmt.Errorf("authentication is not initialized; run `tinysync auth set-password --datadir %s`", cfg.DataDir)
+		password, err := auth.GenerateInitialPassword()
+		if err != nil {
+			return fmt.Errorf("generate initial admin password: %w", err)
+		}
+		if err := authService.SetAdminPassword(context.Background(), password); err != nil {
+			return fmt.Errorf("initialize admin password: %w", err)
+		}
+		// 初始密码是唯一敏感明文：仅输出当前进程的 stderr，不写入可轮转、
+		// 可备份的应用日志文件，也不在后续启动重复打印。
+		fmt.Fprintf(os.Stderr, "TinySync 初始管理员密码：%s（请立即保存并在首次登录后修改）\n", password)
 	}
 
 	// 启动恢复：进程异常退出遗留的 running 记录收敛为 failed，

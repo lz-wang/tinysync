@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -60,17 +59,23 @@ func TestRunReturnsOnCanceledContext(t *testing.T) {
 	}
 }
 
-// 管理员密码未初始化时 Run 拒绝启动：认证边界没有绕过开关。
-func TestRunFailsWhenAuthNotInitialized(t *testing.T) {
+// 首次启动自动初始化管理员密码；不需要 operator 先运行 CLI。
+func TestRunBootstrapsAdminWhenAuthNotInitialized(t *testing.T) {
 	cfg := config.Default()
 	cfg.DataDir = t.TempDir()
-
-	err := Run(context.Background(), cfg, fstest.MapFS{})
-	if err == nil {
-		t.Fatal("Run without initialized admin = nil, want error")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := Run(ctx, cfg, fstest.MapFS{}); err != nil {
+		t.Fatalf("Run first startup = %v, want nil", err)
 	}
-	if !strings.Contains(err.Error(), "authentication is not initialized") {
-		t.Errorf("error = %v, want mention \"authentication is not initialized\"", err)
+	db, err := storage.Open(cfg.DataDir)
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	defer db.Close()
+	configured, err := auth.NewService(authsqlite.NewRepository(db)).AdminConfigured(context.Background())
+	if err != nil || !configured {
+		t.Fatalf("admin after first startup = (%v, %v), want (true, nil)", configured, err)
 	}
 }
 

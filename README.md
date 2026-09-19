@@ -20,7 +20,8 @@ TinySync 是一个面向 HomeLab 的文件同步服务：单一 Go 二进制，�
 > version / 登录与 `/published` 公开文件外，所有端点都需要认证。
 > 单一 Local Admin 经密码登录建立 Web Session（HttpOnly Cookie），
 > 自动化脚本使用 scoped API Token（`Authorization: Bearer`）。
-> 管理员密码未初始化时 `serve` 拒绝启动。
+> 首次启动时 `serve` 会生成高熵管理员密码并仅打印到当前终端一次；
+> 请立即保存并在首次登录后于 Web UI 的「用户设置」中修改。
 >
 > **部署提示**：认证凭据应经 HTTPS 传输——反向代理场景请设置
 > `X-Forwarded-Proto: https`，会话 Cookie 会自动附加 `Secure`；
@@ -40,10 +41,7 @@ TinySync 是一个面向 HomeLab 的文件同步服务：单一 Go 二进制，�
 ## 快速开始
 
 ```bash
-# 1. 初始化管理员密码（首次部署必需；未初始化时 serve 拒绝启动）
-./tinysync auth set-password --datadir ./data
-
-# 2. 启动服务
+# 1. 启动服务（首次启动会在终端打印初始管理员密码）
 ./tinysync serve --datadir ./data --port 9466
 ```
 
@@ -75,9 +73,9 @@ REST API 与 Web UI 默认拒绝匿名访问（401）；公开端点只有
 
 Web UI 使用 HttpOnly Session Cookie（7 天绝对过期、`SameSite=Strict`、
 HTTPS 下自动 `Secure`）；凭据绝不进入 URL，跨源变更请求一律拒绝。
-忘记密码由 operator 在服务器执行 `tinysync auth set-password --datadir ...`
-重置（同时立即废弃全部已有会话）；不提供匿名 Web setup 与认证
-绕过开关。
+用户可在 Web UI 的「用户设置」中验证当前密码后修改；忘记密码时，
+operator 仍可在服务器执行 `tinysync auth set-password --datadir ...`
+重置（同时立即废弃全部已有会话）。不提供匿名 Web setup 或认证绕过开关。
 
 自动化脚本使用 API Token（`Authorization: Bearer`，唯一 machine
 credential 入口），在 Web UI 的 API Tokens 页创建：

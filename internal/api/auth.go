@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -30,6 +31,8 @@ func registerSessionRoutes(group *gin.RouterGroup, svc *auth.Service) {
 	h := &authHandlers{svc: svc}
 	group.GET("/auth/session", requireWebSession(), h.session)
 	group.POST("/auth/logout", requireWebSession(), h.logout)
+	group.GET("/auth/profile", requireWebSession(), h.profile)
+	group.PATCH("/auth/profile", requireWebSession(), h.updateProfile)
 }
 
 // loginRequest 是登录请求体。
@@ -91,6 +94,57 @@ func (h *authHandlers) session(c *gin.Context) {
 		"subject":       auth.AdminSubject,
 		"expires_at":    sess.ExpiresAt.Format(time.RFC3339),
 	})
+}
+
+// profile 返回当前管理员的可展示资料；密码 hash 永不离开认证服务。
+func (h *authHandlers) profile(c *gin.Context) {
+	cred, err := h.svc.AdminProfile(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, gin.H{"subject": auth.AdminSubject, "avatar": cred.Avatar})
+}
+
+type updateProfileRequest struct {
+	Avatar          *string `json:"avatar"`
+	CurrentPassword string  `json:"current_password"`
+	NewPassword     string  `json:"new_password"`
+}
+
+// updateProfile 更新头像或改密。改密必须同时提交当前和新密码，成功后所有
+// session 均被废弃（含当前会话），前端会回到登录页。
+func (h *authHandlers) updateProfile(c *gin.Context) {
+	var req updateProfileRequest
+	if !strictBind(c, &req) {
+		return
+	}
+	if req.Avatar != nil {
+		if err := h.svc.SetAdminAvatar(c.Request.Context(), *req.Avatar); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid avatar"})
+			return
+		}
+	}
+	if req.CurrentPassword != "" || req.NewPassword != "" {
+		if req.CurrentPassword == "" || req.NewPassword == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "current_password and new_password are required"})
+			return
+		}
+		if err := h.svc.ChangeAdminPassword(c.Request.Context(), req.CurrentPassword, req.NewPassword); err != nil {
+			if errors.Is(err, auth.ErrInvalidCredentials) || errors.Is(err, auth.ErrInvalidInput) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid password"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+			return
+		}
+	}
+	if req.Avatar == nil && req.CurrentPassword == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no profile change requested"})
+		return
+	}
+	h.profile(c)
 }
 
 // logout 删除当前会话并立即清除浏览器 cookie；幂等。

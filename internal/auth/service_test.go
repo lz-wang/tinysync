@@ -12,6 +12,7 @@ import (
 // （仓库行为由 sqlite 包专项测试覆盖）。
 type fakeRepo struct {
 	credHash    *string
+	avatar      string
 	sessions    map[string]WebSession // key: string(sessionHash)
 	tokenByID   map[string]APIToken
 	tokenHashID map[string]string
@@ -33,12 +34,20 @@ func (f *fakeRepo) GetAdminCredential(context.Context) (AdminCredential, error) 
 	if f.credHash == nil {
 		return AdminCredential{}, ErrNotFound
 	}
-	return AdminCredential{PasswordHash: *f.credHash}, nil
+	return AdminCredential{PasswordHash: *f.credHash, Avatar: f.avatar}, nil
 }
 
 func (f *fakeRepo) SetAdminPassword(_ context.Context, hash string, _ time.Time) error {
 	f.credHash = &hash
 	f.sessions = map[string]WebSession{}
+	return nil
+}
+
+func (f *fakeRepo) SetAdminAvatar(_ context.Context, avatar string, _ time.Time) error {
+	if f.credHash == nil {
+		return ErrNotFound
+	}
+	f.avatar = avatar
 	return nil
 }
 

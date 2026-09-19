@@ -195,6 +195,23 @@ export async function logout(): Promise<void> {
     await apiFetch<void>('POST', '/api/v1/auth/logout')
 }
 
+export interface ProfileResponse {
+    subject: string
+    avatar: string
+}
+
+export function fetchProfile(): Promise<ProfileResponse> {
+    return apiFetch<ProfileResponse>('GET', '/api/v1/auth/profile')
+}
+
+export function updateProfile(input: {
+    avatar?: string
+    current_password?: string
+    new_password?: string
+}): Promise<ProfileResponse> {
+    return requestJSON<ProfileResponse>('PATCH', '/api/v1/auth/profile', input)
+}
+
 // errorMessage 提取后端 {"error": "..."} 中的描述，失败时回退状态码。
 async function errorMessage(method: string, path: string, response: Response): Promise<string> {
     try {

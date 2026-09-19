@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
@@ -41,6 +43,41 @@ func (s *Service) SetAdminPassword(ctx context.Context, password string) error {
 // AdminConfigured 报告管理员密码是否已初始化。
 func (s *Service) AdminConfigured(ctx context.Context) (bool, error) {
 	return s.repo.AdminConfigured(ctx)
+}
+
+// AdminProfile 返回唯一管理员的可展示资料；不会返回 password hash。
+func (s *Service) AdminProfile(ctx context.Context) (AdminCredential, error) {
+	return s.repo.GetAdminCredential(ctx)
+}
+
+// ChangeAdminPassword 验证当前密码后替换密码，并废弃所有既有会话。
+func (s *Service) ChangeAdminPassword(ctx context.Context, current, next string) error {
+	cred, err := s.repo.GetAdminCredential(ctx)
+	if err != nil {
+		return err
+	}
+	ok, err := VerifyPassword(current, cred.PasswordHash)
+	if err != nil || !ok {
+		return ErrInvalidCredentials
+	}
+	return s.SetAdminPassword(ctx, next)
+}
+
+// SetAdminAvatar 保存已验证的头像 data URL；空字符串移除头像。
+func (s *Service) SetAdminAvatar(ctx context.Context, avatar string) error {
+	if len(avatar) > 512*1024 || (avatar != "" && !(strings.HasPrefix(avatar, "data:image/jpeg;base64,") || strings.HasPrefix(avatar, "data:image/png;base64,") || strings.HasPrefix(avatar, "data:image/webp;base64,"))) {
+		return ErrInvalidInput
+	}
+	return s.repo.SetAdminAvatar(ctx, avatar, s.Now())
+}
+
+// GenerateInitialPassword 生成适合首次启动打印给 operator 的高熵密码。
+func GenerateInitialPassword() (string, error) {
+	buf := make([]byte, 18)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
 // Login 校验密码并创建 Web Session：返回会话元数据与 raw session

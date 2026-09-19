@@ -11,6 +11,7 @@ import {
 import {
     login as apiLogin,
     logout as apiLogout,
+    fetchProfile,
     fetchSession,
     unauthorizedEventName,
 } from '../../api'
@@ -28,6 +29,8 @@ interface AuthContextState {
     login: (password: string) => Promise<void>
     logout: () => Promise<void>
     dismissSessionExpired: () => void
+    avatar: string
+    refreshProfile: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextState | null>(null)
@@ -39,6 +42,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const [status, setStatus] = useState<AuthStatus>('loading')
     const [expiresAt, setExpiresAt] = useState<string | null>(null)
     const [sessionExpired, setSessionExpired] = useState(false)
+    const [avatar, setAvatar] = useState('')
 
     useEffect(() => {
         let cancelled = false
@@ -47,6 +51,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 if (!cancelled) {
                     setStatus('authenticated')
                     setExpiresAt(session.expires_at)
+                    void fetchProfile()
+                        .then(profile => setAvatar(profile.avatar))
+                        .catch(() => setAvatar(''))
                 }
             })
             .catch(() => {
@@ -80,6 +87,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const login = useCallback(async (password: string) => {
         const session = await apiLogin(password)
         setExpiresAt(session.expires_at)
+        setAvatar((await fetchProfile()).avatar)
         setSessionExpired(false)
         setStatus('authenticated')
     }, [])
@@ -87,11 +95,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const logout = useCallback(async () => {
         await apiLogout()
         setExpiresAt(null)
+        setAvatar('')
         setStatus('anonymous')
     }, [])
 
     const dismissSessionExpired = useCallback(() => {
         setSessionExpired(false)
+    }, [])
+
+    const refreshProfile = useCallback(async () => {
+        setAvatar((await fetchProfile()).avatar)
     }, [])
 
     const value = useMemo<AuthContextState>(
@@ -102,8 +115,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             login,
             logout,
             dismissSessionExpired,
+            avatar,
+            refreshProfile,
         }),
-        [status, expiresAt, sessionExpired, login, logout, dismissSessionExpired],
+        [
+            status,
+            expiresAt,
+            sessionExpired,
+            login,
+            logout,
+            dismissSessionExpired,
+            avatar,
+            refreshProfile,
+        ],
     )
 
     return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

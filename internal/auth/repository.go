@@ -21,6 +21,8 @@ type Repository interface {
 	// SetAdminPassword 创建或替换管理员密码并清空全部 Web Session
 	//（首次 bootstrap 与 rotation / reset 共用同一入口）。
 	SetAdminPassword(ctx context.Context, passwordHash string, now time.Time) error
+	// SetAdminAvatar 更新管理员头像。空字符串表示移除头像。
+	SetAdminAvatar(ctx context.Context, avatar string, now time.Time) error
 
 	// ---- web session ----
 
