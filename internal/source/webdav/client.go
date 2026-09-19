@@ -4,7 +4,9 @@
 package webdav
 
 import (
+	"bytes"
 	"context"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -12,7 +14,9 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -300,7 +304,8 @@ type classifyingTransport struct {
 }
 
 // RoundTrip 实现 http.RoundTripper：正常响应原样返回，错误响应在
-// 排空并关闭 body（让连接可复用）后转为分类错误。
+// 排空并关闭 body（让连接可复用）后转为分类错误；PROPFIND 207 响应
+// 先经 ETag 净化（见 sanitizeETags）再交给 go-webdav 解析。
 func (t *classifyingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := t.base.RoundTrip(req)
 	if err != nil {
@@ -313,5 +318,84 @@ func (t *classifyingTransport) RoundTrip(req *http.Request) (*http.Response, err
 		_ = resp.Body.Close()
 		return nil, classifyWebDAVStatus(resp.StatusCode)
 	}
+	if req.Method == "PROPFIND" && resp.StatusCode == http.StatusMultiStatus {
+		return rewriteMultiStatusBody(resp)
+	}
 	return resp, nil
+}
+
+// maxRewriteBytes 是允许读入内存做 ETag 净化的 207 响应体上限；
+// 超过则放弃净化原样透传（防御病态服务器，正常单层 PROPFIND 远小于此）。
+const maxRewriteBytes = 64 << 20
+
+// rewriteMultiStatusBody 读出 PROPFIND 207 响应体，执行 ETag 净化后
+// 重组为可重复读的 body。
+func rewriteMultiStatusBody(resp *http.Response) (*http.Response, error) {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxRewriteBytes+1))
+	if err != nil {
+		_ = resp.Body.Close()
+		return nil, err
+	}
+	if len(body) > maxRewriteBytes {
+		// 已读部分与未读流拼回，行为退回库的严格解析。
+		resp.Body = struct {
+			io.Reader
+			io.Closer
+		}{io.MultiReader(bytes.NewReader(body), resp.Body), resp.Body}
+		resp.ContentLength = -1
+		return resp, nil
+	}
+	_ = resp.Body.Close()
+	sanitized := sanitizeETags(body)
+	resp.Body = io.NopCloser(bytes.NewReader(sanitized))
+	resp.ContentLength = int64(len(sanitized))
+	return resp, nil
+}
+
+// etagElementRegex 匹配 PROPFIND 响应中的 getetag 属性元素（允许任意
+// XML 前缀与属性，如 <D:getetag>、<d:getetag>、<getetag xmlns="DAV:">）。
+// XML 文本节点不含 '<'，用 [^<]* 即可圈定原始文本值。
+var etagElementRegex = regexp.MustCompile(`(<(?:[A-Za-z_][\w.-]*:)?getetag(?:\s[^>]*)?>)([^<]*)(</(?:[A-Za-z_][\w.-]*:)?getetag\s*>)`)
+
+// xmlTextReplacer 解码 XML 文本节点的五个预定义实体；&amp; 必须最后
+// 替换，避免 &amp;lt; 之类被二次解码。
+var xmlTextReplacer = strings.NewReplacer(
+	"&lt;", "<",
+	"&gt;", ">",
+	"&quot;", `"`,
+	"&apos;", "'",
+	"&amp;", "&",
+)
+
+// sanitizeETags 净化 PROPFIND 响应体中的 getetag 值：go-webdav 用
+// strconv.Unquote 严格解析（期望 RFC 4918 的带引号形式），但 Synology
+// DSM、lighttpd 等服务器返回裸值或弱 ETag（W/"..."），一条不合规值
+// 就让整个 ReadDir / Stat 失败。上游明确拒绝宽松解析（PR #69 / #174
+// 未合并、#205 被关闭），因此在 transport 边界给不合规值补引号：
+// 净化后的值经库去引号还原为原始 opaque 值，语义等价。判定基于「库
+// 视角」——encoding/xml 解码实体后的 chardata：库本就能解析的值（含
+// 实体编码形式）一律原样保留，只有 Unquote 确实会失败的才重写；已
+// 带引号仅混入空白的规范化为去空白形式，避免二次加引号。
+func sanitizeETags(body []byte) []byte {
+	return etagElementRegex.ReplaceAllFunc(body, func(m []byte) []byte {
+		groups := etagElementRegex.FindSubmatch(m)
+		openTag, rawText, closeTag := groups[1], groups[2], groups[3]
+		libraryView := xmlTextReplacer.Replace(string(rawText))
+		if _, err := strconv.Unquote(libraryView); err == nil {
+			return m
+		}
+		trimmed := strings.TrimSpace(libraryView)
+		if trimmed == "" {
+			return m
+		}
+		rewritten := strconv.Quote(trimmed)
+		if _, err := strconv.Unquote(trimmed); err == nil {
+			rewritten = trimmed
+		}
+		var out bytes.Buffer
+		out.Write(openTag)
+		_ = xml.EscapeText(&out, []byte(rewritten))
+		out.Write(closeTag)
+		return out.Bytes()
+	})
 }
