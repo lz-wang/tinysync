@@ -125,6 +125,39 @@ func jobPayload(t *testing.T, name, sourceID, mode string, enabled bool) (string
 	return body, localRoot
 }
 
+// 管理员可浏览服务端本地目录，接口只返回直接子目录而不暴露文件。
+func TestListLocalDirectoriesAPI(t *testing.T) {
+	router := newJobRouter(t, fakeJobRemote{})
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "alpha"), 0o755); err != nil {
+		t.Fatalf("mkdir alpha: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "not-a-directory.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	canonicalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("resolve root: %v", err)
+	}
+
+	rec := doJSON(t, router, "GET", "/api/v1/jobs/local-directories?path="+root, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list local directories status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	body := decodeJSON(t, rec)
+	if body["path"] != canonicalRoot {
+		t.Errorf("path = %q, want %q", body["path"], canonicalRoot)
+	}
+	directories, ok := body["directories"].([]any)
+	if !ok || len(directories) != 1 {
+		t.Fatalf("directories = %#v, want one directory", body["directories"])
+	}
+	entry, ok := directories[0].(map[string]any)
+	if !ok || entry["path"] != filepath.Join(canonicalRoot, "alpha") {
+		t.Errorf("directory entry = %#v, want alpha", directories[0])
+	}
+}
+
 // waitForRunState 轮询 status 直到进入期望状态，返回最终响应。
 func waitForRunState(t *testing.T, router testRouter, jobID string, want ...syncjob.RunState) map[string]any {
 	t.Helper()

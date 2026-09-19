@@ -24,6 +24,7 @@ import {
     updateJob,
 } from '../../api'
 import RemotePathPicker from '../files/RemotePathPicker'
+import LocalDirectoryPicker from './LocalDirectoryPicker'
 
 interface JobDialogProps {
     open: boolean
@@ -109,6 +110,7 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
     const [saving, setSaving] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [pickerOpen, setPickerOpen] = useState(false)
+    const [localPickerOpen, setLocalPickerOpen] = useState(false)
 
     useEffect(() => {
         if (!open) {
@@ -294,15 +296,24 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
                             浏览…
                         </Button>
                     </Box>
-                    <TextField
-                        label="本地根目录"
-                        value={localRoot}
-                        onChange={e => setLocalRoot(e.target.value)}
-                        required
-                        placeholder="/data/photos"
-                        helperText="现有本地目录，不能与其他同步任务重叠"
-                        sx={{ '& input': { fontFamily: 'monospace' } }}
-                    />
+                    <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-start' }}>
+                        <TextField
+                            label="本地根目录"
+                            value={localRoot}
+                            onChange={e => setLocalRoot(e.target.value)}
+                            required
+                            placeholder="/data/photos"
+                            helperText="不存在时会尝试自动创建，且不能与其他同步任务重叠"
+                            sx={{ flexGrow: 1, '& input': { fontFamily: 'monospace' } }}
+                        />
+                        <Button
+                            variant="outlined"
+                            onClick={() => setLocalPickerOpen(true)}
+                            sx={{ mt: 1, flexShrink: 0 }}
+                        >
+                            选择目录…
+                        </Button>
+                    </Box>
                     <TextField
                         select
                         label="同步模式"
@@ -414,6 +425,15 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
                 onPick={path => setRemoteRoot(path)}
                 boundSourceId={sourceId}
                 initialPath={remoteRoot}
+            />
+            <LocalDirectoryPicker
+                open={localPickerOpen}
+                initialPath={localRoot}
+                onClose={() => setLocalPickerOpen(false)}
+                onPick={path => {
+                    setLocalRoot(path)
+                    setLocalPickerOpen(false)
+                }}
             />
         </Dialog>
     )

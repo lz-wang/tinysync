@@ -452,6 +452,7 @@ func TestAuthE2EProtectedScopeMatrix(t *testing.T) {
 		{http.MethodGet, "/api/v1/sources/:id/files/stat", auth.ScopeRead, ""},
 		{http.MethodGet, "/api/v1/sources/:id/files/download", auth.ScopeRead, ""},
 		{http.MethodGet, "/api/v1/jobs", auth.ScopeRead, ""},
+		{http.MethodGet, "/api/v1/jobs/local-directories", auth.ScopeAdmin, ""},
 		{http.MethodPost, "/api/v1/jobs", auth.ScopeAdmin, "{}"},
 		{http.MethodGet, "/api/v1/jobs/:id", auth.ScopeRead, ""},
 		{http.MethodPatch, "/api/v1/jobs/:id", auth.ScopeAdmin, "{}"},

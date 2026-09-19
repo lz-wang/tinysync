@@ -143,7 +143,7 @@ func TestCreateNormalizesRemoteRoot(t *testing.T) {
 	}
 }
 
-// 校验失败用例：Source 不存在、非法 syncjob.Mode、LocalRoot 不存在或不是目录、空 name。
+// 校验失败用例：Source 不存在、非法 syncjob.Mode、LocalRoot 不是目录、空 name。
 func TestCreateValidation(t *testing.T) {
 	env := newTestEnv(t)
 	ctx := context.Background()
@@ -160,12 +160,6 @@ func TestCreateValidation(t *testing.T) {
 		t.Errorf("bad mode = %v, want syncjob.ErrInvalid", err)
 	}
 
-	notExist := env.validInput(t, "no-local")
-	notExist.LocalRoot = filepath.Join(t.TempDir(), "gone")
-	if _, err := env.service.Create(ctx, notExist); !errors.Is(err, syncjob.ErrInvalid) {
-		t.Errorf("missing local root = %v, want syncjob.ErrInvalid", err)
-	}
-
 	fileRoot := filepath.Join(t.TempDir(), "file.txt")
 	if err := os.WriteFile(fileRoot, []byte("x"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
@@ -180,6 +174,25 @@ func TestCreateValidation(t *testing.T) {
 	blank.Name = "   "
 	if _, err := env.service.Create(ctx, blank); !errors.Is(err, syncjob.ErrInvalid) {
 		t.Errorf("blank name = %v, want syncjob.ErrInvalid", err)
+	}
+}
+
+// 不存在的 LocalRoot 在创建 Job 前自动建立；建立成功才会持久化 Job。
+func TestCreateCreatesMissingLocalRoot(t *testing.T) {
+	env := newTestEnv(t)
+	input := env.validInput(t, "create-local-root")
+	input.LocalRoot = filepath.Join(t.TempDir(), "new", "nested", "root")
+
+	job, err := env.service.Create(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	info, err := os.Stat(input.LocalRoot)
+	if err != nil || !info.IsDir() {
+		t.Fatalf("created local root = %v, %v; want directory", info, err)
+	}
+	if job.LocalRoot == "" {
+		t.Error("LocalRoot empty after successful directory creation")
 	}
 }
 

@@ -296,6 +296,18 @@ export interface JobsListResponse {
     jobs: JobResponse[]
 }
 
+export interface LocalDirectoriesResponse {
+    path: string
+    directories: Array<{ path: string }>
+}
+
+// listLocalDirectories 读取运行 TinySync 主机上的直接子目录，供管理员选择 LocalRoot。
+export function listLocalDirectories(path: string): Promise<LocalDirectoriesResponse> {
+    return getJSON<LocalDirectoriesResponse>(
+        `/api/v1/jobs/local-directories?path=${encodeURIComponent(path)}`,
+    )
+}
+
 // CreateJobInput 对应 POST /api/v1/jobs 请求体；enabled / schedule
 // 缺省为 true / manual。
 export interface CreateJobInput {

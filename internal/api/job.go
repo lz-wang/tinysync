@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -26,6 +28,7 @@ func registerJobRoutes(group *gin.RouterGroup, svc *syncjob.Service, runner *syn
 	// 权限矩阵：查询 read；创建 / 更新 / 删除 admin；手动触发 run
 	//（run 不含 read）。
 	group.GET("/jobs", requireScope(auth.ScopeRead), h.list)
+	group.GET("/jobs/local-directories", requireScope(auth.ScopeAdmin), h.listLocalDirectories)
 	group.POST("/jobs", requireScope(auth.ScopeAdmin), h.create)
 	group.GET("/jobs/:id", requireScope(auth.ScopeRead), h.get)
 	group.PATCH("/jobs/:id", requireScope(auth.ScopeAdmin), h.update)
@@ -43,6 +46,51 @@ func registerJobRoutes(group *gin.RouterGroup, svc *syncjob.Service, runner *syn
 type jobHandlers struct {
 	svc    *syncjob.Service
 	runner *syncjob.Runner
+}
+
+type localDirectoryDTO struct {
+	Path string `json:"path"`
+}
+
+type localDirectoriesDTO struct {
+	Path        string              `json:"path"`
+	Directories []localDirectoryDTO `json:"directories"`
+}
+
+// listLocalDirectories 列出 TinySync 所在主机上的直接子目录，供管理员在
+// 创建 Job 时选择 LocalRoot。只返回目录，且不跟随子项 symlink。
+func (h *jobHandlers) listLocalDirectories(c *gin.Context) {
+	requested := c.Query("path")
+	if requested == "" {
+		requested = string(filepath.Separator)
+	}
+	abs, err := filepath.Abs(requested)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("resolve local directory: %v", err)})
+		return
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("resolve local directory: %v", err)})
+		return
+	}
+	info, err := os.Stat(resolved)
+	if err != nil || !info.IsDir() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "local directory does not exist or is not a directory"})
+		return
+	}
+	entries, err := os.ReadDir(resolved)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("read local directory: %v", err)})
+		return
+	}
+	directories := make([]localDirectoryDTO, 0)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			directories = append(directories, localDirectoryDTO{Path: filepath.Join(resolved, entry.Name())})
+		}
+	}
+	c.JSON(http.StatusOK, localDirectoriesDTO{Path: resolved, Directories: directories})
 }
 
 // scheduleDTO 是调度配置的 discriminated object：按 type 消费互斥字段，

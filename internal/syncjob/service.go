@@ -69,7 +69,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Job, error) {
 	if err != nil {
 		return Job{}, err
 	}
-	localRoot, err := s.canonicalLocalRoot(input.LocalRoot)
+	localRoot, err := s.canonicalLocalRoot(input.LocalRoot, true)
 	if err != nil {
 		return Job{}, err
 	}
@@ -155,7 +155,7 @@ func (s *Service) Update(ctx context.Context, id string, input UpdateInput) (Job
 		updated.RemoteRoot = remoteRoot
 	}
 	if input.LocalRoot != nil {
-		localRoot, err := s.canonicalLocalRoot(*input.LocalRoot)
+		localRoot, err := s.canonicalLocalRoot(*input.LocalRoot, false)
 		if err != nil {
 			return Job{}, err
 		}
@@ -241,9 +241,10 @@ func normalizeRemoteRoot(root string) (string, error) {
 	return cleaned, nil
 }
 
-// canonicalLocalRoot 校验 LocalRoot：必须存在、是目录，并归一为
-// abs + clean + EvalSymlinks 的 canonical 绝对路径。
-func (s *Service) canonicalLocalRoot(root string) (string, error) {
+// canonicalLocalRoot 校验 LocalRoot，并归一为 abs + clean + EvalSymlinks 的
+// canonical 绝对路径。仅在创建 Job 时创建不存在的目录，避免编辑任务时因误填
+// 路径产生目录副作用。
+func (s *Service) canonicalLocalRoot(root string, createIfMissing bool) (string, error) {
 	trimmed := strings.TrimSpace(root)
 	if trimmed == "" {
 		return "", fmt.Errorf("%w: local root is required", ErrInvalid)
@@ -252,9 +253,14 @@ func (s *Service) canonicalLocalRoot(root string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("%w: resolve local root %s: %w", ErrInvalid, root, err)
 	}
+	if createIfMissing {
+		if err := os.MkdirAll(abs, 0o755); err != nil {
+			return "", fmt.Errorf("%w: create local root %s: %w", ErrInvalid, root, err)
+		}
+	}
 	resolved, err := filepath.EvalSymlinks(abs)
 	if err != nil {
-		return "", fmt.Errorf("%w: local root %s must exist: %w", ErrInvalid, root, err)
+		return "", fmt.Errorf("%w: resolve local root %s: %w", ErrInvalid, root, err)
 	}
 	info, err := os.Stat(resolved)
 	if err != nil {
