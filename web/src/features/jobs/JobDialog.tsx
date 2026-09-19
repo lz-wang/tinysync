@@ -235,9 +235,23 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
     }
 
     return (
-        <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
+        <Dialog
+            open={open}
+            onClose={onClose}
+            scroll="paper"
+            slotProps={{
+                paper: {
+                    sx: {
+                        width: '60vw',
+                        height: '80vh',
+                        maxWidth: 'none',
+                        maxHeight: 'none',
+                    },
+                },
+            }}
+        >
             <DialogTitle>{job === null ? '创建同步任务' : '编辑同步任务'}</DialogTitle>
-            <DialogContent>
+            <DialogContent sx={{ flex: 1, overflowY: 'auto' }}>
                 <Stack spacing={2} sx={{ pt: 1 }}>
                     {error !== null && <Alert severity="error">{error}</Alert>}
                     <TextField

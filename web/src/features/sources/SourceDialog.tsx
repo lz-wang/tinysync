@@ -302,9 +302,23 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
     }
 
     return (
-        <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
+        <Dialog
+            open={open}
+            onClose={onClose}
+            scroll="paper"
+            slotProps={{
+                paper: {
+                    sx: {
+                        width: '60vw',
+                        height: '80vh',
+                        maxWidth: 'none',
+                        maxHeight: 'none',
+                    },
+                },
+            }}
+        >
             <DialogTitle>{source === null ? '创建同步源' : '编辑同步源'}</DialogTitle>
-            <DialogContent>
+            <DialogContent sx={{ flex: 1, overflowY: 'auto' }}>
                 <Stack spacing={2} sx={{ pt: 1 }}>
                     {error !== null && <Alert severity="error">{error}</Alert>}
                     <TextField
