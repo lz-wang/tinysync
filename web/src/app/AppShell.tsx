@@ -41,7 +41,7 @@ const items = [
     { to: '/', label: '概览', icon: <DashboardOutlinedIcon /> },
     { to: '/sources', label: '同步源', icon: <StorageOutlinedIcon /> },
     { to: '/jobs', label: '同步任务', icon: <SyncOutlinedIcon /> },
-    { to: '/files', label: '文件', icon: <FolderOutlinedIcon /> },
+    { to: '/files', label: '文件管理', icon: <FolderOutlinedIcon /> },
     { to: '/history', label: '运行历史', icon: <HistoryOutlinedIcon /> },
 ]
 function ThemeIcon({ preference }: { preference: ThemePreference }) {
@@ -183,7 +183,7 @@ export default function AppShell() {
         : location.pathname.startsWith('/jobs')
           ? '同步任务'
           : location.pathname.startsWith('/files')
-            ? '文件'
+            ? '文件管理'
             : location.pathname.startsWith('/history')
               ? '运行历史'
               : location.pathname.startsWith('/settings')

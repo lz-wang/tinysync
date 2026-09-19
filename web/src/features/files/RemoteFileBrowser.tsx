@@ -1,42 +1,63 @@
-import { Box, CircularProgress, MenuItem, TextField } from '@mui/material'
-import { useCallback, useEffect, useState } from 'react'
+import { Alert, Box, CircularProgress } from '@mui/material'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { listRemoteFiles, listSources, remoteFileDownloadURL, type SourceResponse } from '../../api'
-import FileBrowser, { PAGE_SIZE } from './FileBrowser'
+import ReadOnlyFileManager from './ReadOnlyFileManager'
 
-// RemoteFileBrowser 是远端文件浏览器：Source 选择 + 分页目录浏览 +
-// 流式下载。Source 未就绪时提示先在 Sources 页创建。
+// RemoteFileBrowser 把 Source 与当前目录写入 URL；刷新或复制链接后仍能
+// 回到同一远端位置。远端协议没有本地 managed 标记，表格中的同步状态
+// 列由通用管理器省略，其余无法取得的值使用 - 占位。
 export default function RemoteFileBrowser() {
     const [sources, setSources] = useState<SourceResponse[] | null>(null)
-    const [sourceId, setSourceId] = useState('')
     const [loadError, setLoadError] = useState<string | null>(null)
+    const [searchParams, setSearchParams] = useSearchParams()
+    const sourceId = searchParams.get('source') ?? ''
+    const path = searchParams.get('path') ?? '/'
 
     useEffect(() => {
         let cancelled = false
         listSources()
             .then(list => {
-                if (cancelled) {
-                    return
-                }
-                setSources(list)
-                if (list.length > 0) {
-                    setSourceId(list[0].id)
-                }
+                if (!cancelled) setSources(list)
             })
-            .catch((err: unknown) => {
-                if (!cancelled) {
-                    setLoadError(err instanceof Error ? err.message : String(err))
-                }
+            .catch((error: unknown) => {
+                if (!cancelled) setLoadError(error instanceof Error ? error.message : String(error))
             })
         return () => {
             cancelled = true
         }
     }, [])
 
-    // load 以 sourceId 为闭包依赖：切换 Source 时 FileBrowser 的
-    // useEffect 会重置目录状态。
+    useEffect(() => {
+        if (
+            sources === null ||
+            sources.length === 0 ||
+            sources.some(source => source.id === sourceId)
+        )
+            return
+        const next = new URLSearchParams(searchParams)
+        next.set('source', sources[0].id)
+        next.set('path', '/')
+        setSearchParams(next, { replace: true })
+    }, [searchParams, setSearchParams, sourceId, sources])
+
+    const resources = useMemo(
+        () =>
+            (sources ?? []).map(source => ({
+                id: source.id,
+                label: `${source.name}（${source.type}）`,
+            })),
+        [sources],
+    )
+    const updateLocation = (nextSourceId: string, nextPath: string) => {
+        const next = new URLSearchParams(searchParams)
+        next.set('source', nextSourceId)
+        next.set('path', nextPath)
+        setSearchParams(next)
+    }
     const load = useCallback(
-        async (path: string, cursor: string | null) => {
-            const page = await listRemoteFiles(sourceId, path, PAGE_SIZE, cursor ?? undefined)
+        async (targetPath: string, cursor?: string) => {
+            const page = await listRemoteFiles(sourceId, targetPath, 100, cursor)
             return { entries: page.entries, nextCursor: page.next_cursor }
         },
         [sourceId],
@@ -49,35 +70,20 @@ export default function RemoteFileBrowser() {
             </Box>
         )
     }
-    if (loadError !== null) {
-        return <Box sx={{ color: 'error.main' }}>加载同步源失败：{loadError}</Box>
-    }
-    if (sources !== null && sources.length === 0) {
-        return <Box sx={{ color: 'text.secondary' }}>尚未创建同步源；请先在“同步源”页面添加。</Box>
-    }
+    if (loadError !== null) return <Alert severity="error">加载同步源失败：{loadError}</Alert>
+    if (sources?.length === 0)
+        return <Alert severity="info">尚未创建同步源；请先在“同步源”页面添加。</Alert>
 
     return (
-        <Box>
-            <TextField
-                select
-                size="small"
-                label="同步源"
-                value={sourceId}
-                onChange={event => setSourceId(event.target.value)}
-                sx={{ minWidth: 280, mb: 2 }}
-            >
-                {sources?.map(source => (
-                    <MenuItem key={source.id} value={source.id}>
-                        {source.name}（{source.type}）
-                    </MenuItem>
-                ))}
-            </TextField>
-            {sourceId !== '' && (
-                <FileBrowser
-                    load={load}
-                    downloadURL={path => remoteFileDownloadURL(sourceId, path)}
-                />
-            )}
-        </Box>
+        <ReadOnlyFileManager
+            downloadURL={entryPath => remoteFileDownloadURL(sourceId, entryPath)}
+            load={load}
+            onPathChange={nextPath => updateLocation(sourceId, nextPath)}
+            onResourceChange={nextSourceId => updateLocation(nextSourceId, '/')}
+            path={path}
+            resourceId={sourceId}
+            resourceLabel="同步源"
+            resources={resources}
+        />
     )
 }

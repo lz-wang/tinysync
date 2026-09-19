@@ -1,5 +1,6 @@
 import { Box, Tab, Tabs } from '@mui/material'
 import { useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import LocalFileBrowser from '../features/files/LocalFileBrowser'
 import PublishedPanel from '../features/files/PublishedPanel'
 import RemoteFileBrowser from '../features/files/RemoteFileBrowser'
@@ -8,15 +9,21 @@ import RemoteFileBrowser from '../features/files/RemoteFileBrowser'
 // Job.LocalRoot 为 namespace 的本地浏览）与 Published（发布策略
 // 管理）三个视图。
 export default function FilesPage() {
-    const [tab, setTab] = useState<'remote' | 'local' | 'published'>('remote')
+    const [searchParams, setSearchParams] = useSearchParams()
+    const queryTab = searchParams.get('tab')
+    const tab = queryTab === 'local' || queryTab === 'published' ? queryTab : 'remote'
     // publishNonce 在新策略创建后递增，驱动 Published 列表刷新。
     const [publishNonce, setPublishNonce] = useState(0)
 
     return (
-        <Box>
+        <Box sx={{ pb: 2 }}>
             <Tabs
                 value={tab}
-                onChange={(_, value: 'remote' | 'local' | 'published') => setTab(value)}
+                onChange={(_, value: 'remote' | 'local' | 'published') => {
+                    const next = new URLSearchParams()
+                    next.set('tab', value)
+                    setSearchParams(next)
+                }}
                 sx={{ mb: 2 }}
             >
                 <Tab value="remote" label="远端文件" />
