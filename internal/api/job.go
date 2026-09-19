@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -29,6 +30,7 @@ func registerJobRoutes(group *gin.RouterGroup, svc *syncjob.Service, runner *syn
 	//（run 不含 read）。
 	group.GET("/jobs", requireScope(auth.ScopeRead), h.list)
 	group.GET("/jobs/local-directories", requireScope(auth.ScopeAdmin), h.listLocalDirectories)
+	group.POST("/jobs/local-directories", requireScope(auth.ScopeAdmin), h.createLocalDirectory)
 	group.POST("/jobs", requireScope(auth.ScopeAdmin), h.create)
 	group.GET("/jobs/:id", requireScope(auth.ScopeRead), h.get)
 	group.PATCH("/jobs/:id", requireScope(auth.ScopeAdmin), h.update)
@@ -57,12 +59,23 @@ type localDirectoriesDTO struct {
 	Directories []localDirectoryDTO `json:"directories"`
 }
 
+type createLocalDirectoryRequest struct {
+	Path string `json:"path"`
+	Name string `json:"name"`
+}
+
 // listLocalDirectories 列出 TinySync 所在主机上的直接子目录，供管理员在
-// 创建 Job 时选择 LocalRoot。只返回目录，且不跟随子项 symlink。
+// 创建 Job 时选择 LocalRoot。空 path 默认从运行用户 Home 目录开始；只返回
+// 目录，且不跟随子项 symlink。hidden=true 时包含点开头的目录。
 func (h *jobHandlers) listLocalDirectories(c *gin.Context) {
 	requested := c.Query("path")
 	if requested == "" {
-		requested = string(filepath.Separator)
+		var err error
+		requested, err = os.UserHomeDir()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "resolve user home directory"})
+			return
+		}
 	}
 	abs, err := filepath.Abs(requested)
 	if err != nil {
@@ -84,13 +97,53 @@ func (h *jobHandlers) listLocalDirectories(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("read local directory: %v", err)})
 		return
 	}
+	showHidden, err := strconv.ParseBool(c.DefaultQuery("hidden", "false"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "hidden must be a boolean"})
+		return
+	}
 	directories := make([]localDirectoryDTO, 0)
 	for _, entry := range entries {
-		if entry.IsDir() {
+		if entry.IsDir() && (showHidden || !strings.HasPrefix(entry.Name(), ".")) {
 			directories = append(directories, localDirectoryDTO{Path: filepath.Join(resolved, entry.Name())})
 		}
 	}
 	c.JSON(http.StatusOK, localDirectoriesDTO{Path: resolved, Directories: directories})
+}
+
+// createLocalDirectory 在管理员当前浏览的目录中建立直接子目录。名称只允许
+// 单个路径段，防止请求绕过目录选择器在其他位置创建目录。
+func (h *jobHandlers) createLocalDirectory(c *gin.Context) {
+	var req createLocalDirectoryRequest
+	if !strictBind(c, &req) {
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" || name == "." || name == ".." || filepath.Base(name) != name || strings.ContainsAny(name, `/\\`) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "folder name must be a single non-empty path segment"})
+		return
+	}
+	parent, err := filepath.Abs(req.Path)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("resolve local directory: %v", err)})
+		return
+	}
+	parent, err = filepath.EvalSymlinks(parent)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("resolve local directory: %v", err)})
+		return
+	}
+	info, err := os.Stat(parent)
+	if err != nil || !info.IsDir() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "local directory does not exist or is not a directory"})
+		return
+	}
+	created := filepath.Join(parent, name)
+	if err := os.Mkdir(created, 0o755); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("create local directory: %v", err)})
+		return
+	}
+	c.JSON(http.StatusCreated, localDirectoryDTO{Path: created})
 }
 
 // scheduleDTO 是调度配置的 discriminated object：按 type 消费互斥字段，

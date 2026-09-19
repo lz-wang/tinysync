@@ -303,9 +303,22 @@ export interface LocalDirectoriesResponse {
 
 // listLocalDirectories 读取运行 TinySync 主机上的直接子目录，供管理员选择 LocalRoot。
 export function listLocalDirectories(path: string): Promise<LocalDirectoriesResponse> {
+    return listLocalDirectoriesWithOptions(path, false)
+}
+
+// listLocalDirectoriesWithOptions 读取运行 TinySync 主机上的直接子目录。
+export function listLocalDirectoriesWithOptions(
+    path: string,
+    showHidden: boolean,
+): Promise<LocalDirectoriesResponse> {
     return getJSON<LocalDirectoriesResponse>(
-        `/api/v1/jobs/local-directories?path=${encodeURIComponent(path)}`,
+        `/api/v1/jobs/local-directories?path=${encodeURIComponent(path)}&hidden=${showHidden}`,
     )
+}
+
+// createLocalDirectory 在当前浏览的服务端目录内建立一个直接子目录。
+export function createLocalDirectory(path: string, name: string): Promise<{ path: string }> {
+    return requestJSON<{ path: string }>('POST', '/api/v1/jobs/local-directories', { path, name })
 }
 
 // CreateJobInput 对应 POST /api/v1/jobs 请求体；enabled / schedule

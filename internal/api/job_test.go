@@ -125,12 +125,15 @@ func jobPayload(t *testing.T, name, sourceID, mode string, enabled bool) (string
 	return body, localRoot
 }
 
-// 管理员可浏览服务端本地目录，接口只返回直接子目录而不暴露文件。
+// 管理员可浏览服务端本地目录，默认隐藏点目录；显式请求后可显示隐藏目录。
 func TestListLocalDirectoriesAPI(t *testing.T) {
 	router := newJobRouter(t, fakeJobRemote{})
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "alpha"), 0o755); err != nil {
 		t.Fatalf("mkdir alpha: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".hidden"), 0o755); err != nil {
+		t.Fatalf("mkdir hidden: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "not-a-directory.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
@@ -155,6 +158,55 @@ func TestListLocalDirectoriesAPI(t *testing.T) {
 	entry, ok := directories[0].(map[string]any)
 	if !ok || entry["path"] != filepath.Join(canonicalRoot, "alpha") {
 		t.Errorf("directory entry = %#v, want alpha", directories[0])
+	}
+
+	rec = doJSON(t, router, "GET", "/api/v1/jobs/local-directories?path="+root+"&hidden=true", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list hidden local directories status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	directories, ok = decodeJSON(t, rec)["directories"].([]any)
+	if !ok || len(directories) != 2 {
+		t.Errorf("directories with hidden = %#v, want two directories", directories)
+	}
+}
+
+// 空 path 从服务进程用户的 Home 目录开始，供首次打开目录选择器使用。
+func TestListLocalDirectoriesAPIDefaultsToHome(t *testing.T) {
+	router := newJobRouter(t, fakeJobRemote{})
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	rec := doJSON(t, router, "GET", "/api/v1/jobs/local-directories", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list default local directory status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	canonicalHome, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		t.Fatalf("resolve home: %v", err)
+	}
+	if path := decodeJSON(t, rec)["path"]; path != canonicalHome {
+		t.Errorf("default path = %q, want %q", path, canonicalHome)
+	}
+}
+
+// 新建目录只能落在当前浏览目录的直接子项，不能通过名称跨目录写入。
+func TestCreateLocalDirectoryAPI(t *testing.T) {
+	router := newJobRouter(t, fakeJobRemote{})
+	root := t.TempDir()
+	body := fmt.Sprintf(`{"path": %q, "name": "new-folder"}`, root)
+	rec := doJSON(t, router, "POST", "/api/v1/jobs/local-directories", body)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create local directory status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	created := filepath.Join(root, "new-folder")
+	if info, err := os.Stat(created); err != nil || !info.IsDir() {
+		t.Fatalf("created directory = %v, %v; want directory", info, err)
+	}
+
+	rec = doJSON(t, router, "POST", "/api/v1/jobs/local-directories", fmt.Sprintf(`{"path": %q, "name": "../escape"}`, root))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("create escaped directory status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
 }
 
