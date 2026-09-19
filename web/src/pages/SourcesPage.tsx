@@ -1,11 +1,25 @@
+import AddOutlinedIcon from '@mui/icons-material/AddOutlined'
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutlined'
+import EditOutlinedIcon from '@mui/icons-material/EditOutlined'
+import NetworkCheckOutlinedIcon from '@mui/icons-material/NetworkCheckOutlined'
+import SearchOutlinedIcon from '@mui/icons-material/SearchOutlined'
 import {
     Alert,
     Box,
     Button,
     Card,
     CardContent,
+    Checkbox,
     Chip,
     CircularProgress,
+    Dialog,
+    DialogActions,
+    DialogContent,
+    DialogTitle,
+    IconButton,
+    InputAdornment,
+    MenuItem,
+    Snackbar,
     Stack,
     Table,
     TableBody,
@@ -13,154 +27,119 @@ import {
     TableContainer,
     TableHead,
     TableRow,
+    TableSortLabel,
+    TextField,
+    Tooltip,
     Typography,
 } from '@mui/material'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
+    deleteSource,
     listSources,
     type S3Config,
     type SFTPConfig,
     type SourceResponse,
     testSource,
+    updateSource,
     type WebDAVConfig,
 } from '../api'
 import DeleteSourceDialog from '../features/sources/DeleteSourceDialog'
 import SourceDialog from '../features/sources/SourceDialog'
 
-// TestState 是单个 Source 的连接测试状态。
-type TestState =
-    | { status: 'testing' }
-    | { status: 'done'; ok: boolean; latency: number; error?: string }
+type SortField = 'name' | 'type' | 'location' | 'enabled'
+type Toast = { message: string; severity: 'success' | 'error' } | null
 
-// SourcesPage 提供 Source 管理界面：创建、编辑、连接测试与删除。
+// SourcesPage 使用原生 MUI Table 管理同步源；连接测试结果以 toast 呈现。
 export default function SourcesPage() {
     const [sources, setSources] = useState<SourceResponse[] | null>(null)
     const [loadError, setLoadError] = useState<string | null>(null)
-    const [testStates, setTestStates] = useState<Record<string, TestState>>({})
     const [dialogOpen, setDialogOpen] = useState(false)
     const [editing, setEditing] = useState<SourceResponse | null>(null)
     const [deleting, setDeleting] = useState<SourceResponse | null>(null)
-
-    const reload = useCallback(async () => {
-        const list = await listSources()
-        setSources(list)
-    }, [])
-
+    const [batchDeleting, setBatchDeleting] = useState<SourceResponse[] | null>(null)
+    const [testing, setTesting] = useState<string | null>(null)
+    const [toast, setToast] = useState<Toast>(null)
+    const reload = useCallback(async () => setSources(await listSources()), [])
     useEffect(() => {
-        let cancelled = false
-        async function load() {
-            try {
-                const list = await listSources()
-                if (!cancelled) {
-                    setSources(list)
-                }
-            } catch (e) {
-                if (!cancelled) {
-                    setLoadError(e instanceof Error ? e.message : String(e))
-                }
-            }
-        }
-        void load()
-        return () => {
-            cancelled = true
-        }
-    }, [])
-
-    async function handleTest(id: string) {
-        setTestStates(prev => ({ ...prev, [id]: { status: 'testing' } }))
+        void reload().catch(e => setLoadError(e instanceof Error ? e.message : String(e)))
+    }, [reload])
+    async function handleTest(source: SourceResponse) {
+        setTesting(source.id)
         try {
-            const result = await testSource(id)
-            setTestStates(prev => ({
-                ...prev,
-                [id]: {
-                    status: 'done',
-                    ok: result.ok,
-                    latency: result.latency_ms,
-                    error: result.error,
-                },
-            }))
+            const result = await testSource(source.id)
+            setToast({
+                severity: result.ok ? 'success' : 'error',
+                message: result.ok
+                    ? `“${source.name}”连接成功，耗时 ${result.latency_ms} ms`
+                    : `“${source.name}”连接失败：${result.error ?? '未知错误'}`,
+            })
         } catch (e) {
-            setTestStates(prev => ({
-                ...prev,
-                [id]: {
-                    status: 'done',
-                    ok: false,
-                    latency: 0,
-                    error: e instanceof Error ? e.message : String(e),
-                },
-            }))
+            setToast({ severity: 'error', message: e instanceof Error ? e.message : String(e) })
+        } finally {
+            setTesting(null)
         }
     }
-
-    function handleSaved(saved: SourceResponse) {
-        setDialogOpen(false)
-        setEditing(null)
-        // Source 配置已变化（endpoint / username / password），旧的连接
-        // 测试结果不再有效，恢复为 Not tested。
-        setTestStates(prev => {
-            if (!(saved.id in prev)) {
-                return prev
-            }
-            const next = { ...prev }
-            delete next[saved.id]
-            return next
-        })
-        reload()
-            .then(() => setLoadError(null))
-            .catch((e: unknown) => setLoadError(e instanceof Error ? e.message : String(e)))
+    async function handleBatchDelete() {
+        if (batchDeleting === null) return
+        try {
+            await Promise.all(batchDeleting.map(source => deleteSource(source.id)))
+            setSources(
+                prev =>
+                    prev?.filter(source => !batchDeleting.some(item => item.id === source.id)) ??
+                    null,
+            )
+            setToast({ severity: 'success', message: `已删除 ${batchDeleting.length} 个同步源` })
+            setBatchDeleting(null)
+        } catch (e) {
+            setToast({ severity: 'error', message: e instanceof Error ? e.message : String(e) })
+        }
     }
-
-    function handleDeleted(id: string) {
-        setDeleting(null)
-        setSources(prev => (prev === null ? prev : prev.filter(s => s.id !== id)))
-        setTestStates(prev => {
-            if (!(id in prev)) {
-                return prev
-            }
-            const next = { ...prev }
-            delete next[id]
-            return next
-        })
-    }
-
     return (
         <Stack spacing={2}>
             <Card variant="outlined">
                 <CardContent>
-                    <Stack spacing={2}>
-                        <Box
-                            sx={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'space-between',
-                            }}
-                        >
-                            <Button
-                                variant="contained"
-                                onClick={() => {
+                    {loadError !== null && (
+                        <Alert severity="error" sx={{ mb: 2 }}>
+                            {loadError}
+                        </Alert>
+                    )}
+                    {sources === null && loadError === null ? (
+                        <CircularProgress size={24} />
+                    ) : (
+                        sources !== null && (
+                            <SourceTable
+                                sources={sources}
+                                testing={testing}
+                                onAdd={() => {
                                     setEditing(null)
                                     setDialogOpen(true)
                                 }}
-                            >
-                                添加同步源
-                            </Button>
-                        </Box>
-                        {loadError !== null && <Alert severity="error">{loadError}</Alert>}
-                        {sources === null && loadError === null ? (
-                            <CircularProgress size={24} aria-label="加载中" />
-                        ) : sources !== null ? (
-                            <SourceTable
-                                sources={sources}
-                                testStates={testStates}
-                                onTest={id => void handleTest(id)}
+                                onTest={source => void handleTest(source)}
                                 onEdit={source => {
                                     setEditing(source)
                                     setDialogOpen(true)
                                 }}
-                                onDelete={source => setDeleting(source)}
+                                onDelete={setDeleting}
+                                onBatchDelete={setBatchDeleting}
+                                onEnabledChanged={async (source, enabled) => {
+                                    try {
+                                        const saved = await updateSource(source.id, { enabled })
+                                        setSources(
+                                            prev =>
+                                                prev?.map(item =>
+                                                    item.id === saved.id ? saved : item,
+                                                ) ?? null,
+                                        )
+                                    } catch (e) {
+                                        setToast({
+                                            severity: 'error',
+                                            message: e instanceof Error ? e.message : String(e),
+                                        })
+                                    }
+                                }}
                             />
-                        ) : null}
-                    </Stack>
+                        )
+                    )}
                 </CardContent>
             </Card>
             <SourceDialog
@@ -170,117 +149,336 @@ export default function SourcesPage() {
                     setDialogOpen(false)
                     setEditing(null)
                 }}
-                onSaved={handleSaved}
+                onSaved={() => {
+                    setDialogOpen(false)
+                    setEditing(null)
+                    void reload()
+                }}
             />
             <DeleteSourceDialog
                 source={deleting}
                 onClose={() => setDeleting(null)}
-                onDeleted={handleDeleted}
+                onDeleted={id => {
+                    setDeleting(null)
+                    setSources(prev => prev?.filter(source => source.id !== id) ?? null)
+                }}
             />
+            <Dialog
+                open={batchDeleting !== null}
+                onClose={() => setBatchDeleting(null)}
+                maxWidth="xs"
+                fullWidth
+            >
+                <DialogTitle>删除已选同步源？</DialogTitle>
+                <DialogContent>
+                    <Typography>
+                        确认删除 {batchDeleting?.length ?? 0} 个同步源？不会删除远端文件。
+                    </Typography>
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={() => setBatchDeleting(null)}>取消</Button>
+                    <Button
+                        color="error"
+                        variant="contained"
+                        onClick={() => void handleBatchDelete()}
+                    >
+                        删除
+                    </Button>
+                </DialogActions>
+            </Dialog>
+            <Snackbar
+                open={toast !== null}
+                autoHideDuration={5000}
+                onClose={() => setToast(null)}
+                anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+            >
+                <Alert severity={toast?.severity} variant="filled" onClose={() => setToast(null)}>
+                    {toast?.message}
+                </Alert>
+            </Snackbar>
         </Stack>
     )
 }
 
 function SourceTable({
     sources,
-    testStates,
+    testing,
+    onAdd,
     onTest,
     onEdit,
     onDelete,
+    onBatchDelete,
+    onEnabledChanged,
 }: {
     sources: SourceResponse[]
-    testStates: Record<string, TestState>
-    onTest: (id: string) => void
+    testing: string | null
+    onAdd: () => void
+    onTest: (source: SourceResponse) => void
     onEdit: (source: SourceResponse) => void
     onDelete: (source: SourceResponse) => void
+    onBatchDelete: (sources: SourceResponse[]) => void
+    onEnabledChanged: (source: SourceResponse, enabled: boolean) => void
 }) {
-    if (sources.length === 0) {
-        return (
-            <Typography variant="body2" color="text.secondary">
-                尚未配置同步源。点击“添加同步源”连接 WebDAV、S3 或 SFTP 服务器。
-            </Typography>
-        )
-    }
+    const [selected, setSelected] = useState<string[]>([])
+    const [query, setQuery] = useState('')
+    const [type, setType] = useState('all')
+    const [status, setStatus] = useState('all')
+    const [sort, setSort] = useState<{ field: SortField; direction: 'asc' | 'desc' }>({
+        field: 'name',
+        direction: 'asc',
+    })
+    const visible = useMemo(
+        () =>
+            sources
+                .filter(source => {
+                    const needle = query.trim().toLowerCase()
+                    return (
+                        (needle === '' ||
+                            `${source.name} ${source.type} ${locationSummary(source)}`
+                                .toLowerCase()
+                                .includes(needle)) &&
+                        (type === 'all' || source.type === type) &&
+                        (status === 'all' || String(source.enabled) === status)
+                    )
+                })
+                .sort((a, b) => {
+                    const value = (source: SourceResponse) =>
+                        sort.field === 'location'
+                            ? locationSummary(source)
+                            : String(source[sort.field])
+                    return (
+                        value(a).localeCompare(value(b), 'zh-CN', { numeric: true }) *
+                        (sort.direction === 'asc' ? 1 : -1)
+                    )
+                }),
+        [sources, query, sort, status, type],
+    )
+    const chosen = sources.filter(source => selected.includes(source.id))
+    const toggleSort = (field: SortField) =>
+        setSort(prev => ({
+            field,
+            direction: prev.field === field && prev.direction === 'asc' ? 'desc' : 'asc',
+        }))
+    const header = (label: string, field: SortField) => (
+        <TableSortLabel
+            active={sort.field === field}
+            direction={sort.field === field ? sort.direction : 'asc'}
+            onClick={() => toggleSort(field)}
+        >
+            {label}
+        </TableSortLabel>
+    )
+    const allVisible = visible.length > 0 && visible.every(source => selected.includes(source.id))
     return (
-        <TableContainer>
-            <Table size="small">
-                <TableHead>
-                    <TableRow>
-                        <TableCell>名称</TableCell>
-                        <TableCell>类型</TableCell>
-                        <TableCell>位置</TableCell>
-                        <TableCell align="right">凭据</TableCell>
-                        <TableCell align="right">启用</TableCell>
-                        <TableCell>连接</TableCell>
-                        <TableCell align="right">操作</TableCell>
-                    </TableRow>
-                </TableHead>
-                <TableBody>
-                    {sources.map(source => (
-                        <TableRow key={source.id}>
-                            <TableCell>{source.name}</TableCell>
-                            <TableCell>{source.type}</TableCell>
-                            <TableCell sx={{ fontFamily: 'monospace' }}>
-                                {locationSummary(source)}
-                            </TableCell>
-                            <TableCell align="right">{credentialSummary(source)}</TableCell>
-                            <TableCell align="right">
-                                <Chip
-                                    label={source.enabled ? '已启用' : '已停用'}
-                                    color={source.enabled ? 'success' : 'default'}
+        <Stack spacing={2}>
+            <Stack
+                direction={{ xs: 'column', md: 'row' }}
+                spacing={1}
+                sx={{ alignItems: { md: 'center' } }}
+            >
+                <Button variant="contained" startIcon={<AddOutlinedIcon />} onClick={onAdd}>
+                    添加同步源
+                </Button>
+                {chosen.length > 0 && (
+                    <>
+                        <Typography variant="body2">已选 {chosen.length} 项</Typography>
+                        <Button
+                            size="small"
+                            color="error"
+                            variant="outlined"
+                            startIcon={<DeleteOutlineIcon />}
+                            onClick={() => onBatchDelete(chosen)}
+                        >
+                            批量删除
+                        </Button>
+                    </>
+                )}
+                <Box sx={{ flexGrow: 1 }} />
+                <TextField
+                    size="small"
+                    placeholder="搜索名称、类型或位置"
+                    value={query}
+                    onChange={event => setQuery(event.target.value)}
+                    slotProps={{
+                        input: {
+                            startAdornment: (
+                                <InputAdornment position="start">
+                                    <SearchOutlinedIcon fontSize="small" />
+                                </InputAdornment>
+                            ),
+                        },
+                    }}
+                />
+                <TextField
+                    select
+                    size="small"
+                    label="类型"
+                    value={type}
+                    onChange={event => setType(event.target.value)}
+                    sx={{ minWidth: 110 }}
+                >
+                    <MenuItem value="all">全部类型</MenuItem>
+                    <MenuItem value="webdav">WebDAV</MenuItem>
+                    <MenuItem value="s3">S3</MenuItem>
+                    <MenuItem value="sftp">SFTP</MenuItem>
+                </TextField>
+                <TextField
+                    select
+                    size="small"
+                    label="状态"
+                    value={status}
+                    onChange={event => setStatus(event.target.value)}
+                    sx={{ minWidth: 110 }}
+                >
+                    <MenuItem value="all">全部状态</MenuItem>
+                    <MenuItem value="true">已启用</MenuItem>
+                    <MenuItem value="false">已停用</MenuItem>
+                </TextField>
+            </Stack>
+            <TableContainer sx={{ overflow: 'auto' }}>
+                <Table size="small" sx={{ minWidth: 760 }}>
+                    <TableHead>
+                        <TableRow>
+                            <TableCell padding="checkbox">
+                                <Checkbox
                                     size="small"
+                                    checked={allVisible}
+                                    indeterminate={chosen.length > 0 && !allVisible}
+                                    onChange={event =>
+                                        setSelected(
+                                            event.target.checked
+                                                ? [
+                                                      ...new Set([
+                                                          ...selected,
+                                                          ...visible.map(source => source.id),
+                                                      ]),
+                                                  ]
+                                                : selected.filter(
+                                                      id =>
+                                                          !visible.some(source => source.id === id),
+                                                  ),
+                                        )
+                                    }
                                 />
                             </TableCell>
-                            <TableCell>
-                                <TestCell state={testStates[source.id]} />
-                            </TableCell>
-                            <TableCell align="right">
-                                <Stack
-                                    direction="row"
-                                    spacing={0.5}
-                                    sx={{ justifyContent: 'flex-end' }}
-                                >
-                                    <Button
-                                        size="small"
-                                        disabled={testStates[source.id]?.status === 'testing'}
-                                        onClick={() => onTest(source.id)}
-                                    >
-                                        测试
-                                    </Button>
-                                    <Button size="small" onClick={() => onEdit(source)}>
-                                        编辑
-                                    </Button>
-                                    <Button
-                                        size="small"
-                                        color="error"
-                                        onClick={() => onDelete(source)}
-                                    >
-                                        删除
-                                    </Button>
-                                </Stack>
-                            </TableCell>
+                            <TableCell>{header('名称', 'name')}</TableCell>
+                            <TableCell>{header('类型', 'type')}</TableCell>
+                            <TableCell>{header('位置', 'location')}</TableCell>
+                            <TableCell>{header('状态', 'enabled')}</TableCell>
+                            <TableCell align="center">操作</TableCell>
                         </TableRow>
-                    ))}
-                </TableBody>
-            </Table>
-        </TableContainer>
+                    </TableHead>
+                    <TableBody>
+                        {visible.map(source => (
+                            <TableRow key={source.id} hover selected={selected.includes(source.id)}>
+                                <TableCell padding="checkbox">
+                                    <Checkbox
+                                        size="small"
+                                        checked={selected.includes(source.id)}
+                                        onChange={event =>
+                                            setSelected(prev =>
+                                                event.target.checked
+                                                    ? [...prev, source.id]
+                                                    : prev.filter(id => id !== source.id),
+                                            )
+                                        }
+                                    />
+                                </TableCell>
+                                <TableCell>
+                                    <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                                        {source.name}
+                                    </Typography>
+                                </TableCell>
+                                <TableCell>
+                                    <Chip label={source.type.toUpperCase()} size="small" />
+                                </TableCell>
+                                <TableCell sx={{ fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                                    {locationSummary(source)}
+                                </TableCell>
+                                <TableCell>
+                                    <Tooltip title={source.enabled ? '停用' : '启用'}>
+                                        <Chip
+                                            component="button"
+                                            clickable
+                                            label={source.enabled ? '已启用' : '已停用'}
+                                            color={source.enabled ? 'success' : 'default'}
+                                            size="small"
+                                            onClick={() =>
+                                                onEnabledChanged(source, !source.enabled)
+                                            }
+                                        />
+                                    </Tooltip>
+                                </TableCell>
+                                <TableCell align="center">
+                                    <Stack
+                                        direction="row"
+                                        spacing={0.25}
+                                        sx={{ justifyContent: 'center' }}
+                                    >
+                                        <Tooltip title="测试连接">
+                                            <span>
+                                                <IconButton
+                                                    size="small"
+                                                    aria-label={`测试 ${source.name}`}
+                                                    disabled={testing !== null}
+                                                    onClick={() => onTest(source)}
+                                                >
+                                                    {testing === source.id ? (
+                                                        <CircularProgress size={18} />
+                                                    ) : (
+                                                        <NetworkCheckOutlinedIcon fontSize="small" />
+                                                    )}
+                                                </IconButton>
+                                            </span>
+                                        </Tooltip>
+                                        <Tooltip title="编辑">
+                                            <IconButton
+                                                size="small"
+                                                aria-label={`编辑 ${source.name}`}
+                                                onClick={() => onEdit(source)}
+                                            >
+                                                <EditOutlinedIcon fontSize="small" />
+                                            </IconButton>
+                                        </Tooltip>
+                                        <Tooltip title="删除">
+                                            <IconButton
+                                                size="small"
+                                                color="error"
+                                                aria-label={`删除 ${source.name}`}
+                                                onClick={() => onDelete(source)}
+                                            >
+                                                <DeleteOutlineIcon fontSize="small" />
+                                            </IconButton>
+                                        </Tooltip>
+                                    </Stack>
+                                </TableCell>
+                            </TableRow>
+                        ))}
+                        {visible.length === 0 && (
+                            <TableRow>
+                                <TableCell colSpan={6}>
+                                    <Box sx={{ py: 6, textAlign: 'center' }}>
+                                        <Typography color="text.secondary">
+                                            暂无匹配的同步源
+                                        </Typography>
+                                    </Box>
+                                </TableCell>
+                            </TableRow>
+                        )}
+                    </TableBody>
+                </Table>
+            </TableContainer>
+        </Stack>
     )
 }
-
-// locationSummary 按协议生成远端位置摘要。SourceConfig 是按 type
-// 判别的 union，前端以 type 显式选择配置形态。
 function locationSummary(source: SourceResponse): string {
     const config = source.config
     switch (source.type) {
-        case 'webdav': {
-            const cfg = config as WebDAVConfig
-            return cfg.endpoint ?? ''
-        }
+        case 'webdav':
+            return (config as WebDAVConfig).endpoint ?? ''
         case 's3': {
             const cfg = config as S3Config
-            const host = urlHost(cfg.endpoint ?? '')
-            const prefix = cfg.prefix ? `/${cfg.prefix}` : ''
-            return `${host}/${cfg.bucket}${prefix}`
+            return `${urlHost(cfg.endpoint ?? '')}/${cfg.bucket}${cfg.prefix ? `/${cfg.prefix}` : ''}`
         }
         case 'sftp': {
             const cfg = config as SFTPConfig
@@ -288,55 +486,10 @@ function locationSummary(source: SourceResponse): string {
         }
     }
 }
-
-// urlHost 从 endpoint URL 提取 host（含端口）；无 URL 时回退原文。
 function urlHost(endpoint: string): string {
-    if (endpoint === '') {
-        return 'aws'
-    }
     try {
-        return new URL(endpoint).host
+        return endpoint === '' ? 'aws' : new URL(endpoint).host
     } catch {
         return endpoint
     }
-}
-
-// credentialSummary 汇总各协议 secret 状态。
-function credentialSummary(source: SourceResponse): string {
-    const state = source.credential_state
-    const configured =
-        (state.webdav?.password_set ?? false) ||
-        (state.s3?.secret_key_set ?? false) ||
-        (state.sftp?.password_set ?? false) ||
-        (state.sftp?.private_key_set ?? false)
-    if (!configured) {
-        return source.type === 'webdav' ? '匿名访问' : '未设置'
-    }
-    return '已配置'
-}
-
-function TestCell({ state }: { state: TestState | undefined }) {
-    if (state === undefined) {
-        return (
-            <Typography variant="caption" color="text.secondary">
-                未测试
-            </Typography>
-        )
-    }
-    if (state.status === 'testing') {
-        return <CircularProgress size={16} aria-label="正在测试连接" />
-    }
-    if (state.ok) {
-        return <Chip label={`成功：${state.latency} ms`} color="success" size="small" />
-    }
-    return (
-        <Box sx={{ maxWidth: 260 }}>
-            <Chip label="失败" color="error" size="small" />
-            {state.error !== undefined && (
-                <Typography variant="caption" color="error" sx={{ display: 'block', mt: 0.5 }}>
-                    {state.error}
-                </Typography>
-            )}
-        </Box>
-    )
 }
