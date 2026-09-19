@@ -315,6 +315,21 @@ func TestSFTPHostKeyMismatchRejected(t *testing.T) {
 	}
 }
 
+// 未配置 fingerprint 时，用户显式选择跳过主机密钥校验，仍可建立连接。
+func TestSFTPHostKeyVerificationOptional(t *testing.T) {
+	root := t.TempDir()
+	ts := startTestServer(t)
+
+	cfg := sftpSourceConfig(ts, root, source.SFTPAuthPassword)
+	cfg.HostKeyFingerprint = ""
+	r := newSFTPFactoryRemote(t, ts, cfg, source.Credentials{SFTP: &source.SFTPCredentials{
+		Password: testPassword,
+	}})
+	if _, err := r.List(context.Background(), "/", source.ListOptions{}); err != nil {
+		t.Fatalf("List without host key verification: %v", err)
+	}
+}
+
 // 密码错误认证失败。
 func TestSFTPBadPasswordRejected(t *testing.T) {
 	root := t.TempDir()

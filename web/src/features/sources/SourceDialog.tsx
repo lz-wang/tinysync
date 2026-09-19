@@ -280,10 +280,7 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
             return s3.region.trim() !== '' && s3.bucket.trim() !== '' && s3.access_key.trim() !== ''
         }
         return (
-            sftp.host.trim() !== '' &&
-            sftp.username.trim() !== '' &&
-            sftp.remote_root.trim() !== '' &&
-            sftp.host_key_fingerprint.trim() !== ''
+            sftp.host.trim() !== '' && sftp.username.trim() !== '' && sftp.remote_root.trim() !== ''
         )
     }
 
@@ -482,17 +479,6 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                                     <MenuItem value="private_key">私钥</MenuItem>
                                 </Select>
                             </FormControl>
-                            <TextField
-                                label="主机密钥指纹（SHA256）"
-                                value={sftp.host_key_fingerprint}
-                                onChange={e =>
-                                    setSftp({ ...sftp, host_key_fingerprint: e.target.value })
-                                }
-                                required
-                                placeholder="SHA256:UC1Dk4I9LLQOV3B8eZ5FlrUUcbbNie4INffe2TDTz3k"
-                                sx={{ '& input': { fontFamily: 'monospace' } }}
-                                helperText="必须验证主机密钥；未知主机的连接会失败。"
-                            />
                             {sftp.auth_method === 'password' ? (
                                 <SecretField
                                     label="密码"
@@ -538,6 +524,18 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                         }
                         label="启用"
                     />
+                    {type === 'sftp' && (
+                        <TextField
+                            label="主机密钥指纹（SHA256，可选）"
+                            value={sftp.host_key_fingerprint}
+                            onChange={e =>
+                                setSftp({ ...sftp, host_key_fingerprint: e.target.value })
+                            }
+                            placeholder="SHA256:UC1Dk4I9LLQOV3B8eZ5FlrUUcbbNie4INffe2TDTz3k"
+                            sx={{ '& input': { fontFamily: 'monospace' } }}
+                            helperText="留空将跳过主机密钥校验；填写后会严格校验。"
+                        />
+                    )}
                 </Stack>
             </DialogContent>
             <DialogActions>

@@ -1,6 +1,6 @@
 // Package sftp 实现 source 的 SFTP 只读 Remote：基于 pkg/sftp 与
 // golang.org/x/crypto/ssh。认证方式显式声明（password | private_key），
-// host key 以 SHA256 fingerprint 严格 pin（拒绝 insecure 模式），
+// 可选以 SHA256 fingerprint 严格 pin；未配置时跳过主机密钥校验，
 // remote_root 映射 Source "/"；发现 symlink 立即失败（不跳过、不
 // 跟随），保证 remote snapshot 完整性——Mirror 的删除授权依赖完整
 // 扫描。
@@ -43,8 +43,8 @@ func (f *Factory) Type() source.Type {
 	return source.TypeSFTP
 }
 
-// Create 实现 source.RemoteFactory：按 auth_method 组装认证，host key
-// 以 SHA256 fingerprint 严格比较，SSH 连接建立支持 ctx 取消。
+// Create 实现 source.RemoteFactory：按 auth_method 组装认证；配置 host key
+// fingerprint 时严格比较，未配置时跳过该校验；SSH 连接建立支持 ctx 取消。
 func (f *Factory) Create(ctx context.Context, s source.Source, credentials source.Credentials) (source.Remote, error) {
 	if s.Type != source.TypeSFTP || s.Config.SFTP == nil {
 		return nil, fmt.Errorf("%w: %q", source.ErrUnsupportedType, s.Type)
@@ -64,11 +64,9 @@ func (f *Factory) Create(ctx context.Context, s source.Source, credentials sourc
 		return nil, err
 	}
 	sshConfig := &ssh.ClientConfig{
-		User: cfg.Username,
-		Auth: []ssh.AuthMethod{auth},
-		// Host key 必须 pin：fingerprint 不匹配直接失败，绝不提供
-		// InsecureIgnoreHostKey 之类的旁路。
-		HostKeyCallback: fingerprintCallback(cfg.HostKeyFingerprint),
+		User:            cfg.Username,
+		Auth:            []ssh.AuthMethod{auth},
+		HostKeyCallback: hostKeyCallback(cfg.HostKeyFingerprint),
 		Timeout:         dialTimeout,
 	}
 
@@ -93,6 +91,15 @@ func (f *Factory) Create(ctx context.Context, s source.Source, credentials sourc
 		}()
 	}
 	return r, nil
+}
+
+// hostKeyCallback 在配置 fingerprint 时严格 pin；留空表示用户明确选择
+// 不校验主机密钥，供受信任内网的兼容场景使用。
+func hostKeyCallback(fingerprint string) ssh.HostKeyCallback {
+	if strings.TrimSpace(fingerprint) == "" {
+		return ssh.InsecureIgnoreHostKey()
+	}
+	return fingerprintCallback(fingerprint)
 }
 
 // authMethod 按 auth_method 显式构造认证；不根据字段非空隐式推断。

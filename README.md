@@ -271,8 +271,8 @@ curl -X POST http://127.0.0.1:9466/api/v1/sources \
   }'
 ```
 
-SFTP（host key 以 SHA256 fingerprint 严格校验，不支持跳过校验；
-symlink 不跟随，发现即失败）：
+SFTP（`host_key_fingerprint` 可选；填写时以 SHA256 fingerprint 严格校验，
+留空则跳过主机密钥校验；symlink 不跟随，发现即失败）：
 
 ```bash
 curl -X POST http://127.0.0.1:9466/api/v1/sources \

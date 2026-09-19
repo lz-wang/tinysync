@@ -88,7 +88,8 @@ type S3Config struct {
 }
 
 // SFTPConfig 是 SFTP Source 的非敏感配置。AuthMethod 显式声明认证
-// 方式；HostKeyFingerprint 为 SHA256:... 形式，必须提供。
+// 方式；HostKeyFingerprint 可选，提供时必须为 SHA256:... 形式并用于
+// 严格校验；留空时跳过主机密钥校验。
 type SFTPConfig struct {
 	Host               string         `json:"host"`
 	Port               int            `json:"port"`

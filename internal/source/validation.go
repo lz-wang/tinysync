@@ -135,9 +135,9 @@ func validateS3Config(c S3Config) error {
 	return nil
 }
 
-// validateSFTPConfig 校验 SFTP 配置：host / username / remote_root /
-// host_key_fingerprint 必填，remote_root 必须是绝对路径，auth_method
-// 显式且合法，fingerprint 必须是 SHA256:<base64> 形式。
+// validateSFTPConfig 校验 SFTP 配置：host / username / remote_root 必填，
+// remote_root 必须是绝对路径，auth_method 显式且合法；可选的
+// host_key_fingerprint 提供时必须是 SHA256:<base64> 形式。
 func validateSFTPConfig(c SFTPConfig) error {
 	if strings.TrimSpace(c.Host) == "" {
 		return fmt.Errorf("%w: sftp host is required", ErrInvalid)
@@ -160,6 +160,9 @@ func validateSFTPConfig(c SFTPConfig) error {
 		return fmt.Errorf("%w: sftp auth_method is required", ErrInvalid)
 	default:
 		return fmt.Errorf("%w: unsupported sftp auth_method %q", ErrInvalid, c.AuthMethod)
+	}
+	if strings.TrimSpace(c.HostKeyFingerprint) == "" {
+		return nil
 	}
 	return validateHostKeyFingerprint(c.HostKeyFingerprint)
 }

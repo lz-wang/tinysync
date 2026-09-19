@@ -119,6 +119,11 @@ func TestValidateConfig(t *testing.T) {
 		}()}},
 		{"s3 explicit endpoint", TypeS3, Config{S3: ptrS3(validS3Config())}},
 		{"sftp", TypeSFTP, Config{SFTP: ptrSFTP(validSFTPConfig())}},
+		{"sftp without host key verification", TypeSFTP, Config{SFTP: func() *SFTPConfig {
+			c := validSFTPConfig()
+			c.HostKeyFingerprint = ""
+			return &c
+		}()}},
 		{"sftp default port", TypeSFTP, Config{SFTP: func() *SFTPConfig {
 			c := validSFTPConfig()
 			c.Port = 0
