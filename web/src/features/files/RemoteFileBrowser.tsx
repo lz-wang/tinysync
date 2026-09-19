@@ -13,6 +13,7 @@ export default function RemoteFileBrowser() {
     const [searchParams, setSearchParams] = useSearchParams()
     const sourceId = searchParams.get('source') ?? ''
     const path = searchParams.get('path') ?? '/'
+    const showHidden = searchParams.get('hidden') === 'true'
 
     useEffect(() => {
         let cancelled = false
@@ -49,18 +50,24 @@ export default function RemoteFileBrowser() {
             })),
         [sources],
     )
-    const updateLocation = (nextSourceId: string, nextPath: string) => {
+    const updateLocation = (
+        nextSourceId: string,
+        nextPath: string,
+        nextShowHidden = showHidden,
+    ) => {
         const next = new URLSearchParams(searchParams)
         next.set('source', nextSourceId)
         next.set('path', nextPath)
+        if (nextShowHidden) next.set('hidden', 'true')
+        else next.delete('hidden')
         setSearchParams(next)
     }
     const load = useCallback(
         async (targetPath: string, cursor?: string) => {
-            const page = await listRemoteFiles(sourceId, targetPath, 100, cursor)
+            const page = await listRemoteFiles(sourceId, targetPath, 100, cursor, showHidden)
             return { entries: page.entries, nextCursor: page.next_cursor }
         },
-        [sourceId],
+        [showHidden, sourceId],
     )
 
     if (sources === null && loadError === null) {
@@ -80,10 +87,12 @@ export default function RemoteFileBrowser() {
             load={load}
             onPathChange={nextPath => updateLocation(sourceId, nextPath)}
             onResourceChange={nextSourceId => updateLocation(nextSourceId, '/')}
+            onShowHiddenChange={nextShowHidden => updateLocation(sourceId, path, nextShowHidden)}
             path={path}
             resourceId={sourceId}
             resourceLabel="同步源"
             resources={resources}
+            showHidden={showHidden}
         />
     )
 }

@@ -172,10 +172,24 @@ func (h *fileHandlers) localList(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	showHidden, err := strconv.ParseBool(c.DefaultQuery("hidden", "false"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "hidden must be a boolean"})
+		return
+	}
 	entries, next, err := h.local.List(c.Request.Context(), c.Param("id"), p, opts)
 	if err != nil {
 		handleFileError(c, err)
 		return
+	}
+	if !showHidden {
+		visible := entries[:0]
+		for _, entry := range entries {
+			if !strings.HasPrefix(entry.Name, ".") {
+				visible = append(visible, entry)
+			}
+		}
+		entries = visible
 	}
 	c.JSON(http.StatusOK, localListResponse{
 		Path:       p,

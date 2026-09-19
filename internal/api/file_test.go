@@ -486,6 +486,42 @@ func TestLocalFilesListAPI(t *testing.T) {
 	}
 }
 
+// 本地文件浏览默认隐藏点开头的文件和目录；hidden=true 才显示它们。
+func TestLocalFilesListHidesDotEntriesByDefault(t *testing.T) {
+	env := newLocalFilesEnv(t)
+	env.write(t, "visible.txt", "visible")
+	env.write(t, ".private/secret.txt", "hidden")
+	base := "/api/v1/jobs/" + env.jobID + "/files?path=/"
+
+	decodeNames := func(t *testing.T, url string) []string {
+		t.Helper()
+		w := doJSON(t, env.router, http.MethodGet, url, "")
+		if w.Code != http.StatusOK {
+			t.Fatalf("list status = %d, body = %s", w.Code, w.Body.String())
+		}
+		var response struct {
+			Entries []struct {
+				Name string `json:"name"`
+			} `json:"entries"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+			t.Fatalf("unmarshal = %v", err)
+		}
+		names := make([]string, 0, len(response.Entries))
+		for _, entry := range response.Entries {
+			names = append(names, entry.Name)
+		}
+		return names
+	}
+
+	if got := decodeNames(t, base); len(got) != 1 || got[0] != "visible.txt" {
+		t.Errorf("default entries = %v, want [visible.txt]", got)
+	}
+	if got := decodeNames(t, base+"&hidden=true"); len(got) != 2 {
+		t.Errorf("shown entries = %v, want visible and hidden entries", got)
+	}
+}
+
 // 本地下载：200 全量、Range → 206、非法 Range → 416、HEAD 只回头。
 func TestLocalFilesDownloadAPI(t *testing.T) {
 	env := newLocalFilesEnv(t)

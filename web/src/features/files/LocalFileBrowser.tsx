@@ -1,5 +1,6 @@
+import ShareOutlinedIcon from '@mui/icons-material/ShareOutlined'
 import SyncOutlinedIcon from '@mui/icons-material/SyncOutlined'
-import { Alert, Box, Button, CircularProgress, IconButton, Tooltip } from '@mui/material'
+import { Alert, Box, CircularProgress, IconButton, Tooltip } from '@mui/material'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
@@ -24,6 +25,7 @@ export default function LocalFileBrowser({ onChanged }: { onChanged?: () => void
     const [searchParams, setSearchParams] = useSearchParams()
     const jobId = searchParams.get('job') ?? ''
     const path = searchParams.get('path') ?? '/'
+    const showHidden = searchParams.get('hidden') === 'true'
 
     useEffect(() => {
         let cancelled = false
@@ -51,18 +53,20 @@ export default function LocalFileBrowser({ onChanged }: { onChanged?: () => void
         () => (jobs ?? []).map(job => ({ id: job.id, label: job.name })),
         [jobs],
     )
-    const updateLocation = (nextJobId: string, nextPath: string) => {
+    const updateLocation = (nextJobId: string, nextPath: string, nextShowHidden = showHidden) => {
         const next = new URLSearchParams(searchParams)
         next.set('job', nextJobId)
         next.set('path', nextPath)
+        if (nextShowHidden) next.set('hidden', 'true')
+        else next.delete('hidden')
         setSearchParams(next)
     }
     const load = useCallback(
         async (targetPath: string, cursor?: string) => {
-            const page = await listLocalFiles(jobId, targetPath, 100, cursor)
+            const page = await listLocalFiles(jobId, targetPath, 100, cursor, showHidden)
             return { entries: page.entries, nextCursor: page.next_cursor }
         },
-        [jobId],
+        [jobId, showHidden],
     )
     const triggerRun = async () => {
         setRunning(true)
@@ -99,18 +103,26 @@ export default function LocalFileBrowser({ onChanged }: { onChanged?: () => void
                 load={load}
                 onPathChange={nextPath => updateLocation(jobId, nextPath)}
                 onResourceChange={nextJobId => updateLocation(nextJobId, '/')}
+                onShowHiddenChange={nextShowHidden => updateLocation(jobId, path, nextShowHidden)}
                 path={path}
                 renderActions={entry =>
                     entry.kind === 'file' && entry.managed === true ? (
-                        <Button onClick={() => setPublishTarget(entry)} size="small">
-                            发布
-                        </Button>
+                        <Tooltip title="分享">
+                            <IconButton
+                                aria-label={`分享 ${entry.name}`}
+                                onClick={() => setPublishTarget(entry)}
+                                size="small"
+                            >
+                                <ShareOutlinedIcon fontSize="small" />
+                            </IconButton>
+                        </Tooltip>
                     ) : null
                 }
                 resourceId={jobId}
                 resourceLabel="同步任务"
                 resources={resources}
                 showManaged
+                showHidden={showHidden}
                 toolbarActions={
                     <Tooltip title={running ? '正在触发同步…' : '立即同步'}>
                         <span>

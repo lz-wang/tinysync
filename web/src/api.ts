@@ -580,9 +580,10 @@ export function listLocalFiles(
     path = '/',
     limit?: number,
     cursor?: string,
+    showHidden?: boolean,
 ): Promise<FilesPageResponse> {
     return getJSON<FilesPageResponse>(
-        `/api/v1/jobs/${jobId}/files?${filesQuery(path, limit, cursor)}`,
+        `/api/v1/jobs/${jobId}/files?${filesQuery(path, limit, cursor, showHidden)}`,
     )
 }
 

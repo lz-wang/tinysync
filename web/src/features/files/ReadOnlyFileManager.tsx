@@ -3,6 +3,8 @@ import DownloadOutlinedIcon from '@mui/icons-material/DownloadOutlined'
 import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined'
 import InsertDriveFileOutlinedIcon from '@mui/icons-material/InsertDriveFileOutlined'
 import RefreshOutlinedIcon from '@mui/icons-material/RefreshOutlined'
+import VisibilityOffOutlinedIcon from '@mui/icons-material/VisibilityOffOutlined'
+import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined'
 import {
     Alert,
     Box,
@@ -21,6 +23,7 @@ import {
     TableContainer,
     TableHead,
     TableRow,
+    TableSortLabel,
     TextField,
     Tooltip,
     Typography,
@@ -33,6 +36,8 @@ export interface FileManagerResource {
     id: string
     label: string
 }
+
+type FileSortField = 'name' | 'kind' | 'size' | 'modifiedAt' | 'managed'
 
 // ReadOnlyFileManager 复用 Cloud Center 文件管理器的「位置栏 + 工具栏 +
 // 表格」工作流。TinySync 的浏览端点是只读的，所以只公开目录导航、刷新、
@@ -48,6 +53,8 @@ export default function ReadOnlyFileManager({
     downloadURL,
     renderActions,
     toolbarActions,
+    showHidden = false,
+    onShowHiddenChange,
     showManaged,
 }: {
     resourceLabel: string
@@ -60,12 +67,18 @@ export default function ReadOnlyFileManager({
     downloadURL: (path: string) => string
     renderActions?: (entry: FileEntry) => React.ReactNode
     toolbarActions?: React.ReactNode
+    showHidden?: boolean
+    onShowHiddenChange?: (showHidden: boolean) => void
     showManaged?: boolean
 }) {
     const [entries, setEntries] = useState<FileEntry[]>([])
     const [nextCursor, setNextCursor] = useState('')
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
+    const [sort, setSort] = useState<{ field: FileSortField; direction: 'asc' | 'desc' }>({
+        field: 'name',
+        direction: 'asc',
+    })
 
     const fetchPage = useCallback(
         async (cursor?: string) => {
@@ -96,6 +109,47 @@ export default function ReadOnlyFileManager({
     const openDirectory = (nextPath: string) => onPathChange(nextPath)
     const pathParts = useMemo(() => path.split('/').filter(Boolean), [path])
     const parentPath = pathParts.length === 0 ? '/' : `/${pathParts.slice(0, -1).join('/')}` || '/'
+    const sortedEntries = useMemo(
+        () =>
+            [...entries].sort((a, b) => {
+                const value = (entry: FileEntry): string | number => {
+                    switch (sort.field) {
+                        case 'kind':
+                            return entry.kind
+                        case 'size':
+                            return entry.size
+                        case 'modifiedAt':
+                            return entry.modified_at ?? ''
+                        case 'managed':
+                            return entry.managed === true ? 1 : 0
+                        default:
+                            return entry.name
+                    }
+                }
+                const aValue = value(a)
+                const bValue = value(b)
+                const compared =
+                    typeof aValue === 'number' && typeof bValue === 'number'
+                        ? aValue - bValue
+                        : String(aValue).localeCompare(String(bValue), 'zh-CN', { numeric: true })
+                return compared * (sort.direction === 'asc' ? 1 : -1)
+            }),
+        [entries, sort],
+    )
+    const toggleSort = (field: FileSortField) =>
+        setSort(previous => ({
+            field,
+            direction: previous.field === field && previous.direction === 'asc' ? 'desc' : 'asc',
+        }))
+    const sortableHeader = (label: string, field: FileSortField) => (
+        <TableSortLabel
+            active={sort.field === field}
+            direction={sort.field === field ? sort.direction : 'asc'}
+            onClick={() => toggleSort(field)}
+        >
+            {label}
+        </TableSortLabel>
+    )
 
     if (resources.length === 0) {
         return <Typography color="text.secondary">尚无可浏览的{resourceLabel}。</Typography>
@@ -166,6 +220,26 @@ export default function ReadOnlyFileManager({
                     })}
                 </Breadcrumbs>
                 <Stack direction="row" spacing={0.5} sx={{ alignItems: 'center' }}>
+                    {onShowHiddenChange !== undefined && (
+                        <Tooltip
+                            title={showHidden ? '隐藏隐藏文件和文件夹' : '显示隐藏文件和文件夹'}
+                        >
+                            <IconButton
+                                aria-label={
+                                    showHidden ? '隐藏隐藏文件和文件夹' : '显示隐藏文件和文件夹'
+                                }
+                                aria-pressed={showHidden}
+                                onClick={() => onShowHiddenChange(!showHidden)}
+                                size="small"
+                            >
+                                {showHidden ? (
+                                    <VisibilityOutlinedIcon fontSize="small" />
+                                ) : (
+                                    <VisibilityOffOutlinedIcon fontSize="small" />
+                                )}
+                            </IconButton>
+                        </Tooltip>
+                    )}
                     <Tooltip title="刷新当前目录">
                         <IconButton
                             aria-label="刷新当前目录"
@@ -183,20 +257,28 @@ export default function ReadOnlyFileManager({
                 <Table size="small" aria-label="文件列表">
                     <TableHead>
                         <TableRow>
-                            <TableCell>名称</TableCell>
-                            <TableCell sx={{ width: 100 }}>类型</TableCell>
-                            <TableCell align="right" sx={{ width: 120 }}>
-                                大小
+                            <TableCell>{sortableHeader('名称', 'name')}</TableCell>
+                            <TableCell sx={{ width: 100 }}>
+                                {sortableHeader('类型', 'kind')}
                             </TableCell>
-                            <TableCell sx={{ width: 190 }}>修改时间</TableCell>
-                            {showManaged && <TableCell sx={{ width: 110 }}>同步状态</TableCell>}
-                            <TableCell align="right" sx={{ width: 130 }}>
+                            <TableCell sx={{ width: 120 }}>
+                                {sortableHeader('大小', 'size')}
+                            </TableCell>
+                            <TableCell sx={{ width: 190 }}>
+                                {sortableHeader('修改时间', 'modifiedAt')}
+                            </TableCell>
+                            {showManaged && (
+                                <TableCell sx={{ width: 110 }}>
+                                    {sortableHeader('状态', 'managed')}
+                                </TableCell>
+                            )}
+                            <TableCell align="center" sx={{ width: 130 }}>
                                 操作
                             </TableCell>
                         </TableRow>
                     </TableHead>
                     <TableBody>
-                        {entries.map(entry => {
+                        {sortedEntries.map(entry => {
                             const directory = entry.kind === 'directory'
                             const file = entry.kind === 'file'
                             return (
@@ -241,9 +323,7 @@ export default function ReadOnlyFileManager({
                                                 ? '符号链接'
                                                 : '其他'}
                                     </TableCell>
-                                    <TableCell align="right">
-                                        {file ? formatBytes(entry.size) : '-'}
-                                    </TableCell>
+                                    <TableCell>{file ? formatBytes(entry.size) : '-'}</TableCell>
                                     <TableCell>
                                         {file
                                             ? formatDateTime(entry.modified_at ?? undefined, '-')
@@ -267,7 +347,7 @@ export default function ReadOnlyFileManager({
                                             )}
                                         </TableCell>
                                     )}
-                                    <TableCell align="right">
+                                    <TableCell align="center">
                                         {file && (
                                             <IconButton
                                                 aria-label={`下载 ${entry.name}`}
