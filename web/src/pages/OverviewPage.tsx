@@ -45,25 +45,22 @@ export default function OverviewPage() {
         <Card variant="outlined">
             <CardContent>
                 <Stack spacing={2}>
-                    <Typography variant="h5" component="h1">
-                        Overview
-                    </Typography>
                     {status === null ? (
                         <CircularProgress size={24} aria-label="加载中" />
                     ) : (
                         <>
-                            <Row label="Service status">
+                            <Row label="服务状态">
                                 {status.healthy === null ? (
-                                    <Chip label="Unreachable" color="error" size="small" />
+                                    <Chip label="无法连接" color="error" size="small" />
                                 ) : (
                                     <Chip
-                                        label={status.healthy ? 'Running' : 'Degraded'}
+                                        label={status.healthy ? '运行中' : '异常'}
                                         color={status.healthy ? 'success' : 'warning'}
                                         size="small"
                                     />
                                 )}
                             </Row>
-                            <Row label="Version">
+                            <Row label="版本">
                                 <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
                                     {status.version ?? '-'}
                                 </Typography>

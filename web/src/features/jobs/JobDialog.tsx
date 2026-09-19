@@ -236,12 +236,12 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
 
     return (
         <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
-            <DialogTitle>{job === null ? 'Create Job' : 'Edit Job'}</DialogTitle>
+            <DialogTitle>{job === null ? '创建同步任务' : '编辑同步任务'}</DialogTitle>
             <DialogContent>
                 <Stack spacing={2} sx={{ pt: 1 }}>
                     {error !== null && <Alert severity="error">{error}</Alert>}
                     <TextField
-                        label="Name"
+                        label="名称"
                         value={name}
                         onChange={e => setName(e.target.value)}
                         required
@@ -249,27 +249,27 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
                     />
                     <TextField
                         select
-                        label="Source"
+                        label="同步源"
                         value={sourceId}
                         onChange={e => setSourceId(e.target.value)}
                         required
-                        helperText="Remote files are pulled from this source"
+                        helperText="从此同步源拉取远端文件"
                     >
                         {sources.map(source => (
                             <MenuItem key={source.id} value={source.id}>
                                 {source.name}
-                                {source.enabled ? '' : ' (disabled)'}
+                                {source.enabled ? '' : '（已停用）'}
                             </MenuItem>
                         ))}
                     </TextField>
                     <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-start' }}>
                         <TextField
-                            label="Remote Root"
+                            label="远端根目录"
                             value={remoteRoot}
                             onChange={e => setRemoteRoot(e.target.value)}
                             required
                             placeholder="/photos"
-                            helperText="Absolute remote path to sync from, e.g. / or /backup/docs"
+                            helperText="要同步的远端绝对路径，例如 / 或 /backup/docs"
                             sx={{ flexGrow: 1, '& input': { fontFamily: 'monospace' } }}
                         />
                         <Button
@@ -277,96 +277,96 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
                             onClick={() => setPickerOpen(true)}
                             sx={{ mt: 1, flexShrink: 0 }}
                         >
-                            Browse...
+                            浏览…
                         </Button>
                     </Box>
                     <TextField
-                        label="Local Root"
+                        label="本地根目录"
                         value={localRoot}
                         onChange={e => setLocalRoot(e.target.value)}
                         required
                         placeholder="/data/photos"
-                        helperText="Existing local directory; must not overlap other jobs"
+                        helperText="现有本地目录，不能与其他同步任务重叠"
                         sx={{ '& input': { fontFamily: 'monospace' } }}
                     />
                     <TextField
                         select
-                        label="Mode"
+                        label="同步模式"
                         value={mode}
                         onChange={e => setMode(e.target.value as JobMode)}
-                        helperText="Mirror deletes local files that disappeared remotely (managed only)"
+                        helperText="镜像会删除远端已消失的受管理本地文件"
                     >
-                        <MenuItem value="copy">Copy — never deletes local files</MenuItem>
-                        <MenuItem value="mirror">Mirror — removes managed local files</MenuItem>
+                        <MenuItem value="copy">复制 — 不删除本地文件</MenuItem>
+                        <MenuItem value="mirror">镜像 — 删除受管理本地文件</MenuItem>
                     </TextField>
                     <TextField
-                        label="Include Patterns"
+                        label="包含规则"
                         value={includeText}
                         onChange={e => setIncludeText(e.target.value)}
                         multiline
                         minRows={3}
                         placeholder="**/*.jpg"
-                        helperText="One glob per line; relative to Remote Root; empty includes all"
+                        helperText="每行一个 glob，相对远端根目录；留空包含全部"
                         sx={{ '& textarea': { fontFamily: 'monospace' } }}
                     />
                     <TextField
-                        label="Exclude Patterns"
+                        label="排除规则"
                         value={excludeText}
                         onChange={e => setExcludeText(e.target.value)}
                         multiline
                         minRows={3}
                         placeholder="tmp/**"
-                        helperText="One glob per line; exclude always wins over include"
+                        helperText="每行一个 glob；排除规则优先于包含规则"
                         sx={{ '& textarea': { fontFamily: 'monospace' } }}
                     />
                     <TextField
                         select
-                        label="Schedule"
+                        label="运行计划"
                         value={scheduleType}
                         onChange={e => setScheduleType(e.target.value as ScheduleType)}
-                        helperText="Automatic triggers run with the same safety rules as manual runs"
+                        helperText="自动触发与手动运行遵循相同的安全规则"
                     >
-                        <MenuItem value="manual">Manual — run only on demand</MenuItem>
-                        <MenuItem value="once">Once — at a specific time</MenuItem>
-                        <MenuItem value="interval">Interval — every fixed period</MenuItem>
-                        <MenuItem value="cron">Cron — 5-field expression</MenuItem>
+                        <MenuItem value="manual">手动 — 仅按需运行</MenuItem>
+                        <MenuItem value="once">单次 — 在指定时间运行</MenuItem>
+                        <MenuItem value="interval">间隔 — 按固定周期运行</MenuItem>
+                        <MenuItem value="cron">Cron — 五段表达式</MenuItem>
                     </TextField>
                     {scheduleType === 'once' && (
                         <TextField
-                            label="Run At"
+                            label="运行时间"
                             type="datetime-local"
                             slotProps={{ input: { inputProps: { step: 1 } } }}
                             value={onceAt}
                             onChange={e => setOnceAt(e.target.value)}
-                            helperText="Missed runs execute once when the service is back"
+                            helperText="服务恢复后会补跑一次错过的任务"
                         />
                     )}
                     {scheduleType === 'interval' && (
                         <TextField
-                            label="Every"
+                            label="间隔"
                             value={intervalEvery}
                             onChange={e => setIntervalEvery(e.target.value)}
                             placeholder="30m"
-                            helperText="Go duration, minimum 1m (e.g. 30m, 6h); phase survives restarts"
+                            helperText="Go 时长，最小 1m（如 30m、6h）；重启后仍保持周期"
                             sx={{ '& input': { fontFamily: 'monospace' } }}
                         />
                     )}
                     {scheduleType === 'cron' && (
                         <>
                             <TextField
-                                label="Cron Expression"
+                                label="Cron 表达式"
                                 value={cronExpression}
                                 onChange={e => setCronExpression(e.target.value)}
                                 placeholder="0 3 * * *"
-                                helperText="Standard 5-field expression (minute hour day month weekday)"
+                                helperText="标准五段表达式（分 时 日 月 周）"
                                 sx={{ '& input': { fontFamily: 'monospace' } }}
                             />
                             <TextField
-                                label="Timezone"
+                                label="时区"
                                 value={cronTimezone}
                                 onChange={e => setCronTimezone(e.target.value)}
                                 placeholder="Asia/Singapore"
-                                helperText="IANA timezone; empty means UTC"
+                                helperText="IANA 时区；留空使用 UTC"
                                 sx={{ '& input': { fontFamily: 'monospace' } }}
                             />
                         </>
@@ -378,20 +378,20 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
                                 onChange={e => setEnabled(e.target.checked)}
                             />
                         }
-                        label="Enabled"
+                        label="启用"
                     />
                 </Stack>
             </DialogContent>
             <DialogActions>
                 <Button onClick={onClose} disabled={saving}>
-                    Cancel
+                    取消
                 </Button>
                 <Button
                     onClick={() => void handleSave()}
                     variant="contained"
                     disabled={saving || !canSave}
                 >
-                    {saving ? 'Saving…' : 'Save'}
+                    {saving ? '保存中…' : '保存'}
                 </Button>
             </DialogActions>
             <RemotePathPicker

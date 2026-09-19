@@ -18,9 +18,9 @@ function managedBadge(managed: boolean | undefined) {
         return null
     }
     return managed ? (
-        <Chip size="small" color="primary" label="managed" variant="outlined" />
+        <Chip size="small" color="primary" label="受管理" variant="outlined" />
     ) : (
-        <Chip size="small" label="unmanaged" variant="outlined" />
+        <Chip size="small" label="未管理" variant="outlined" />
     )
 }
 
@@ -85,10 +85,12 @@ export default function LocalFileBrowser({ onChanged }: { onChanged?: () => void
         )
     }
     if (loadError !== null) {
-        return <Box sx={{ color: 'error.main' }}>加载 Job 失败：{loadError}</Box>
+        return <Box sx={{ color: 'error.main' }}>加载同步任务失败：{loadError}</Box>
     }
     if (jobs !== null && jobs.length === 0) {
-        return <Box sx={{ color: 'text.secondary' }}>尚未创建同步 Job；请先在 Jobs 页面添加。</Box>
+        return (
+            <Box sx={{ color: 'text.secondary' }}>尚未创建同步任务；请先在“同步任务”页面添加。</Box>
+        )
     }
 
     return (
@@ -97,7 +99,7 @@ export default function LocalFileBrowser({ onChanged }: { onChanged?: () => void
                 <TextField
                     select
                     size="small"
-                    label="Job"
+                    label="同步任务"
                     value={jobId}
                     onChange={event => setJobId(event.target.value)}
                     sx={{ minWidth: 280 }}
@@ -113,7 +115,7 @@ export default function LocalFileBrowser({ onChanged }: { onChanged?: () => void
                     disabled={running || jobId === ''}
                     onClick={() => void triggerRun()}
                 >
-                    {running ? 'Triggering…' : 'Run sync now'}
+                    {running ? '正在触发…' : '立即同步'}
                 </Button>
             </Stack>
             {actionError !== null && <Box sx={{ color: 'error.main', mb: 1 }}>{actionError}</Box>}
@@ -130,7 +132,7 @@ export default function LocalFileBrowser({ onChanged }: { onChanged?: () => void
                                     variant="text"
                                     onClick={() => setPublishTarget(entry)}
                                 >
-                                    Publish
+                                    发布
                                 </Button>
                             )}
                         </Stack>

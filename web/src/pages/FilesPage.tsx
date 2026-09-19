@@ -1,4 +1,4 @@
-import { Box, Tab, Tabs, Typography } from '@mui/material'
+import { Box, Tab, Tabs } from '@mui/material'
 import { useState } from 'react'
 import LocalFileBrowser from '../features/files/LocalFileBrowser'
 import PublishedPanel from '../features/files/PublishedPanel'
@@ -14,17 +14,14 @@ export default function FilesPage() {
 
     return (
         <Box>
-            <Typography variant="h5" component="h1" sx={{ mb: 2, fontWeight: 600 }}>
-                Files
-            </Typography>
             <Tabs
                 value={tab}
                 onChange={(_, value: 'remote' | 'local' | 'published') => setTab(value)}
                 sx={{ mb: 2 }}
             >
-                <Tab value="remote" label="Remote" />
-                <Tab value="local" label="Local" />
-                <Tab value="published" label="Published" />
+                <Tab value="remote" label="远端文件" />
+                <Tab value="local" label="本地文件" />
+                <Tab value="published" label="已发布" />
             </Tabs>
             {tab === 'remote' && <RemoteFileBrowser />}
             {tab === 'local' && <LocalFileBrowser onChanged={() => setPublishNonce(n => n + 1)} />}

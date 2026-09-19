@@ -52,9 +52,9 @@ export default function DeleteSourceDialog({
 
     return (
         <Dialog open={source !== null} onClose={onClose} maxWidth="xs" fullWidth>
-            <DialogTitle>Delete Source?</DialogTitle>
+            <DialogTitle>删除同步源？</DialogTitle>
             <DialogContent>
-                <Typography>Delete “{source?.name}”? This does not delete remote files.</Typography>
+                <Typography>确认删除“{source?.name}”？不会删除远端文件。</Typography>
                 {error !== null && (
                     <Alert severity="error" sx={{ mt: 2 }}>
                         {error}
@@ -63,7 +63,7 @@ export default function DeleteSourceDialog({
             </DialogContent>
             <DialogActions>
                 <Button onClick={onClose} disabled={deleting}>
-                    Cancel
+                    取消
                 </Button>
                 <Button
                     color="error"
@@ -71,7 +71,7 @@ export default function DeleteSourceDialog({
                     disabled={deleting}
                     onClick={() => void handleDelete()}
                 >
-                    {deleting ? 'Deleting…' : 'Delete'}
+                    {deleting ? '删除中…' : '删除'}
                 </Button>
             </DialogActions>
         </Dialog>

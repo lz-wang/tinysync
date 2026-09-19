@@ -73,7 +73,7 @@ export default function LoginPage() {
                             fullWidth
                             required
                             type="password"
-                            label="Password"
+                            label="密码"
                             autoComplete="current-password"
                             value={password}
                             onChange={event => setPassword(event.target.value)}
@@ -91,7 +91,7 @@ export default function LoginPage() {
                             type="submit"
                             disabled={password === '' || submitting}
                         >
-                            {submitting ? '登录中…' : 'Login'}
+                            {submitting ? '登录中…' : '登录'}
                         </Button>
                     </Box>
                     <Typography

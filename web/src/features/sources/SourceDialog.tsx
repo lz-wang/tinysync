@@ -180,9 +180,9 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
         }
         const configured = isSecretConfigured(source, key)
         if (secretsCleared.has(key)) {
-            return { configured, label: 'Will be cleared on save' }
+            return { configured, label: '保存后将清除' }
         }
-        return { configured, label: configured ? 'Configured' : 'Not set' }
+        return { configured, label: configured ? '已配置' : '未设置' }
     }
 
     function buildConfig(): SourceConfig {
@@ -295,7 +295,7 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
         return (
             <Chip
                 size="small"
-                label={`${label}: ${state.label ?? 'Not set'}`}
+                label={`${label}：${state.label ?? '未设置'}`}
                 color={secretsCleared.has(key) ? 'warning' : 'default'}
             />
         )
@@ -303,23 +303,23 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
 
     return (
         <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
-            <DialogTitle>{source === null ? 'Create Source' : 'Edit Source'}</DialogTitle>
+            <DialogTitle>{source === null ? '创建同步源' : '编辑同步源'}</DialogTitle>
             <DialogContent>
                 <Stack spacing={2} sx={{ pt: 1 }}>
                     {error !== null && <Alert severity="error">{error}</Alert>}
                     <TextField
-                        label="Name"
+                        label="名称"
                         value={name}
                         onChange={e => setName(e.target.value)}
                         required
                         autoFocus
                     />
                     <FormControl fullWidth>
-                        <InputLabel id="source-type-label">Type</InputLabel>
+                        <InputLabel id="source-type-label">类型</InputLabel>
                         <Select
                             labelId="source-type-label"
                             value={type}
-                            label="Type"
+                            label="类型"
                             disabled={source !== null}
                             onChange={e => setType(e.target.value as SourceType)}
                         >
@@ -330,14 +330,14 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                     </FormControl>
                     {source !== null && (
                         <Typography variant="caption" color="text.secondary">
-                            Source type cannot be changed after creation.
+                            创建后不能修改同步源类型。
                         </Typography>
                     )}
 
                     {type === 'webdav' && (
                         <>
                             <TextField
-                                label="Endpoint"
+                                label="服务地址"
                                 value={webdav.endpoint}
                                 onChange={e => setWebdav({ ...webdav, endpoint: e.target.value })}
                                 required
@@ -345,16 +345,16 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                                 sx={{ '& input': { fontFamily: 'monospace' } }}
                             />
                             <TextField
-                                label="Username"
+                                label="用户名"
                                 value={webdav.username}
                                 onChange={e => setWebdav({ ...webdav, username: e.target.value })}
                             />
                             <SecretField
-                                label="Password"
+                                label="密码"
                                 value={secrets['webdav.password']}
                                 dirty={secretsDirty.has('webdav.password')}
                                 cleared={secretsCleared.has('webdav.password')}
-                                chip={secretChip('webdav.password', 'Password')}
+                                chip={secretChip('webdav.password', '密码')}
                                 onChange={v => setSecret('webdav.password', v)}
                                 onClear={() => clearSecret('webdav.password')}
                             />
@@ -364,28 +364,28 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                     {type === 's3' && (
                         <>
                             <TextField
-                                label="Endpoint (optional, blank = AWS default)"
+                                label="服务地址（可选，留空使用 AWS 默认地址）"
                                 value={s3.endpoint ?? ''}
                                 onChange={e => setS3({ ...s3, endpoint: e.target.value })}
                                 placeholder="https://s3.example.com"
                                 sx={{ '& input': { fontFamily: 'monospace' } }}
                             />
                             <TextField
-                                label="Region"
+                                label="区域"
                                 value={s3.region}
                                 onChange={e => setS3({ ...s3, region: e.target.value })}
                                 required
                                 placeholder="us-east-1"
                             />
                             <TextField
-                                label="Bucket"
+                                label="存储桶"
                                 value={s3.bucket}
                                 onChange={e => setS3({ ...s3, bucket: e.target.value })}
                                 required
                                 sx={{ '& input': { fontFamily: 'monospace' } }}
                             />
                             <TextField
-                                label="Prefix (optional)"
+                                label="前缀（可选）"
                                 value={s3.prefix ?? ''}
                                 onChange={e => setS3({ ...s3, prefix: e.target.value })}
                                 placeholder="tinysync"
@@ -400,21 +400,21 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                                         }
                                     />
                                 }
-                                label="Path style addressing (MinIO / self-hosted)"
+                                label="路径风格寻址（MinIO / 自托管）"
                             />
                             <TextField
-                                label="Access Key"
+                                label="访问密钥"
                                 value={s3.access_key}
                                 onChange={e => setS3({ ...s3, access_key: e.target.value })}
                                 required
                                 sx={{ '& input': { fontFamily: 'monospace' } }}
                             />
                             <SecretField
-                                label="Secret Key"
+                                label="访问密钥密码"
                                 value={secrets['s3.secret_key']}
                                 dirty={secretsDirty.has('s3.secret_key')}
                                 cleared={secretsCleared.has('s3.secret_key')}
-                                chip={secretChip('s3.secret_key', 'Secret Key')}
+                                chip={secretChip('s3.secret_key', '访问密钥密码')}
                                 onChange={v => setSecret('s3.secret_key', v)}
                                 onClear={() => clearSecret('s3.secret_key')}
                             />
@@ -424,26 +424,26 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                     {type === 'sftp' && (
                         <>
                             <TextField
-                                label="Host"
+                                label="主机"
                                 value={sftp.host}
                                 onChange={e => setSftp({ ...sftp, host: e.target.value })}
                                 required
                                 placeholder="nas.example.com"
                             />
                             <TextField
-                                label="Port"
+                                label="端口"
                                 type="number"
                                 value={sftp.port ?? 22}
                                 onChange={e => setSftp({ ...sftp, port: Number(e.target.value) })}
                             />
                             <TextField
-                                label="Username"
+                                label="用户名"
                                 value={sftp.username}
                                 onChange={e => setSftp({ ...sftp, username: e.target.value })}
                                 required
                             />
                             <TextField
-                                label="Remote Root"
+                                label="远端根目录"
                                 value={sftp.remote_root}
                                 onChange={e => setSftp({ ...sftp, remote_root: e.target.value })}
                                 required
@@ -451,11 +451,11 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                                 sx={{ '& input': { fontFamily: 'monospace' } }}
                             />
                             <FormControl fullWidth>
-                                <InputLabel id="sftp-auth-label">Auth Method</InputLabel>
+                                <InputLabel id="sftp-auth-label">认证方式</InputLabel>
                                 <Select
                                     labelId="sftp-auth-label"
                                     value={sftp.auth_method}
-                                    label="Auth Method"
+                                    label="认证方式"
                                     onChange={e =>
                                         setSftp({
                                             ...sftp,
@@ -464,12 +464,12 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                                         })
                                     }
                                 >
-                                    <MenuItem value="password">Password</MenuItem>
-                                    <MenuItem value="private_key">Private Key</MenuItem>
+                                    <MenuItem value="password">密码</MenuItem>
+                                    <MenuItem value="private_key">私钥</MenuItem>
                                 </Select>
                             </FormControl>
                             <TextField
-                                label="Host Key Fingerprint (SHA256)"
+                                label="主机密钥指纹（SHA256）"
                                 value={sftp.host_key_fingerprint}
                                 onChange={e =>
                                     setSftp({ ...sftp, host_key_fingerprint: e.target.value })
@@ -477,36 +477,36 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                                 required
                                 placeholder="SHA256:UC1Dk4I9LLQOV3B8eZ5FlrUUcbbNie4INffe2TDTz3k"
                                 sx={{ '& input': { fontFamily: 'monospace' } }}
-                                helperText="Host key verification is mandatory; connections to unknown hosts fail."
+                                helperText="必须验证主机密钥；未知主机的连接会失败。"
                             />
                             {sftp.auth_method === 'password' ? (
                                 <SecretField
-                                    label="Password"
+                                    label="密码"
                                     value={secrets['sftp.password']}
                                     dirty={secretsDirty.has('sftp.password')}
                                     cleared={secretsCleared.has('sftp.password')}
-                                    chip={secretChip('sftp.password', 'Password')}
+                                    chip={secretChip('sftp.password', '密码')}
                                     onChange={v => setSecret('sftp.password', v)}
                                     onClear={() => clearSecret('sftp.password')}
                                 />
                             ) : (
                                 <>
                                     <SecretField
-                                        label="Private Key (PEM)"
+                                        label="私钥（PEM）"
                                         value={secrets['sftp.private_key']}
                                         dirty={secretsDirty.has('sftp.private_key')}
                                         cleared={secretsCleared.has('sftp.private_key')}
-                                        chip={secretChip('sftp.private_key', 'Private Key')}
+                                        chip={secretChip('sftp.private_key', '私钥')}
                                         onChange={v => setSecret('sftp.private_key', v)}
                                         onClear={() => clearSecret('sftp.private_key')}
                                         multiline
                                     />
                                     <SecretField
-                                        label="Key Passphrase (optional)"
+                                        label="私钥口令（可选）"
                                         value={secrets['sftp.passphrase']}
                                         dirty={secretsDirty.has('sftp.passphrase')}
                                         cleared={secretsCleared.has('sftp.passphrase')}
-                                        chip={secretChip('sftp.passphrase', 'Passphrase')}
+                                        chip={secretChip('sftp.passphrase', '私钥口令')}
                                         onChange={v => setSecret('sftp.passphrase', v)}
                                         onClear={() => clearSecret('sftp.passphrase')}
                                     />
@@ -522,20 +522,20 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                                 onChange={e => setEnabled(e.target.checked)}
                             />
                         }
-                        label="Enabled"
+                        label="启用"
                     />
                 </Stack>
             </DialogContent>
             <DialogActions>
                 <Button onClick={onClose} disabled={saving}>
-                    Cancel
+                    取消
                 </Button>
                 <Button
                     onClick={() => void handleSave()}
                     variant="contained"
                     disabled={saving || !canSave()}
                 >
-                    {saving ? 'Saving…' : 'Save'}
+                    {saving ? '保存中…' : '保存'}
                 </Button>
             </DialogActions>
         </Dialog>
@@ -573,7 +573,7 @@ function SecretField({
                 fullWidth
                 multiline={multiline}
                 rows={multiline ? 4 : undefined}
-                placeholder={!dirty ? 'Leave blank to keep current value' : undefined}
+                placeholder={!dirty ? '留空以保留当前值' : undefined}
                 sx={multiline ? { '& textarea': { fontFamily: 'monospace' } } : undefined}
             />
             <Box
@@ -587,7 +587,7 @@ function SecretField({
                 {chip ?? <Box />}
                 {dirty && !cleared && (
                     <Button size="small" onClick={onClear}>
-                        Clear
+                        清除
                     </Button>
                 )}
             </Box>

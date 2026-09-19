@@ -64,7 +64,7 @@ export default function RunDetailPage() {
                 size="small"
                 sx={{ alignSelf: 'flex-start' }}
             >
-                ← Back to History
+                ← 返回运行历史
             </Button>
             {error !== null && <Alert severity="error">{error}</Alert>}
             {run === null && error === null ? (
@@ -83,22 +83,18 @@ export default function RunDetailPage() {
                                 <SummaryGrid
                                     entries={[
                                         [
-                                            'Trigger',
-                                            run.trigger.charAt(0).toUpperCase() +
-                                                run.trigger.slice(1),
+                                            '触发方式',
+                                            run.trigger === 'manual' ? '手动' : run.trigger,
                                         ],
-                                        ['Scheduled For', formatDateTime(run.scheduled_for, '—')],
-                                        ['Started', formatDateTime(run.started_at, '—')],
-                                        ['Finished', formatDateTime(run.finished_at, '—')],
+                                        ['计划时间', formatDateTime(run.scheduled_for, '—')],
+                                        ['开始时间', formatDateTime(run.started_at, '—')],
+                                        ['结束时间', formatDateTime(run.finished_at, '—')],
+                                        ['耗时', formatDuration(run.started_at, run.finished_at)],
                                         [
-                                            'Duration',
-                                            formatDuration(run.started_at, run.finished_at),
+                                            '文件',
+                                            `共 ${run.stats.files_total} · 新增 ${run.stats.files_created} · 更新 ${run.stats.files_updated} · 删除 ${run.stats.files_deleted} · 跳过 ${run.stats.files_skipped}`,
                                         ],
-                                        [
-                                            'Files',
-                                            `${run.stats.files_total} total · ${run.stats.files_created} created · ${run.stats.files_updated} updated · ${run.stats.files_deleted} deleted · ${run.stats.files_skipped} skipped`,
-                                        ],
-                                        ['Bytes', formatBytes(run.stats.bytes_transferred)],
+                                        ['传输量', formatBytes(run.stats.bytes_transferred)],
                                     ]}
                                 />
                                 {run.error !== undefined && run.error !== '' && (
@@ -114,17 +110,13 @@ export default function RunDetailPage() {
                     <Card variant="outlined">
                         <CardContent>
                             <Stack spacing={1.5}>
-                                <Typography variant="h6" component="h2">
-                                    Changes
-                                </Typography>
                                 <Typography variant="caption" color="text.secondary">
-                                    {itemTotal} file change{itemTotal === 1 ? '' : 's'} recorded
-                                    (unchanged files are not listed)
+                                    共记录 {itemTotal} 个文件变更（未变化的文件不显示）
                                 </Typography>
                                 <Divider />
                                 {items.length === 0 ? (
                                     <Typography variant="body2" color="text.secondary">
-                                        No file changes in this run.
+                                        本次运行没有文件变更。
                                     </Typography>
                                 ) : (
                                     <Stack spacing={1}>

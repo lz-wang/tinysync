@@ -84,13 +84,13 @@ export default function RemotePathPicker({
 
     return (
         <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
-            <DialogTitle>Browse remote directories</DialogTitle>
+            <DialogTitle>浏览远端目录</DialogTitle>
             <DialogContent>
                 {boundSourceId === undefined && (
                     <TextField
                         select
                         size="small"
-                        label="Source"
+                        label="同步源"
                         value={pickedSourceId}
                         onChange={event => setPickedSourceId(event.target.value)}
                         sx={{ minWidth: 260, mb: 2 }}
@@ -113,8 +113,8 @@ export default function RemotePathPicker({
                 ) : (
                     <Typography variant="body2" color="text.secondary">
                         {boundSourceId !== undefined
-                            ? '当前 Job 尚未选择 Source；请先选择 Source 再浏览。'
-                            : '尚未创建 Source；请先在 Sources 页面添加。'}
+                            ? '当前同步任务尚未选择同步源；请先选择同步源再浏览。'
+                            : '尚未创建同步源；请先在“同步源”页面添加。'}
                     </Typography>
                 )}
             </DialogContent>
@@ -126,9 +126,9 @@ export default function RemotePathPicker({
                 >
                     {currentPath}
                 </Typography>
-                <Button onClick={onClose}>Cancel</Button>
+                <Button onClick={onClose}>取消</Button>
                 <Button onClick={confirm} variant="contained" disabled={activeSourceId === ''}>
-                    Use this directory
+                    使用此目录
                 </Button>
             </DialogActions>
         </Dialog>

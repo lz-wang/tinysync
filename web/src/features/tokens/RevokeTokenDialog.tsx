@@ -47,7 +47,7 @@ export default function RevokeTokenDialog({ token, onClose, onRevoked }: RevokeT
 
     return (
         <Dialog open={token !== null} onClose={onClose} maxWidth="xs" fullWidth>
-            <DialogTitle>Revoke Token?</DialogTitle>
+            <DialogTitle>撤销 Token？</DialogTitle>
             <DialogContent>
                 <Typography>
                     撤销「{token?.name}」后，使用该 token 的自动化将立即收到 401。此操作不可恢复，
@@ -61,7 +61,7 @@ export default function RevokeTokenDialog({ token, onClose, onRevoked }: RevokeT
             </DialogContent>
             <DialogActions>
                 <Button onClick={onClose} disabled={revoking}>
-                    Cancel
+                    取消
                 </Button>
                 <Button
                     color="error"
@@ -69,7 +69,7 @@ export default function RevokeTokenDialog({ token, onClose, onRevoked }: RevokeT
                     disabled={revoking}
                     onClick={() => void handleRevoke()}
                 >
-                    {revoking ? 'Revoking…' : 'Revoke'}
+                    {revoking ? '撤销中…' : '撤销'}
                 </Button>
             </DialogActions>
         </Dialog>

@@ -59,7 +59,7 @@ export default function PublishedPanel() {
     if (policies !== null && policies.length === 0) {
         return (
             <Typography variant="body2" color="text.secondary">
-                尚未发布任何文件；在 Local 视图中选择 managed 文件后点击 Publish。
+                尚未发布任何文件；请在“本地文件”中选择受管理文件后点击“发布”。
             </Typography>
         )
     }
@@ -105,11 +105,11 @@ export default function PublishedPanel() {
             <Table size="small">
                 <TableHead>
                     <TableRow>
-                        <TableCell>Public Path</TableCell>
-                        <TableCell>Local File</TableCell>
-                        <TableCell>Enabled</TableCell>
-                        <TableCell>Expires</TableCell>
-                        <TableCell align="right">Actions</TableCell>
+                        <TableCell>公开路径</TableCell>
+                        <TableCell>本地文件</TableCell>
+                        <TableCell>启用</TableCell>
+                        <TableCell>过期时间</TableCell>
+                        <TableCell align="right">操作</TableCell>
                     </TableRow>
                 </TableHead>
                 <TableBody>
@@ -150,18 +150,18 @@ export default function PublishedPanel() {
                             </TableCell>
                             <TableCell align="right">
                                 {copied === policy.id && (
-                                    <Chip size="small" label="copied" sx={{ mr: 1 }} />
+                                    <Chip size="small" label="已复制" sx={{ mr: 1 }} />
                                 )}
                                 <IconButton
                                     size="small"
-                                    aria-label="copy URL"
+                                    aria-label="复制 URL"
                                     onClick={() => void copyURL(policy)}
                                 >
                                     <ContentCopyIcon fontSize="small" />
                                 </IconButton>
                                 <IconButton
                                     size="small"
-                                    aria-label="open URL"
+                                    aria-label="打开 URL"
                                     href={publishedFileURL(policy.public_path)}
                                     target="_blank"
                                     rel="noreferrer"
@@ -170,7 +170,7 @@ export default function PublishedPanel() {
                                 </IconButton>
                                 <IconButton
                                     size="small"
-                                    aria-label="delete policy"
+                                    aria-label="删除发布规则"
                                     onClick={() => {
                                         void deletePublished(policy.id).then(reload)
                                     }}

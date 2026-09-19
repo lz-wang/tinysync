@@ -19,7 +19,7 @@ import type { APITokenScope, CreateAPITokenInput } from '../../api'
 // scopeOptions 是可选 scope 及说明；admin 蕴含 read + run。
 const scopeOptions: Array<{ value: APITokenScope; label: string; hint: string }> = [
     { value: 'read', label: 'read', hint: '查询与下载' },
-    { value: 'run', label: 'run', hint: '手动触发 Job' },
+    { value: 'run', label: 'run', hint: '手动触发同步任务' },
     { value: 'admin', label: 'admin', hint: '全部权限（含 read + run）' },
 ]
 
@@ -78,14 +78,14 @@ export default function CreateTokenDialog({ open, onClose, onCreated }: CreateTo
     return (
         <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth>
             <Box component="form" onSubmit={handleSubmit}>
-                <DialogTitle>Create API Token</DialogTitle>
+                <DialogTitle>创建 API Token</DialogTitle>
                 <DialogContent>
                     <Stack spacing={2} sx={{ pt: 1 }}>
                         <TextField
                             autoFocus
                             required
                             fullWidth
-                            label="Name"
+                            label="名称"
                             value={name}
                             onChange={event => setName(event.target.value)}
                             disabled={submitting}
@@ -124,7 +124,7 @@ export default function CreateTokenDialog({ open, onClose, onCreated }: CreateTo
                         <TextField
                             fullWidth
                             type="datetime-local"
-                            label="Expires at（留空永不过期）"
+                            label="过期时间（留空永不过期）"
                             value={expiresAt}
                             onChange={event => setExpiresAt(event.target.value)}
                             disabled={submitting}
@@ -135,14 +135,14 @@ export default function CreateTokenDialog({ open, onClose, onCreated }: CreateTo
                 </DialogContent>
                 <DialogActions>
                     <Button onClick={onClose} disabled={submitting}>
-                        Cancel
+                        取消
                     </Button>
                     <Button
                         type="submit"
                         variant="contained"
                         disabled={name.trim() === '' || scopes.length === 0 || submitting}
                     >
-                        {submitting ? 'Creating…' : 'Create'}
+                        {submitting ? '创建中…' : '创建'}
                     </Button>
                 </DialogActions>
             </Box>

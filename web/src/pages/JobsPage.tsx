@@ -68,15 +68,15 @@ function formatDateTime(value?: string): string {
 function formatSchedule(schedule: ScheduleSpec): string {
     switch (schedule.type) {
         case 'once':
-            return `Once · ${formatDateTime(schedule.at)}`
+            return `单次 · ${formatDateTime(schedule.at)}`
         case 'interval':
-            return `Every ${schedule.every ?? '?'}`
+            return `每隔 ${schedule.every ?? '?'}`
         case 'cron':
             return schedule.timezone !== undefined && schedule.timezone !== ''
                 ? `Cron · ${schedule.expression} (${schedule.timezone})`
                 : `Cron · ${schedule.expression ?? '?'}`
         default:
-            return 'Manual'
+            return '手动'
     }
 }
 
@@ -219,9 +219,6 @@ export default function JobsPage() {
                                 justifyContent: 'space-between',
                             }}
                         >
-                            <Typography variant="h5" component="h1">
-                                Jobs
-                            </Typography>
                             <Button
                                 variant="contained"
                                 onClick={() => {
@@ -229,7 +226,7 @@ export default function JobsPage() {
                                     setDialogOpen(true)
                                 }}
                             >
-                                Add Job
+                                添加任务
                             </Button>
                         </Box>
                         {loadError !== null && (
@@ -304,7 +301,7 @@ function JobTable({
     if (jobs.length === 0) {
         return (
             <Typography variant="body2" color="text.secondary">
-                No jobs configured yet. Click “Add Job” to set up a sync from a source.
+                尚未配置同步任务。点击“添加任务”创建同步配置。
             </Typography>
         )
     }
@@ -313,14 +310,14 @@ function JobTable({
             <Table size="small">
                 <TableHead>
                     <TableRow>
-                        <TableCell>Name</TableCell>
-                        <TableCell>Source</TableCell>
-                        <TableCell>Mode</TableCell>
-                        <TableCell>Schedule</TableCell>
-                        <TableCell>Last Run</TableCell>
-                        <TableCell>Next Run</TableCell>
-                        <TableCell>Run</TableCell>
-                        <TableCell align="right">Actions</TableCell>
+                        <TableCell>名称</TableCell>
+                        <TableCell>同步源</TableCell>
+                        <TableCell>模式</TableCell>
+                        <TableCell>计划</TableCell>
+                        <TableCell>最近运行</TableCell>
+                        <TableCell>下次运行</TableCell>
+                        <TableCell>运行</TableCell>
+                        <TableCell align="right">操作</TableCell>
                     </TableRow>
                 </TableHead>
                 <TableBody>
@@ -343,7 +340,7 @@ function JobTable({
                                         sx={{ alignItems: 'center' }}
                                     >
                                         {!job.enabled && (
-                                            <Chip label="Off" size="small" color="default" />
+                                            <Chip label="已停用" size="small" color="default" />
                                         )}
                                         <Typography variant="body2">
                                             {formatSchedule(job.schedule)}
@@ -376,7 +373,7 @@ function JobTable({
                                             disabled={running}
                                             onClick={() => onEdit(job)}
                                         >
-                                            Edit
+                                            编辑
                                         </Button>
                                         <Button
                                             size="small"
@@ -384,7 +381,7 @@ function JobTable({
                                             disabled={running}
                                             onClick={() => onDelete(job)}
                                         >
-                                            Delete
+                                            删除
                                         </Button>
                                     </Stack>
                                 </TableCell>
@@ -401,7 +398,7 @@ function JobTable({
 function ModeChip({ mode }: { mode: JobMode }) {
     return (
         <Chip
-            label={mode === 'mirror' ? 'Mirror' : 'Copy'}
+            label={mode === 'mirror' ? '镜像' : '复制'}
             color={mode === 'mirror' ? 'warning' : 'default'}
             size="small"
         />
@@ -422,7 +419,7 @@ function RunCell({
     return (
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <Button size="small" variant="outlined" disabled={!enabled || running} onClick={onRun}>
-                Run Now
+                立即运行
             </Button>
             {running && <CircularProgress size={16} aria-label="运行中" />}
         </Box>
@@ -433,21 +430,21 @@ function RunStateCaption({ status }: { status: RunStatusResponse | undefined }) 
     if (status === undefined || status.state === 'idle') {
         return (
             <Typography variant="caption" color="text.secondary">
-                Not run yet
+                尚未运行
             </Typography>
         )
     }
     if (status.state === 'running') {
         return (
             <Typography variant="caption" color="text.secondary">
-                Running…
+                运行中…
             </Typography>
         )
     }
     if (status.state === 'skipped') {
         return (
             <Box>
-                <Chip label="Skipped" color="default" size="small" />
+                <Chip label="已跳过" color="default" size="small" />
                 {status.error !== undefined && (
                     <Typography
                         variant="caption"
@@ -463,7 +460,7 @@ function RunStateCaption({ status }: { status: RunStatusResponse | undefined }) 
     if (status.state === 'failed') {
         return (
             <Box>
-                <Chip label="Failed" color="error" size="small" />
+                <Chip label="失败" color="error" size="small" />
                 {status.error !== undefined && (
                     <Typography
                         variant="caption"
@@ -479,9 +476,9 @@ function RunStateCaption({ status }: { status: RunStatusResponse | undefined }) 
     const stats = status.stats
     return (
         <Box>
-            <Chip label="Succeeded" color="success" size="small" />
+            <Chip label="成功" color="success" size="small" />
             <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
-                {`${stats.files_total} total · ${stats.files_created} new · ${stats.files_updated} updated · ${stats.files_deleted} deleted · ${stats.files_skipped} skipped · ${formatBytes(stats.bytes_transferred)}`}
+                {`共 ${stats.files_total} 个 · 新增 ${stats.files_created} · 更新 ${stats.files_updated} · 删除 ${stats.files_deleted} · 跳过 ${stats.files_skipped} · ${formatBytes(stats.bytes_transferred)}`}
             </Typography>
         </Box>
     )

@@ -17,12 +17,12 @@ function tokenStatus(token: APITokenResponse): {
     color: 'success' | 'warning' | 'error'
 } {
     if (token.revoked_at !== '') {
-        return { label: 'Revoked', color: 'error' }
+        return { label: '已撤销', color: 'error' }
     }
     if (token.expires_at !== '' && new Date(token.expires_at).getTime() <= Date.now()) {
-        return { label: 'Expired', color: 'warning' }
+        return { label: '已过期', color: 'warning' }
     }
-    return { label: 'Active', color: 'success' }
+    return { label: '有效', color: 'success' }
 }
 
 function formatTime(value: string): string {
@@ -73,21 +73,14 @@ export default function TokensPage() {
                         direction="row"
                         sx={{ alignItems: 'center', justifyContent: 'space-between' }}
                     >
-                        <Typography variant="h5" component="h1">
-                            API Tokens
-                        </Typography>
                         <Button variant="contained" onClick={() => setCreateOpen(true)}>
-                            Create Token
+                            创建 API Token
                         </Button>
                     </Stack>
-                    <Typography variant="body2" color="text.secondary">
-                        Token 以 <code>Authorization: Bearer</code> 方式访问 REST API。scope 与
-                        过期时间创建后不可变；如需变更请撤销后重新创建。
-                    </Typography>
                     {loadError !== null && <Alert severity="error">{loadError}</Alert>}
                     {tokens !== null && tokens.length === 0 && (
                         <Typography variant="body2" color="text.secondary">
-                            尚无 API Token，点击 Create Token 为自动化脚本创建一个。
+                            尚无 API Token，点击“创建 API Token”为自动化脚本创建一个。
                         </Typography>
                     )}
                     {tokens?.map(token => (
@@ -149,7 +142,7 @@ export default function TokensPage() {
                                         color="error"
                                         onClick={() => setRevokeTarget(token)}
                                     >
-                                        Revoke
+                                        撤销
                                     </Button>
                                 )}
                             </Stack>

@@ -29,7 +29,7 @@ export default function RawTokenDialog({ token, onClose }: RawTokenDialogProps) 
 
     return (
         <Dialog open={token !== null} onClose={onClose} maxWidth="sm" fullWidth>
-            <DialogTitle>Token 已创建</DialogTitle>
+            <DialogTitle>API Token 已创建</DialogTitle>
             <DialogContent>
                 <Alert severity="warning" sx={{ mb: 2 }}>
                     这是一次性展示：「{token?.name}」的完整 token 关闭本窗口后将无法再次查看，
@@ -53,7 +53,7 @@ export default function RawTokenDialog({ token, onClose }: RawTokenDialogProps) 
                     onClick={() => void handleCopy()}
                     disabled={token === null}
                 >
-                    {copied ? '已复制' : 'Copy'}
+                    {copied ? '已复制' : '复制'}
                 </Button>
                 <Button variant="contained" onClick={onClose}>
                     我已保存，关闭

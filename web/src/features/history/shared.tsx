@@ -54,15 +54,15 @@ export function runStateChipProps(state: RunState): {
 } {
     switch (state) {
         case 'succeeded':
-            return { label: 'Succeeded', color: 'success' }
+            return { label: '成功', color: 'success' }
         case 'failed':
-            return { label: 'Failed', color: 'error' }
+            return { label: '失败', color: 'error' }
         case 'running':
-            return { label: 'Running', color: 'info' }
+            return { label: '运行中', color: 'info' }
         case 'skipped':
-            return { label: 'Skipped', color: 'warning' }
+            return { label: '已跳过', color: 'warning' }
         default:
-            return { label: 'Idle', color: 'default' }
+            return { label: '空闲', color: 'default' }
     }
 }
 

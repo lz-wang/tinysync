@@ -135,9 +135,6 @@ export default function SourcesPage() {
                                 justifyContent: 'space-between',
                             }}
                         >
-                            <Typography variant="h5" component="h1">
-                                Sources
-                            </Typography>
                             <Button
                                 variant="contained"
                                 onClick={() => {
@@ -145,7 +142,7 @@ export default function SourcesPage() {
                                     setDialogOpen(true)
                                 }}
                             >
-                                Add Source
+                                添加同步源
                             </Button>
                         </Box>
                         {loadError !== null && <Alert severity="error">{loadError}</Alert>}
@@ -200,8 +197,7 @@ function SourceTable({
     if (sources.length === 0) {
         return (
             <Typography variant="body2" color="text.secondary">
-                No sources configured yet. Click “Add Source” to connect a WebDAV, S3 or SFTP
-                server.
+                尚未配置同步源。点击“添加同步源”连接 WebDAV、S3 或 SFTP 服务器。
             </Typography>
         )
     }
@@ -210,13 +206,13 @@ function SourceTable({
             <Table size="small">
                 <TableHead>
                     <TableRow>
-                        <TableCell>Name</TableCell>
-                        <TableCell>Type</TableCell>
-                        <TableCell>Location</TableCell>
-                        <TableCell align="right">Credential</TableCell>
-                        <TableCell align="right">Enabled</TableCell>
-                        <TableCell>Connection</TableCell>
-                        <TableCell align="right">Actions</TableCell>
+                        <TableCell>名称</TableCell>
+                        <TableCell>类型</TableCell>
+                        <TableCell>位置</TableCell>
+                        <TableCell align="right">凭据</TableCell>
+                        <TableCell align="right">启用</TableCell>
+                        <TableCell>连接</TableCell>
+                        <TableCell align="right">操作</TableCell>
                     </TableRow>
                 </TableHead>
                 <TableBody>
@@ -230,7 +226,7 @@ function SourceTable({
                             <TableCell align="right">{credentialSummary(source)}</TableCell>
                             <TableCell align="right">
                                 <Chip
-                                    label={source.enabled ? 'On' : 'Off'}
+                                    label={source.enabled ? '已启用' : '已停用'}
                                     color={source.enabled ? 'success' : 'default'}
                                     size="small"
                                 />
@@ -249,17 +245,17 @@ function SourceTable({
                                         disabled={testStates[source.id]?.status === 'testing'}
                                         onClick={() => onTest(source.id)}
                                     >
-                                        Test
+                                        测试
                                     </Button>
                                     <Button size="small" onClick={() => onEdit(source)}>
-                                        Edit
+                                        编辑
                                     </Button>
                                     <Button
                                         size="small"
                                         color="error"
                                         onClick={() => onDelete(source)}
                                     >
-                                        Delete
+                                        删除
                                     </Button>
                                 </Stack>
                             </TableCell>
@@ -314,28 +310,28 @@ function credentialSummary(source: SourceResponse): string {
         (state.sftp?.password_set ?? false) ||
         (state.sftp?.private_key_set ?? false)
     if (!configured) {
-        return source.type === 'webdav' ? 'Anonymous' : 'Not set'
+        return source.type === 'webdav' ? '匿名访问' : '未设置'
     }
-    return 'Configured'
+    return '已配置'
 }
 
 function TestCell({ state }: { state: TestState | undefined }) {
     if (state === undefined) {
         return (
             <Typography variant="caption" color="text.secondary">
-                Not tested
+                未测试
             </Typography>
         )
     }
     if (state.status === 'testing') {
-        return <CircularProgress size={16} aria-label="Testing connection" />
+        return <CircularProgress size={16} aria-label="正在测试连接" />
     }
     if (state.ok) {
-        return <Chip label={`Success: ${state.latency} ms`} color="success" size="small" />
+        return <Chip label={`成功：${state.latency} ms`} color="success" size="small" />
     }
     return (
         <Box sx={{ maxWidth: 260 }}>
-            <Chip label="Failed" color="error" size="small" />
+            <Chip label="失败" color="error" size="small" />
             {state.error !== undefined && (
                 <Typography variant="caption" color="error" sx={{ display: 'block', mt: 0.5 }}>
                     {state.error}

@@ -57,31 +57,31 @@ export default function PublishDialog({
 
     return (
         <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
-            <DialogTitle>Publish file</DialogTitle>
+            <DialogTitle>发布文件</DialogTitle>
             <DialogContent>
                 <Stack spacing={2} sx={{ mt: 1 }}>
                     {error !== null && <Alert severity="error">{error}</Alert>}
                     <TextField
-                        label="Source file"
+                        label="源文件"
                         value={entryPath}
                         disabled
                         sx={{ '& input': { fontFamily: 'monospace' } }}
-                        helperText="Only managed files can be published"
+                        helperText="仅可发布 TinySync 管理的文件"
                     />
                     <TextField
-                        label="Public Path"
+                        label="公开路径"
                         value={publicPath}
                         onChange={event => setPublicPath(event.target.value)}
                         required
                         sx={{ '& input': { fontFamily: 'monospace' } }}
-                        helperText="Unique path under /published, e.g. /photos/a.jpg"
+                        helperText="/published 下的唯一访问路径，例如 /photos/a.jpg"
                     />
                     <TextField
-                        label="Expires At"
+                        label="过期时间"
                         type="datetime-local"
                         value={expiresAt}
                         onChange={event => setExpiresAt(event.target.value)}
-                        helperText="Empty = never expires"
+                        helperText="留空表示永不过期"
                     />
                     <FormControlLabel
                         control={
@@ -90,16 +90,16 @@ export default function PublishDialog({
                                 onChange={event => setEnabled(event.target.checked)}
                             />
                         }
-                        label="Enabled"
+                        label="启用"
                     />
                 </Stack>
             </DialogContent>
             <DialogActions>
                 <Button onClick={onClose} disabled={saving}>
-                    Cancel
+                    取消
                 </Button>
                 <Button onClick={() => void handleSave()} variant="contained" disabled={saving}>
-                    {saving ? 'Publishing…' : 'Publish'}
+                    {saving ? '发布中…' : '发布'}
                 </Button>
             </DialogActions>
         </Dialog>

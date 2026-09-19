@@ -59,15 +59,12 @@ export default function HistoryPage() {
         <Card variant="outlined">
             <CardContent>
                 <Stack spacing={2}>
-                    <Typography variant="h5" component="h1">
-                        History
-                    </Typography>
                     {error !== null && <Alert severity="error">{error}</Alert>}
                     {runs === null && error === null ? (
                         <CircularProgress size={24} aria-label="加载中" />
                     ) : runs !== null && runs.length === 0 ? (
                         <Typography variant="body2" color="text.secondary">
-                            No sync runs recorded yet. Run a job or wait for a scheduled trigger.
+                            暂无同步记录。请手动运行任务或等待计划触发。
                         </Typography>
                     ) : runs !== null ? (
                         <>
@@ -96,13 +93,13 @@ function RunsTable({ runs }: { runs: RunRecordResponse[] }) {
             <Table size="small">
                 <TableHead>
                     <TableRow>
-                        <TableCell>Time</TableCell>
-                        <TableCell>Job</TableCell>
-                        <TableCell>Trigger</TableCell>
-                        <TableCell>Status</TableCell>
-                        <TableCell>Duration</TableCell>
-                        <TableCell>Changes</TableCell>
-                        <TableCell align="right">Bytes</TableCell>
+                        <TableCell>时间</TableCell>
+                        <TableCell>任务</TableCell>
+                        <TableCell>触发方式</TableCell>
+                        <TableCell>状态</TableCell>
+                        <TableCell>耗时</TableCell>
+                        <TableCell>变更</TableCell>
+                        <TableCell align="right">传输量</TableCell>
                     </TableRow>
                 </TableHead>
                 <TableBody>
@@ -124,7 +121,7 @@ function RunsTable({ runs }: { runs: RunRecordResponse[] }) {
                                         color="text.secondary"
                                         sx={{ display: 'block' }}
                                     >
-                                        for {formatDateTime(run.scheduled_for)}
+                                        计划于 {formatDateTime(run.scheduled_for)}
                                     </Typography>
                                 )}
                             </TableCell>

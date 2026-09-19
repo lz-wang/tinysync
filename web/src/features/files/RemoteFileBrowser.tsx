@@ -50,12 +50,10 @@ export default function RemoteFileBrowser() {
         )
     }
     if (loadError !== null) {
-        return <Box sx={{ color: 'error.main' }}>加载 Source 失败：{loadError}</Box>
+        return <Box sx={{ color: 'error.main' }}>加载同步源失败：{loadError}</Box>
     }
     if (sources !== null && sources.length === 0) {
-        return (
-            <Box sx={{ color: 'text.secondary' }}>尚未创建 Source；请先在 Sources 页面添加。</Box>
-        )
+        return <Box sx={{ color: 'text.secondary' }}>尚未创建同步源；请先在“同步源”页面添加。</Box>
     }
 
     return (
@@ -63,7 +61,7 @@ export default function RemoteFileBrowser() {
             <TextField
                 select
                 size="small"
-                label="Source"
+                label="同步源"
                 value={sourceId}
                 onChange={event => setSourceId(event.target.value)}
                 sx={{ minWidth: 280, mb: 2 }}

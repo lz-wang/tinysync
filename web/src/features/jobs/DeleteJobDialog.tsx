@@ -48,11 +48,9 @@ export default function DeleteJobDialog({ job, onClose, onDeleted }: DeleteJobDi
 
     return (
         <Dialog open={job !== null} onClose={onClose} maxWidth="xs" fullWidth>
-            <DialogTitle>Delete Job?</DialogTitle>
+            <DialogTitle>删除同步任务？</DialogTitle>
             <DialogContent>
-                <Typography>
-                    Delete “{job?.name}”? Downloaded local files are always kept.
-                </Typography>
+                <Typography>确认删除“{job?.name}”？已下载到本地的文件会保留。</Typography>
                 {error !== null && (
                     <Alert severity="error" sx={{ mt: 2 }}>
                         {error}
@@ -61,7 +59,7 @@ export default function DeleteJobDialog({ job, onClose, onDeleted }: DeleteJobDi
             </DialogContent>
             <DialogActions>
                 <Button onClick={onClose} disabled={deleting}>
-                    Cancel
+                    取消
                 </Button>
                 <Button
                     color="error"
@@ -69,7 +67,7 @@ export default function DeleteJobDialog({ job, onClose, onDeleted }: DeleteJobDi
                     disabled={deleting}
                     onClick={() => void handleDelete()}
                 >
-                    {deleting ? 'Deleting…' : 'Delete'}
+                    {deleting ? '删除中…' : '删除'}
                 </Button>
             </DialogActions>
         </Dialog>
