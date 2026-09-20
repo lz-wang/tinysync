@@ -5,8 +5,9 @@
 #
 #	1. tinysync --version 与预期版本一致
 #	2. tinysync version 与预期版本一致
-#	3. 全新 datadir 上 serve 必须 fail-fast 拒绝启动（v0.7 认证边界：
-#	   未初始化 admin 不提供匿名模式）
+#	3. 全新 datadir 首次 serve 自动 bootstrap：初始密码仅在当前终端
+#	   stderr 打印一次、default-deny 边界保持（匿名管理 API 一律 401）、
+#	   初始密码可登录
 #	4. tinysync auth set-password --password-stdin 完成 admin bootstrap
 #	5. 启动 tinysync serve（同一 datadir、独立端口）
 #	6. GET /api/v1/health 公开可读，轮询至就绪且 "status":"ok"
@@ -134,50 +135,43 @@ if [[ "${sub_version}" != "${expected_version}" ]]; then
 fi
 echo "[smoke] version subcommand"
 
-# 3. 全新 datadir：serve 必须 fail-fast 拒绝启动，绝不退化为匿名
-#    管理模式（v0.7 认证边界）。
-"${binary}" serve --datadir "${datadir}" --port "${port}" >uninit.log 2>&1 &
-uninit_pid=$!
-uninit_exited=0
-for _ in {1..30}; do
-	if ! kill -0 "${uninit_pid}" >/dev/null 2>&1; then
-		uninit_exited=1
-		break
-	fi
-	sleep 1
-done
-if [[ "${uninit_exited}" != "1" ]]; then
-	if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
-		taskkill.exe //IM "$(basename "${binary}")" //T //F >/dev/null 2>&1 || true
-	else
-		kill -TERM "${uninit_pid}" >/dev/null 2>&1 || true
-	fi
-	echo "Error: serve on uninitialized datadir did not fail fast" >&2
-	cat uninit.log >&2
+# 3. 全新 datadir：首次 serve 自动 bootstrap——生成高熵初始密码仅在
+#    当前终端 stderr 打印一次，服务正常就绪；认证边界保持 default-deny：
+#    匿名管理 API 一律 401，初始密码可登录。
+"${binary}" serve --datadir "${datadir}" --port "${port}" >serve.log 2>&1 &
+server_pid=$!
+wait_ready serve.log
+initial_password=$(sed -n 's/.*初始管理员密码：\([A-Za-z0-9_-]*\).*/\1/p' serve.log)
+if [[ -z "${initial_password}" ]]; then
+	echo "Error: first serve did not print initial admin password" >&2
+	cat serve.log >&2
 	exit 1
 fi
-uninit_rc=0
-wait "${uninit_pid}" >/dev/null 2>&1 || uninit_rc=$?
-if [[ "${uninit_rc}" -eq 0 ]]; then
-	echo "Error: serve on uninitialized datadir exited 0, want failure" >&2
-	cat uninit.log >&2
+anon_code=$(curl --silent -o anon_bootstrap.json -w '%{http_code}' "${base_url}/api/v1/sources")
+if [[ "${anon_code}" != "401" ]]; then
+	echo "Error: anonymous GET sources status ${anon_code}, want 401 after auto bootstrap" >&2
+	cat anon_bootstrap.json >&2
 	exit 1
 fi
-if ! grep -F 'authentication is not initialized' uninit.log >/dev/null; then
-	echo "Error: uninitialized serve did not report missing admin credential" >&2
-	cat uninit.log >&2
+boot_code=$(curl --silent -o boot_login.json -w '%{http_code}' \
+	-H 'Content-Type: application/json' \
+	--data "{\"password\":\"${initial_password}\"}" \
+	"${base_url}/api/v1/auth/login")
+if [[ "${boot_code}" != "200" ]]; then
+	echo "Error: initial password login status ${boot_code}, want 200" >&2
+	cat boot_login.json >&2
 	exit 1
 fi
-echo "[smoke] uninitialized serve rejected (exit ${uninit_rc})"
+echo "[smoke] first serve auto-bootstrapped, default-deny enforced, initial password accepted"
 
-# 4. auth set-password --password-stdin：完成 admin bootstrap（该命令
-#    自身完成 migration，幂等于 serve 已建的 schema 之上）。
+# 4. auth set-password --password-stdin：把自动生成的初始密码轮换为
+#    smoke 已知密码（替换密码同时废弃全部 Web Session，含第 3 步用
+#    初始密码建立的会话）。
 printf '%s\n' "${smoke_password}" |
 	"${binary}" auth set-password --datadir "${datadir}" --password-stdin
-echo "[smoke] admin password initialized"
+echo "[smoke] admin password rotated from auto bootstrap"
 
-# 5-6. 启动 serve 并等待就绪；health 公开可读（无需凭据）。
-start_server serve.log
+# 5-6. serve 已于第 3 步启动，轮询确认就绪；health 公开可读（无需凭据）。
 wait_ready serve.log
 echo "[smoke] health ok (public)"
 
@@ -288,7 +282,7 @@ echo "[smoke] webdav source created: ${source_id}"
 # 10b. S3 Source：config 单选组 + secret_key；secret 不回显。
 curl --fail --silent -b cookie.jar \
 	-H 'Content-Type: application/json' \
-	--data '{"name":"Smoke S3","type":"s3","config":{"region":"us-east-1","bucket":"smoke-bucket","path_style":true,"access_key":"AKID-SMOKE"},"credentials":{"secret_key":"S3cret-Key"}}' \
+	--data '{"name":"Smoke S3","type":"s3","config":{"endpoint":"http://127.0.0.1:1","region":"us-east-1","bucket":"smoke-bucket","path_style":true,"access_key":"AKID-SMOKE"},"credentials":{"secret_key":"S3cret-Key"}}' \
 	"${base_url}/api/v1/sources" >source_s3.json
 grep -F '"s3":{"secret_key_set":true}' source_s3.json >/dev/null || {
 	echo "Error: s3 source creation failed" >&2
