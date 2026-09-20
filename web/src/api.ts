@@ -602,71 +602,78 @@ export function localFileDownloadURL(jobId: string, path: string): string {
     return `/api/v1/jobs/${jobId}/files/download?path=${encodeURIComponent(path)}`
 }
 
-// ===== 发布策略（v0.6）=====
+// ===== 共享策略（v0.10）=====
 
-// PublishedFileResponse 是发布策略的 API 表示；expires_at 为空串
-// 表示永不过期。
-export interface PublishedFileResponse {
+// ShareResponse 是共享策略的 API 表示：name 为自定义共享名称
+// （null 表示未命名，展示回落目标名）；expires_at 空串表示永不过期。
+export interface ShareResponse {
     id: string
     local_path: string
-    public_path: string
+    slug: string
+    name: string | null
+    is_dir: boolean
     enabled: boolean
     expires_at: string
     created_at: string
     updated_at: string
 }
 
-// PublishedFilesListResponse 对应 GET /api/v1/published-files。
-export interface PublishedFilesListResponse {
-    published_files: PublishedFileResponse[]
+// SharesListResponse 对应 GET /api/v1/shares。
+export interface SharesListResponse {
+    shares: ShareResponse[]
 }
 
-// CreatePublishedInput 对应 POST /api/v1/published-files：目标以
-// job_id + LocalRoot 内逻辑路径表达。
-export interface CreatePublishedInput {
+// CreateShareInput 对应 POST /api/v1/shares：目标以 job_id +
+// LocalRoot 内逻辑路径表达（"/" 即整个本地根）；name 为可选的自定义
+// 共享名称（即 URL slug，留空随机生成）。
+export interface CreateShareInput {
     job_id: string
     path: string
-    public_path: string
+    name?: string
     enabled?: boolean
     expires_at?: string
 }
 
-// UpdatePublishedInput 对应 PATCH：expires_at 三态——undefined 保留、
-// null 清除（永不过期）、RFC3339 字符串设置。
-export interface UpdatePublishedInput {
-    public_path?: string
+// UpdateShareInput 对应 PATCH：name 三态——undefined 保留、空串清除
+// 自定义名称（slug 不变）、非空同时改写 slug（旧公开链接立即失效）；
+// expires_at 三态——undefined 保留、null 清除（永不过期）、RFC3339
+// 字符串设置。
+export interface UpdateShareInput {
+    name?: string
     enabled?: boolean
     expires_at?: string | null
 }
 
-// listPublished 返回全部发布策略。
-export function listPublished(): Promise<PublishedFileResponse[]> {
-    return getJSON<PublishedFilesListResponse>('/api/v1/published-files').then(
-        body => body.published_files,
-    )
+// listShares 返回全部共享策略。
+export function listShares(): Promise<ShareResponse[]> {
+    return getJSON<SharesListResponse>('/api/v1/shares').then(body => body.shares)
 }
 
-// createPublished 创建发布策略。
-export function createPublished(input: CreatePublishedInput): Promise<PublishedFileResponse> {
-    return requestJSON<PublishedFileResponse>('POST', '/api/v1/published-files', input)
+// createShare 创建共享策略（目标可为文件 / 目录 / 本地根）。
+export function createShare(input: CreateShareInput): Promise<ShareResponse> {
+    return requestJSON<ShareResponse>('POST', '/api/v1/shares', input)
 }
 
-// updatePublished 部分更新发布策略（local_path 不可变）。
-export function updatePublished(
-    id: string,
-    input: UpdatePublishedInput,
-): Promise<PublishedFileResponse> {
-    return requestJSON<PublishedFileResponse>('PATCH', `/api/v1/published-files/${id}`, input)
+// updateShare 部分更新共享策略（local_path 与 is_dir 不可变）。
+export function updateShare(id: string, input: UpdateShareInput): Promise<ShareResponse> {
+    return requestJSON<ShareResponse>('PATCH', `/api/v1/shares/${id}`, input)
 }
 
-// deletePublished 删除发布策略（只移除记录，不触及本地文件）。
-export async function deletePublished(id: string): Promise<void> {
-    await requestJSON<unknown>('DELETE', `/api/v1/published-files/${id}`)
+// deleteShare 删除共享策略（只移除记录，不触及本地文件）。
+export async function deleteShare(id: string): Promise<void> {
+    await requestJSON<unknown>('DELETE', `/api/v1/shares/${id}`)
 }
 
-// publishedFileURL 构造公开访问 URL（同源 /published 前缀）。
-export function publishedFileURL(publicPath: string): string {
-    return `${window.location.origin}/published${publicPath}`
+// shareEntryURL 构造共享的访问链接：目录共享指向浏览页，文件共享
+// 指向自身直链（basename 兼容 / 与 \ 分隔的 local_path）。
+export function shareEntryURL(
+    share: Pick<ShareResponse, 'slug' | 'is_dir' | 'local_path'>,
+): string {
+    if (share.is_dir) {
+        return sharedBrowseURL(share.slug)
+    }
+    const name = share.local_path.split(/[\\/]/).pop() ?? share.local_path
+    return sharedFileURL(share.slug, `/${name}`)
 }
 
 // ===== 共享公开访问（v0.10）=====

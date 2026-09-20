@@ -3,16 +3,9 @@ import SyncOutlinedIcon from '@mui/icons-material/SyncOutlined'
 import { Alert, Box, CircularProgress, IconButton, Tooltip } from '@mui/material'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import {
-    type FileEntry,
-    type JobResponse,
-    listJobs,
-    listLocalFiles,
-    localFileDownloadURL,
-    runJob,
-} from '../../api'
-import PublishDialog from './PublishDialog'
+import { type JobResponse, listJobs, listLocalFiles, localFileDownloadURL, runJob } from '../../api'
 import ReadOnlyFileManager from './ReadOnlyFileManager'
+import ShareDialog from './ShareDialog'
 
 // LocalFileBrowser 使用 Job.LocalRoot 作为唯一命名空间。Job 和路径都
 // 来源于 URL，因此浏览位置可以被后退、刷新和分享链接准确恢复。
@@ -21,7 +14,7 @@ export default function LocalFileBrowser({ onChanged }: { onChanged?: () => void
     const [loadError, setLoadError] = useState<string | null>(null)
     const [running, setRunning] = useState(false)
     const [actionError, setActionError] = useState<string | null>(null)
-    const [publishTarget, setPublishTarget] = useState<FileEntry | null>(null)
+    const [shareTargetPath, setShareTargetPath] = useState<string | null>(null)
     const [searchParams, setSearchParams] = useSearchParams()
     const jobId = searchParams.get('job') ?? ''
     const path = searchParams.get('path') ?? '/'
@@ -106,11 +99,11 @@ export default function LocalFileBrowser({ onChanged }: { onChanged?: () => void
                 onShowHiddenChange={nextShowHidden => updateLocation(jobId, path, nextShowHidden)}
                 path={path}
                 renderActions={entry =>
-                    entry.kind === 'file' && entry.managed === true ? (
+                    entry.kind === 'file' || entry.kind === 'directory' ? (
                         <Tooltip title="分享">
                             <IconButton
                                 aria-label={`分享 ${entry.name}`}
-                                onClick={() => setPublishTarget(entry)}
+                                onClick={() => setShareTargetPath(entry.path)}
                                 size="small"
                             >
                                 <ShareOutlinedIcon fontSize="small" />
@@ -124,25 +117,39 @@ export default function LocalFileBrowser({ onChanged }: { onChanged?: () => void
                 showManaged
                 showHidden={showHidden}
                 toolbarActions={
-                    <Tooltip title={running ? '正在触发同步…' : '立即同步'}>
-                        <span>
-                            <IconButton
-                                aria-label="立即同步"
-                                disabled={running || jobId === ''}
-                                onClick={() => void triggerRun()}
-                                size="small"
-                            >
-                                <SyncOutlinedIcon fontSize="small" />
-                            </IconButton>
-                        </span>
-                    </Tooltip>
+                    <>
+                        <Tooltip title={path === '/' ? '共享任务根目录' : '共享当前目录'}>
+                            <span>
+                                <IconButton
+                                    aria-label={path === '/' ? '共享任务根目录' : '共享当前目录'}
+                                    disabled={jobId === ''}
+                                    onClick={() => setShareTargetPath(path)}
+                                    size="small"
+                                >
+                                    <ShareOutlinedIcon fontSize="small" />
+                                </IconButton>
+                            </span>
+                        </Tooltip>
+                        <Tooltip title={running ? '正在触发同步…' : '立即同步'}>
+                            <span>
+                                <IconButton
+                                    aria-label="立即同步"
+                                    disabled={running || jobId === ''}
+                                    onClick={() => void triggerRun()}
+                                    size="small"
+                                >
+                                    <SyncOutlinedIcon fontSize="small" />
+                                </IconButton>
+                            </span>
+                        </Tooltip>
+                    </>
                 }
             />
-            {publishTarget !== null && (
-                <PublishDialog
-                    entryPath={publishTarget.path}
+            {shareTargetPath !== null && (
+                <ShareDialog
+                    targetPath={shareTargetPath}
                     jobId={jobId}
-                    onClose={() => setPublishTarget(null)}
+                    onClose={() => setShareTargetPath(null)}
                     onCreated={() => onChanged?.()}
                     open
                 />
