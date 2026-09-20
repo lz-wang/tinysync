@@ -1,6 +1,6 @@
 // Package filesafe 提供本地文件访问的受限路径原语：逻辑路径校验、
-// root confinement 与普通文件解析。Local Browser 下载与 Published
-// HTTP Serving 共用本包，保证「校验 → 解析 → 打开」只存在一套安全
+// root confinement 与普通文件解析。Local Browser 下载与共享 HTTP
+// Serving 共用本包，保证「校验 → 解析 → 打开」只存在一套安全
 // 语义；远端协议路径的基础规则也由此包提供，避免两套 path 校验。
 package filesafe
 
@@ -71,7 +71,7 @@ func ResolveWithinRoot(root, logicalPath string) (string, error) {
 // ResolveRegularFile 在 ResolveWithinRoot 之上要求目标已存在且是
 // 普通文件，整条路径不含 symlink：
 //   - Lstat 拒绝目标自身是 symlink（无论指向 root 内还是外，
-//     浏览 / 下载 / 发布语义一致：symlink 显示不跟随）；
+//     浏览 / 下载 / 共享语义一致：symlink 显示不跟随）；
 //   - EvalSymlinks 解析全部组件后用 Rel 验证仍在 root 内，防御
 //     父目录组件中的 symlink 逃逸。
 //
@@ -220,7 +220,7 @@ func LstatWithinRoot(root, logicalPath string) (string, os.FileInfo, error) {
 }
 
 // OpenCanonicalRegularFile 打开持久化 canonical 绝对路径所指的普通
-// 文件。Published serving 以「创建时校验、之后长期复用」的 canonical
+// 文件。共享 serving 以「创建时校验、之后长期复用」的 canonical
 // local_path 为身份，文件系统可能在创建之后发生变化；本函数在每次
 // serving 前重放身份校验，任何原组件后来变成 symlink 都会立即拒绝：
 //   - Lstat 最终组件：目标自身是 symlink 一律拒绝；
@@ -263,33 +263,6 @@ func OpenCanonicalRegularFile(canonicalPath string) (*os.File, os.FileInfo, erro
 	return f, info, nil
 }
 
-// NormalizePublicPath 校验并归一 Publish 的 public path：以 / 开头、
-// clean、非 root。public path 是 /published 之下的唯一公开标识，
-// 与逻辑路径共用基础规则；"/" 表示发布整个根，与单文件模型冲突，
-// 显式拒绝。
-func NormalizePublicPath(p string) (string, error) {
-	trimmed := strings.TrimSpace(p)
-	if trimmed == "" {
-		return "", fmt.Errorf("public path is empty")
-	}
-	if !strings.HasPrefix(trimmed, "/") {
-		return "", fmt.Errorf("public path %q must be absolute", trimmed)
-	}
-	if strings.ContainsRune(trimmed, '\\') {
-		return "", fmt.Errorf("public path %q must not contain backslash", trimmed)
-	}
-	if strings.ContainsRune(trimmed, '\x00') {
-		return "", fmt.Errorf("public path %q must not contain NUL", trimmed)
-	}
-	if strings.HasSuffix(trimmed, "/") {
-		return "", fmt.Errorf("public path %q must not end with /", trimmed)
-	}
-	cleaned := path.Clean(trimmed)
-	if cleaned != trimmed {
-		return "", fmt.Errorf("public path %q is not clean", trimmed)
-	}
-	if cleaned == "/" {
-		return "", fmt.Errorf("public path must not be the root /")
-	}
-	return cleaned, nil
-}
+// NormalizePublicPath 已随发布域（v0.10.0 发布 → 共享重构）退役：
+// 共享的 URL 标识是单段 slug（见 internal/share 的 ValidateSlug），
+// 不再存在多段 public path。

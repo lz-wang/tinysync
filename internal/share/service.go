@@ -7,6 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
+	"path"
+	"path/filepath"
 	"time"
 
 	"tinysync/internal/filesafe"
@@ -187,6 +190,72 @@ func (s *Service) ResolveForRequest(ctx context.Context, slug string) (Share, er
 		return Share{}, ErrNotFound
 	}
 	return found, nil
+}
+
+// OpenFile 打开 slug 对应共享内逻辑路径指向的普通文件，供公开直链
+// serving：
+//   - 文件共享：唯一可服务路径是 "/"+basename(LocalPath)，经
+//     filesafe.OpenCanonicalRegularFile 复验 canonical 身份；
+//   - 目录共享：先复验共享根身份（最终组件非 symlink、全链解析
+//     仍等于持久化 canonical 路径），再按 ResolveRegularFile 做
+//     root confinement 与 symlink 拒绝。
+//
+// 共享不可服务（禁用/过期/不存在）或路径不可用（缺失、指向目录、
+// 逃逸、身份偏离）一律映射 ErrNotFound 语义——serving 侧同形 404，
+// 不泄露共享与文件系统的当前状态。返回下载文件名（逻辑路径的
+// 最后一段）与打开的文件。
+func (s *Service) OpenFile(ctx context.Context, slug, logicalPath string) (string, *os.File, os.FileInfo, error) {
+	found, err := s.ResolveForRequest(ctx, slug)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	if !found.IsDir {
+		if logicalPath != "/"+filepath.Base(found.LocalPath) {
+			return "", nil, nil, fmt.Errorf("%w: %s is not served by this share", ErrNotFound, logicalPath)
+		}
+		f, info, err := filesafe.OpenCanonicalRegularFile(found.LocalPath)
+		if err != nil {
+			return "", nil, nil, fmt.Errorf("%w: %v", ErrNotFound, err)
+		}
+		return path.Base(logicalPath), f, info, nil
+	}
+	if err := verifyDirRoot(found.LocalPath); err != nil {
+		return "", nil, nil, fmt.Errorf("%w: %v", ErrNotFound, err)
+	}
+	resolved, info, err := filesafe.ResolveRegularFile(found.LocalPath, logicalPath)
+	if err != nil {
+		return "", nil, nil, fmt.Errorf("%w: %v", ErrNotFound, err)
+	}
+	f, err := os.Open(resolved)
+	if err != nil {
+		return "", nil, nil, fmt.Errorf("%w: %v", ErrNotFound, err)
+	}
+	return path.Base(logicalPath), f, info, nil
+}
+
+// verifyDirRoot 复验目录共享根的身份：最终组件非 symlink、是目录、
+// 全链解析仍等于持久化 canonical 路径。创建后根被删除或替换为
+// symlink 时，公开访问按不存在处理（与文件共享的
+// OpenCanonicalRegularFile 复验同一语义）。
+func verifyDirRoot(localPath string) error {
+	info, err := os.Lstat(localPath)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%w: %s is a symlink", filesafe.ErrNotRegularFile, localPath)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%w: %s is not a directory", filesafe.ErrNotRegularFile, localPath)
+	}
+	resolved, err := filepath.EvalSymlinks(localPath)
+	if err != nil {
+		return err
+	}
+	if resolved != localPath {
+		return fmt.Errorf("%w: %s now resolves to %s via symlink", filesafe.ErrEscape, localPath, resolved)
+	}
+	return nil
 }
 
 func cloneTime(t *time.Time) *time.Time {

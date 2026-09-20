@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -812,10 +813,24 @@ func TestMigrateV5ToV6AddsPublishedFiles(t *testing.T) {
 		t.Fatalf("insert run: %v", err)
 	}
 
-	if err := Migrate(ctx, db, dataDir); err != nil {
-		t.Fatalf("Migrate v5->v6: %v", err)
+	// 升级到 v6 为止：published_files 在 0010（v10）被废弃，本测试
+	// 只验证 v5→v6 的语义，不跟随 latest。
+	v6FS := fstest.MapFS{}
+	for _, name := range []string{
+		"0001_sources.sql", "0002_sync_jobs.sql",
+		"0003_scheduler_history.sql", "0004_once_consumption.sql",
+		"0005_source_configs.sql", "0006_published_files.sql",
+	} {
+		data, err := fs.ReadFile(migrationFS, "migrations/"+name)
+		if err != nil {
+			t.Fatalf("read embedded %s: %v", name, err)
+		}
+		v6FS["migrations/"+name] = &fstest.MapFile{Data: data}
 	}
-	assertVersion(t, db, embeddedLatestVersion(t))
+	if err := migrate(ctx, db, dataDir, v6FS); err != nil {
+		t.Fatalf("migrate v5->v6: %v", err)
+	}
+	assertVersion(t, db, 6)
 
 	// 既有数据完整保留。
 	var jobName, sourceID string
@@ -918,10 +933,25 @@ func TestMigrateV6ToV7AddsAuthentication(t *testing.T) {
 		t.Fatalf("insert published file: %v", err)
 	}
 
-	if err := Migrate(ctx, db, dataDir); err != nil {
-		t.Fatalf("Migrate v6->v7: %v", err)
+	// 升级到 v7 为止：published_files 在 0010（v10）被废弃，本测试
+	// 只验证 v6→v7 的语义，不跟随 latest。
+	v7FS := fstest.MapFS{}
+	for _, name := range []string{
+		"0001_sources.sql", "0002_sync_jobs.sql",
+		"0003_scheduler_history.sql", "0004_once_consumption.sql",
+		"0005_source_configs.sql", "0006_published_files.sql",
+		"0007_authentication.sql",
+	} {
+		data, err := fs.ReadFile(migrationFS, "migrations/"+name)
+		if err != nil {
+			t.Fatalf("read embedded %s: %v", name, err)
+		}
+		v7FS["migrations/"+name] = &fstest.MapFile{Data: data}
 	}
-	assertVersion(t, db, embeddedLatestVersion(t))
+	if err := migrate(ctx, db, dataDir, v7FS); err != nil {
+		t.Fatalf("migrate v6->v7: %v", err)
+	}
+	assertVersion(t, db, 7)
 
 	// 既有业务记录完整无损。
 	var jobName string
@@ -1050,10 +1080,20 @@ func TestMigrateV8ToV9AddsShares(t *testing.T) {
 		t.Fatalf("insert published file: %v", err)
 	}
 
-	if err := Migrate(ctx, db, dataDir); err != nil {
-		t.Fatalf("Migrate v8->v9: %v", err)
+	// 升级到 v9 为止：本测试验证 v8→v9 新增 shares 的语义；
+	// published_files 的废弃属 0010（v10），由
+	// TestMigrateV9ToV10DropsPublishedFiles 覆盖。
+	v9FS := fstest.MapFS{}
+	maps.Copy(v9FS, v8FS)
+	v9Data, err := fs.ReadFile(migrationFS, "migrations/0009_shares.sql")
+	if err != nil {
+		t.Fatalf("read embedded 0009_shares.sql: %v", err)
 	}
-	assertVersion(t, db, embeddedLatestVersion(t))
+	v9FS["migrations/0009_shares.sql"] = &fstest.MapFile{Data: v9Data}
+	if err := migrate(ctx, db, dataDir, v9FS); err != nil {
+		t.Fatalf("migrate v8->v9: %v", err)
+	}
+	assertVersion(t, db, 9)
 
 	// 既有业务记录完整无损，published_files 暂存（0010 才废弃）。
 	var jobName string
@@ -1100,5 +1140,75 @@ func TestMigrateV8ToV9AddsShares(t *testing.T) {
 	}
 	if len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), "tinysync-v8-") {
 		t.Fatalf("backup files = %v, want one tinysync-v8-* entry", entries)
+	}
+}
+
+// TestMigrateV9ToV10DropsPublishedFiles：v9 库升级后 published_files
+// 被废弃（不迁移旧数据），shares 数据完整保留。
+func TestMigrateV9ToV10DropsPublishedFiles(t *testing.T) {
+	dataDir := t.TempDir()
+	db, err := Open(dataDir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	// 用真实的 0001-0009 schema 构造 v9 形态的库。
+	v9FS := fstest.MapFS{}
+	for _, name := range []string{
+		"0001_sources.sql", "0002_sync_jobs.sql",
+		"0003_scheduler_history.sql", "0004_once_consumption.sql",
+		"0005_source_configs.sql", "0006_published_files.sql",
+		"0007_authentication.sql", "0008_admin_profile.sql",
+		"0009_shares.sql",
+	} {
+		data, err := fs.ReadFile(migrationFS, "migrations/"+name)
+		if err != nil {
+			t.Fatalf("read embedded %s: %v", name, err)
+		}
+		v9FS["migrations/"+name] = &fstest.MapFile{Data: data}
+	}
+	if err := migrate(ctx, db, dataDir, v9FS); err != nil {
+		t.Fatalf("build v9 database: %v", err)
+	}
+	assertVersion(t, db, 9)
+
+	// 存量数据：一条旧发布策略与一条新共享。
+	if _, err := db.Exec(`INSERT INTO published_files
+		(id, local_path, public_path, enabled, expires_at, created_at, updated_at)
+		VALUES ('pub_a', '/tmp/a.txt', '/a.txt', 1, NULL, 1, 1)`); err != nil {
+		t.Fatalf("insert published file: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO shares
+		(id, local_path, slug, name, is_dir, enabled, expires_at, created_at, updated_at)
+		VALUES ('shr_a', '/tmp/backup', 'photos', NULL, 1, 1, NULL, 1, 1)`); err != nil {
+		t.Fatalf("insert share: %v", err)
+	}
+
+	if err := Migrate(ctx, db, dataDir); err != nil {
+		t.Fatalf("Migrate v9->v10: %v", err)
+	}
+	assertVersion(t, db, embeddedLatestVersion(t))
+
+	// published_files 已废弃；shares 数据保留。
+	if _, err := db.Query("SELECT id FROM published_files"); err == nil {
+		t.Fatal("query published_files after upgrade = nil, want no such table")
+	}
+	var slug string
+	if err := db.QueryRow("SELECT slug FROM shares WHERE id = 'shr_a'").Scan(&slug); err != nil {
+		t.Fatalf("query share after upgrade: %v", err)
+	}
+	if slug != "photos" {
+		t.Errorf("slug = %q, want photos", slug)
+	}
+
+	// 升级备份存在且停留在 v9。
+	entries, err := os.ReadDir(filepath.Join(dataDir, backupsDirName))
+	if err != nil {
+		t.Fatalf("read backups dir: %v", err)
+	}
+	if len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), "tinysync-v9-") {
+		t.Fatalf("backup files = %v, want one tinysync-v9-* entry", entries)
 	}
 }

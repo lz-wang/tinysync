@@ -20,7 +20,7 @@ import (
 
 // 认证边界端到端：完整 HTTP 栈（Gin router + 真实 SQLite + 真实
 // 同步 Runner）验证 v0.7 安全契约——default-deny、session 生命周期、
-// Bearer Token scope 边界、/published 公开语义与重启持久化。
+// Bearer Token scope 边界、/shared 公开语义与重启持久化。
 
 // e2eAdminPassword 是 E2E 环境的管理员密码（与 browserEnv 一致）。
 const e2eAdminPassword = "e2e-admin-password"
@@ -74,7 +74,7 @@ func TestAuthE2EDefaultDeny(t *testing.T) {
 		{http.MethodGet, "/api/v1/sources"},
 		{http.MethodGet, "/api/v1/jobs"},
 		{http.MethodGet, "/api/v1/runs"},
-		{http.MethodGet, "/api/v1/published-files"},
+		{http.MethodGet, "/api/v1/shares"},
 		{http.MethodGet, "/api/v1/api-tokens"},
 		{http.MethodGet, "/api/v1/auth/session"},
 		{http.MethodPost, "/api/v1/sources"},
@@ -223,8 +223,8 @@ func TestAuthE2ETokenScopes(t *testing.T) {
 	if rec := doRaw(t, e.router, http.MethodPost, "/api/v1/jobs/"+e.job.ID+"/run", "", bearer(readRaw)); rec.Code != http.StatusForbidden {
 		t.Errorf("read run = %d, want 403", rec.Code)
 	}
-	if rec := doRaw(t, e.router, http.MethodPost, "/api/v1/published-files", "{}", bearer(readRaw)); rec.Code != http.StatusForbidden {
-		t.Errorf("read publish = %d, want 403", rec.Code)
+	if rec := doRaw(t, e.router, http.MethodPost, "/api/v1/shares", "{}", bearer(readRaw)); rec.Code != http.StatusForbidden {
+		t.Errorf("read share = %d, want 403", rec.Code)
 	}
 
 	// run：真实触发允许（202）；read 403。
@@ -318,26 +318,26 @@ func TestAuthE2ETokenScopes(t *testing.T) {
 	}
 }
 
-// /published/*path 保持显式公开：无凭据可访问，管理端点仍 401。
-func TestAuthE2EPublishedStaysPublic(t *testing.T) {
+// /shared/:slug/*path 保持显式公开：无凭据可访问，管理端点仍 401。
+func TestAuthE2ESharedStaysPublic(t *testing.T) {
 	remote := protocolFixtures()[0].fixture(t)
 	e := newBrowserEnv(t, remote)
 	remote.put(t, "/managed.txt", "public-content")
 	e.createJob(syncjob.ModeCopy)
 	e.sync()
 
-	rec := e.doJSON(http.MethodPost, "/api/v1/published-files",
-		`{"job_id": "`+e.job.ID+`", "path": "/managed.txt", "public_path": "/authcheck.txt"}`)
+	rec := e.doJSON(http.MethodPost, "/api/v1/shares",
+		`{"job_id": "`+e.job.ID+`", "path": "/managed.txt", "name": "authcheck"}`)
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("create publish policy = %d, body = %s", rec.Code, rec.Body.String())
+		t.Fatalf("create share = %d, body = %s", rec.Code, rec.Body.String())
 	}
 
-	// 公开 URL 无凭据 200；管理端点无凭据 401。
-	if rec = doRaw(t, e.router, http.MethodGet, "/published/authcheck.txt", "", nil); rec.Code != http.StatusOK {
-		t.Errorf("published without auth = %d, want 200", rec.Code)
+	// 公开直链无凭据 200；管理端点无凭据 401。
+	if rec = doRaw(t, e.router, http.MethodGet, "/shared/authcheck/managed.txt", "", nil); rec.Code != http.StatusOK {
+		t.Errorf("shared without auth = %d, want 200", rec.Code)
 	}
-	if rec = doRaw(t, e.router, http.MethodGet, "/api/v1/published-files", "", nil); rec.Code != http.StatusUnauthorized {
-		t.Errorf("published-files management without auth = %d, want 401", rec.Code)
+	if rec = doRaw(t, e.router, http.MethodGet, "/api/v1/shares", "", nil); rec.Code != http.StatusUnauthorized {
+		t.Errorf("shares management without auth = %d, want 401", rec.Code)
 	}
 }
 
@@ -469,10 +469,10 @@ func TestAuthE2EProtectedScopeMatrix(t *testing.T) {
 		{http.MethodGet, "/api/v1/jobs/:id/files/download", auth.ScopeRead, ""},
 		// HEAD 与 GET download 同为 read：响应头即文件元信息。
 		{http.MethodHead, "/api/v1/jobs/:id/files/download", auth.ScopeRead, ""},
-		{http.MethodGet, "/api/v1/published-files", auth.ScopeRead, ""},
-		{http.MethodPost, "/api/v1/published-files", auth.ScopeAdmin, "{}"},
-		{http.MethodPatch, "/api/v1/published-files/:id", auth.ScopeAdmin, "{}"},
-		{http.MethodDelete, "/api/v1/published-files/:id", auth.ScopeAdmin, ""},
+		{http.MethodGet, "/api/v1/shares", auth.ScopeRead, ""},
+		{http.MethodPost, "/api/v1/shares", auth.ScopeAdmin, "{}"},
+		{http.MethodPatch, "/api/v1/shares/:id", auth.ScopeAdmin, "{}"},
+		{http.MethodDelete, "/api/v1/shares/:id", auth.ScopeAdmin, ""},
 		{http.MethodGet, "/api/v1/api-tokens", auth.ScopeAdmin, ""},
 		{http.MethodPost, "/api/v1/api-tokens", auth.ScopeAdmin, "{}"},
 		{http.MethodPost, "/api/v1/api-tokens/:id/revoke", auth.ScopeAdmin, ""},

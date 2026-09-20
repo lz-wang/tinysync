@@ -13,7 +13,7 @@ import (
 	"tinysync/internal/auth"
 	"tinysync/internal/browser"
 	"tinysync/internal/buildinfo"
-	"tinysync/internal/publish"
+	"tinysync/internal/share"
 	"tinysync/internal/source"
 	"tinysync/internal/syncjob"
 )
@@ -21,8 +21,8 @@ import (
 // NewRouter 构建全部路由：
 //   - /api/v1/* 分两层：public（health / version / login）与
 //     protected（default-deny，经 authMiddleware 认证）；
-//   - /published/*path 与 /mcp 显式注册；其余 /mcp/* 路径 404，不落入
-//     SPA fallback；
+//   - /shared/:slug（浏览页）与 /shared/:slug/*path（直链）显式注册；
+//     /mcp 显式注册，其余 /mcp/* 路径 404，不落入 SPA fallback；
 //   - 其余路径由 NoRoute 承接：命中嵌入文件按静态资源服务
 //     （assets 带 immutable 缓存），未命中回退 index.html（前端路由深链接）；
 //     带扩展名的资源路径缺失时 404，不误回 index.html。
@@ -54,11 +54,12 @@ func NewRouter(webFS fs.FS, deps Dependencies) *gin.Engine {
 		registerJobRoutes(protected, deps.Jobs, deps.Runner)
 		registerRemoteFileRoutes(protected, deps.Browser)
 		registerLocalFileRoutes(protected, deps.LocalFiles)
-		registerPublishRoutes(protected, deps.Publish)
+		registerShareRoutes(protected, deps.Share)
 		registerAPITokenRoutes(protected, deps.Auth)
 	}
-	// /published/*path 显式注册：公开服务不落入 SPA fallback。
-	registerPublicServingRoutes(router, deps.Publish)
+	// /shared/:slug（浏览页）与 /shared/:slug/*path（直链）显式注册：
+	// 公开服务不落入 SPA fallback。
+	registerSharedServingRoutes(router, webFS, deps.Share)
 	// /mcp 显式注册：MCP adapter 自带认证与跨源防护链（auth 只认
 	// Bearer API Token），不走 Gin 中间件。nil 时路径不存在（fail
 	// closed：不会出现无认证的 MCP 端点）。Any 而非 POST：GET / DELETE
@@ -86,9 +87,9 @@ type Dependencies struct {
 	Browser *browser.RemoteService
 	// LocalFiles 是本地文件浏览应用服务；为 nil 时不注册本地文件端点。
 	LocalFiles *browser.LocalService
-	// Publish 是发布策略应用服务；为 nil 时不注册发布端点与公开
-	// serving 路由。
-	Publish *publish.Service
+	// Share 是共享策略应用服务；为 nil 时不注册共享端点与公开
+	// /shared 路由。
+	Share *share.Service
 	// MCP 是已装配完成的 MCP endpoint handler（自带 Bearer 认证与
 	// 跨源防护）。api 层只认识 http.Handler，不接触 MCP SDK。为 nil
 	// 时不注册 /mcp（fail closed）。

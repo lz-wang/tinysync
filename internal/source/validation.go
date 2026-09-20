@@ -349,7 +349,7 @@ func applyCredentialsUpdate(t Type, current CredentialState, update *Credentials
 // 反斜杠与 NUL——S3 object key 允许 "foo\bar.txt"，进入本地
 // filepath 后在 Unix 与 Windows 上语义不同，必须在协议边界拒绝。
 // 任何 adapter 返回的 FileInfo.Path 都必须通过本校验。
-// 基础规则由 filesafe 提供并与本地/发布路径共享，本函数只补上
+// 基础规则由 filesafe 提供并与本地路径共享，本函数只补上
 // 领域错误标记，保证调用方 errors.Is(err, ErrInvalid) 语义不变。
 func ValidateLogicalPath(p string) error {
 	if err := filesafe.ValidateLogicalPath(p); err != nil {

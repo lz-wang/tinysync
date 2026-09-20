@@ -17,8 +17,8 @@ import (
 	authsqlite "tinysync/internal/auth/sqlite"
 	"tinysync/internal/browser"
 	"tinysync/internal/mcp"
-	"tinysync/internal/publish"
-	publishsqlite "tinysync/internal/publish/sqlite"
+	"tinysync/internal/share"
+	sharesqlite "tinysync/internal/share/sqlite"
 )
 
 // MCP 集成端到端：完整 HTTP 栈（Gin router + /mcp + 真实 SQLite +
@@ -48,14 +48,14 @@ func newMCPE2E(t *testing.T) *mcpE2E {
 		t.Fatalf("login: %v", err)
 	}
 	localFiles := browser.NewLocalService(e.jobs, e.managedRepo)
-	policies := publish.NewService(publishsqlite.NewRepository(e.db), e.jobs, e.managedRepo)
+	shares := share.NewService(sharesqlite.NewRepository(e.db), e.jobs)
 	router := api.NewRouter(fstest.MapFS{}, api.Dependencies{
 		Auth:       authService,
 		Sources:    e.sources,
 		Jobs:       e.jobs,
 		Runner:     e.runner,
 		LocalFiles: localFiles,
-		Publish:    policies,
+		Share:      shares,
 		MCP:        mcp.New(mcp.Deps{Auth: authService, Sources: e.sources, Jobs: e.jobs, Runner: e.runner, LocalFiles: localFiles}),
 	})
 	return &mcpE2E{

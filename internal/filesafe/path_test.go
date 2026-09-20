@@ -46,45 +46,6 @@ func TestValidateLogicalPath(t *testing.T) {
 	}
 }
 
-// TestNormalizePublicPath 覆盖 public path 规则：与逻辑路径共用基础
-// 规则，额外拒绝 root 与空白输入。
-func TestNormalizePublicPath(t *testing.T) {
-	valid := map[string]string{
-		"/a.jpg":          "/a.jpg",
-		"/photos/a.jpg":   "/photos/a.jpg",
-		"/docs/my 1.txt":  "/docs/my 1.txt",
-		"  /photos/b.png": "/photos/b.png",
-	}
-	for in, want := range valid {
-		got, err := NormalizePublicPath(in)
-		if err != nil {
-			t.Errorf("NormalizePublicPath(%q) = %v, want %q", in, err, want)
-			continue
-		}
-		if got != want {
-			t.Errorf("NormalizePublicPath(%q) = %q, want %q", in, got, want)
-		}
-	}
-
-	invalid := []string{
-		"",
-		"   ",
-		"a.jpg",
-		"/",
-		"/a/../b",
-		"/a/./b",
-		"//a",
-		"/a/",
-		`/a\b`,
-		"/a\x00b",
-	}
-	for _, p := range invalid {
-		if _, err := NormalizePublicPath(p); err == nil {
-			t.Errorf("NormalizePublicPath(%q) = nil error, want error", p)
-		}
-	}
-}
-
 // TestResolveWithinRoot 验证纯路径代数：root 映射自身、逻辑路径拼接、
 // 逃逸与非法输入拒绝；不做文件系统检查。
 func TestResolveWithinRoot(t *testing.T) {

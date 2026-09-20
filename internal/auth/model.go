@@ -16,7 +16,7 @@ import (
 type Scope string
 
 const (
-	// ScopeRead 允许查询 Source / Job / Run / File / Published
+	// ScopeRead 允许查询 Source / Job / Run / File / Share
 	// metadata 并下载文件。
 	ScopeRead Scope = "read"
 	// ScopeRun 允许手动触发 Job。

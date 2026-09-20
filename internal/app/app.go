@@ -19,8 +19,8 @@ import (
 	"tinysync/internal/instance"
 	"tinysync/internal/logging"
 	"tinysync/internal/mcp"
-	"tinysync/internal/publish"
-	publishsqlite "tinysync/internal/publish/sqlite"
+	"tinysync/internal/share"
+	sharesqlite "tinysync/internal/share/sqlite"
 	"tinysync/internal/source"
 	s3adapter "tinysync/internal/source/s3"
 	sftpadapter "tinysync/internal/source/sftp"
@@ -137,9 +137,10 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 	files := browser.NewRemoteService(sources)
 	localFiles := browser.NewLocalService(jobs, managedRepo)
 
-	// 装配发布策略：canonical local path 校验依赖 Job 与 managed
-	// 记录，serving 与 CRUD 共用同一服务层。
-	policies := publish.NewService(publishsqlite.NewRepository(db), jobs, managedRepo)
+	// 装配共享策略：canonical local path 校验依赖 Job（目标可为文件/
+	// 目录/本地根，不做 managed 过滤——ADR-0002），公开 serving 与
+	// CRUD 共用同一服务层。
+	shares := share.NewService(sharesqlite.NewRepository(db), jobs)
 
 	// 装配 MCP adapter：复用同一批应用服务，自带 Bearer 认证与跨源
 	// 防护；REST / Web UI / MCP 至此共用一个 composition root。
@@ -158,7 +159,7 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 		Runner:     runner,
 		Browser:    files,
 		LocalFiles: localFiles,
-		Publish:    policies,
+		Share:      shares,
 		MCP:        mcpHandler,
 	})
 

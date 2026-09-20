@@ -300,7 +300,7 @@ func (s *LocalService) SearchManaged(ctx context.Context, jobID string, opts Sea
 	return result, nil
 }
 
-// Open 打开本地普通文件供下载 / 发布 serving：ResolveRegularFile
+// Open 打开本地普通文件供下载 / 共享 serving：ResolveRegularFile
 // 拒绝 symlink（无论指向 root 内还是外）并做父目录 symlink 逃逸
 // 检查，返回 canonical 路径上打开的文件与元信息。*os.File 是
 // ReadSeeker，上层 http.ServeContent 由此获得 Range / HEAD 支持。

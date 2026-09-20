@@ -18,17 +18,17 @@ import (
 	"tinysync/internal/auth"
 	authsqlite "tinysync/internal/auth/sqlite"
 	"tinysync/internal/browser"
-	"tinysync/internal/publish"
-	publishsqlite "tinysync/internal/publish/sqlite"
+	"tinysync/internal/share"
+	sharesqlite "tinysync/internal/share/sqlite"
 	"tinysync/internal/source"
 	sourcesqlite "tinysync/internal/source/sqlite"
 	"tinysync/internal/syncjob"
 	jobsqlite "tinysync/internal/syncjob/sqlite"
 )
 
-// 文件浏览与发布的端到端覆盖：完整 HTTP 栈（Gin router + 真实
+// 文件浏览与共享的端到端覆盖：完整 HTTP 栈（Gin router + 真实
 // SQLite + 真实同步 Runner + 协议 fixture）验证「远端浏览 → 同步 →
-// 本地浏览 → 发布 → 公开 serving」链条与 confinement 语义。
+// 本地浏览 → 共享 → 公开 serving」链条与 confinement 语义。
 
 // bridgedFactory 把协议 fixture 接到 source.Service 的 factory dispatch：
 // OpenRemote 的统一入口经它获得 fixture 提供的真实协议栈 Remote。
@@ -88,7 +88,7 @@ func newBrowserEnv(t *testing.T, fixture matrixRemote) *browserEnv {
 
 	files := browser.NewRemoteService(sources)
 	localFiles := browser.NewLocalService(jobs, managed)
-	policies := publish.NewService(publishsqlite.NewRepository(db), jobs, managed)
+	shares := share.NewService(sharesqlite.NewRepository(db), jobs)
 
 	// v0.7 起管理 API default-deny：为 E2E 路由装配认证服务并登录。
 	authService := auth.NewService(authsqlite.NewRepository(db))
@@ -107,7 +107,7 @@ func newBrowserEnv(t *testing.T, fixture matrixRemote) *browserEnv {
 		Runner:     runner,
 		Browser:    files,
 		LocalFiles: localFiles,
-		Publish:    policies,
+		Share:      shares,
 	})
 	return &browserEnv{
 		t:         t,
@@ -494,11 +494,11 @@ func TestLocalBrowserConfinement(t *testing.T) {
 	}
 }
 
-// TestPublishLifecycle：完整链 remote → sync → managed local file →
-// create publish policy → GET published URL → Range / HEAD；disable /
-// expire / Mirror delete → 404；冲突 409；unmanaged / traversal /
-// symlink escape 拒绝；重启后策略持久。
-func TestPublishLifecycle(t *testing.T) {
+// TestShareLifecycle：完整链 remote → sync → 本地文件 → create share →
+// GET /shared/<slug>/<file> 直链 → Range / HEAD；disable / expire /
+// Mirror delete → 404；名称冲突 409；traversal / symlink escape 拒绝；
+// unmanaged 文件同样可共享（ADR-0002）；重启后共享持久。
+func TestShareLifecycle(t *testing.T) {
 	remote := newWebDAVFixture(t)
 	e := newBrowserEnv(t, remote)
 
@@ -506,18 +506,18 @@ func TestPublishLifecycle(t *testing.T) {
 	e.createJob(syncjob.ModeMirror)
 	e.sync()
 
-	// 创建策略：经 REST，目标为 managed 文件。
-	createBody := `{"job_id":"` + e.job.ID + `","path":"/docs/published.txt","public_path":"/share/published.txt","enabled":true}`
-	w := e.doJSON(http.MethodPost, "/api/v1/published-files", createBody)
+	// 创建共享：经 REST，目标为同步落地的文件，自定义名称即 slug。
+	createBody := `{"job_id":"` + e.job.ID + `","path":"/docs/published.txt","name":"share-it","enabled":true}`
+	w := e.doJSON(http.MethodPost, "/api/v1/shares", createBody)
 	if w.Code != http.StatusCreated {
-		t.Fatalf("create policy = %d, body %s", w.Code, w.Body.String())
+		t.Fatalf("create share = %d, body %s", w.Code, w.Body.String())
 	}
-	var policy struct {
+	var created struct {
 		ID        string `json:"id"`
 		LocalPath string `json:"local_path"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &policy); err != nil {
-		t.Fatalf("unmarshal policy: %v", err)
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("unmarshal share: %v", err)
 	}
 	// local_path 是 canonical 形态；macOS 的临时目录在 /var（/private/var
 	// 的 symlink）之下，比较前对期望值做同一归一。
@@ -525,15 +525,15 @@ func TestPublishLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("evalsymlinks local root: %v", err)
 	}
-	if policy.LocalPath != filepath.Join(canonicalRoot, "docs", "published.txt") {
-		t.Errorf("local_path = %q, want canonical path under local root", policy.LocalPath)
+	if created.LocalPath != filepath.Join(canonicalRoot, "docs", "published.txt") {
+		t.Errorf("local_path = %q, want canonical path under local root", created.LocalPath)
 	}
 
-	// 公开 serving：200 内容一致 + no-store；Range 206；HEAD 仅响应头。
-	url := "/published/share/published.txt"
+	// 公开直链：200 内容一致 + no-store；Range 206；HEAD 仅响应头。
+	url := "/shared/share-it/published.txt"
 	w = e.get(url)
 	if w.Code != http.StatusOK || w.Body.String() != "public-content" {
-		t.Fatalf("published = %d %q", w.Code, w.Body.String())
+		t.Fatalf("shared file = %d %q", w.Code, w.Body.String())
 	}
 	if got := w.Header().Get("Cache-Control"); got != "no-store" {
 		t.Errorf("cache-control = %q", got)
@@ -551,16 +551,22 @@ func TestPublishLifecycle(t *testing.T) {
 		t.Errorf("HEAD = %d body %d", w.Code, w.Body.Len())
 	}
 
-	// duplicate public_path → 409。
-	w = e.doJSON(http.MethodPost, "/api/v1/published-files", createBody)
+	// duplicate slug → 409。
+	w = e.doJSON(http.MethodPost, "/api/v1/shares", createBody)
 	if w.Code != http.StatusConflict {
 		t.Errorf("duplicate = %d, want 409", w.Code)
 	}
 
-	// unmanaged / traversal / symlink escape 拒绝创建。
+	// unmanaged 文件同样可共享；traversal / symlink escape / 未知字段
+	// 拒绝创建。
 	unmanaged := filepath.Join(e.localRoot, "stranger.txt")
 	if err := os.WriteFile(unmanaged, []byte("x"), 0o644); err != nil {
 		t.Fatalf("write stranger: %v", err)
+	}
+	w = e.doJSON(http.MethodPost, "/api/v1/shares",
+		`{"job_id":"`+e.job.ID+`","path":"/stranger.txt","enabled":true}`)
+	if w.Code != http.StatusCreated {
+		t.Errorf("unmanaged = %d, want 201（ADR-0002 放弃 managed 约束）", w.Code)
 	}
 	if err := os.Symlink(t.TempDir(), filepath.Join(e.localRoot, "escape-link")); err != nil {
 		t.Fatalf("symlink: %v", err)
@@ -569,15 +575,14 @@ func TestPublishLifecycle(t *testing.T) {
 		name string
 		body string
 	}{
-		{"unmanaged", `{"job_id":"` + e.job.ID + `","path":"/stranger.txt","public_path":"/s.txt","enabled":true}`},
-		{"traversal", `{"job_id":"` + e.job.ID + `","path":"/../outside.txt","public_path":"/t.txt","enabled":true}`},
-		{"symlink escape", `{"job_id":"` + e.job.ID + `","path":"/escape-link/secret.txt","public_path":"/e.txt","enabled":true}`},
+		{"traversal", `{"job_id":"` + e.job.ID + `","path":"/../outside.txt","enabled":true}`},
+		{"symlink escape", `{"job_id":"` + e.job.ID + `","path":"/escape-link/secret.txt","enabled":true}`},
 		// 未知字段（含不存在的 local_path）一律 400：API 不接受
 		// local_path 的契约由严格解码维持，不能靠静默忽略。
-		{"unknown field", `{"job_id":"` + e.job.ID + `","path":"/docs/published.txt","public_path":"/u.txt","enabled":true,"local_path":"/etc/passwd"}`},
+		{"unknown field", `{"job_id":"` + e.job.ID + `","path":"/docs/published.txt","enabled":true,"local_path":"/etc/passwd"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			w := e.doJSON(http.MethodPost, "/api/v1/published-files", tc.body)
+			w := e.doJSON(http.MethodPost, "/api/v1/shares", tc.body)
 			if w.Code != http.StatusBadRequest {
 				t.Fatalf("create = %d, want 400, body %s", w.Code, w.Body.String())
 			}
@@ -585,7 +590,7 @@ func TestPublishLifecycle(t *testing.T) {
 	}
 
 	// disable → 404 且与「路径不存在」响应同形。
-	w = e.doJSON(http.MethodPatch, "/api/v1/published-files/"+policy.ID, `{"enabled":false}`)
+	w = e.doJSON(http.MethodPatch, "/api/v1/shares/"+created.ID, `{"enabled":false}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("disable = %d, body %s", w.Code, w.Body.String())
 	}
@@ -593,7 +598,7 @@ func TestPublishLifecycle(t *testing.T) {
 	if disabled.Code != http.StatusNotFound {
 		t.Errorf("disabled = %d, want 404", disabled.Code)
 	}
-	missing := e.get("/published/share/never-existed")
+	missing := e.get("/shared/share-it/never-existed")
 	if missing.Code != http.StatusNotFound || missing.Body.String() != disabled.Body.String() {
 		t.Errorf("missing = %d %q, want same shape as disabled", missing.Code, missing.Body.String())
 	}
@@ -601,7 +606,7 @@ func TestPublishLifecycle(t *testing.T) {
 	// expire → 404：设置一个即将到来的过期时刻（RFC3339 秒级精度，
 	// 留足余量避免四舍五入后不在未来）后等待越过。
 	expiry := time.Now().Add(3 * time.Second).UTC().Format(time.RFC3339)
-	w = e.doJSON(http.MethodPatch, "/api/v1/published-files/"+policy.ID,
+	w = e.doJSON(http.MethodPatch, "/api/v1/shares/"+created.ID,
 		`{"enabled":true,"expires_at":"`+expiry+`"}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("set expiry = %d, body %s", w.Code, w.Body.String())
@@ -612,7 +617,7 @@ func TestPublishLifecycle(t *testing.T) {
 	}
 
 	// 恢复有效（清除过期）→ 200。
-	w = e.doJSON(http.MethodPatch, "/api/v1/published-files/"+policy.ID, `{"expires_at":null}`)
+	w = e.doJSON(http.MethodPatch, "/api/v1/shares/"+created.ID, `{"expires_at":null}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("clear expiry = %d", w.Code)
 	}
@@ -620,10 +625,10 @@ func TestPublishLifecycle(t *testing.T) {
 		t.Errorf("after clear expiry = %d, want 200", w.Code)
 	}
 
-	// Mirror delete → 文件被同步删除 → published URL 自然 404。
+	// Mirror delete → 文件被同步删除 → 直链自然 404。
 	remote.remove(t, "/docs/published.txt")
 	e.sync()
-	if _, err := os.Stat(policy.LocalPath); !os.IsNotExist(err) {
+	if _, err := os.Stat(created.LocalPath); !os.IsNotExist(err) {
 		t.Fatalf("local file stat = %v, want removed by mirror", err)
 	}
 	w = e.get(url)
@@ -631,7 +636,7 @@ func TestPublishLifecycle(t *testing.T) {
 		t.Errorf("after mirror delete = %d, want 404", w.Code)
 	}
 
-	// 重启持久：关闭并重新打开数据库，策略记录仍然存在。
+	// 重启持久：关闭并重新打开数据库，共享记录仍然存在。
 	if err := e.db.Close(); err != nil {
 		t.Fatalf("close db: %v", err)
 	}
@@ -644,20 +649,20 @@ func TestPublishLifecycle(t *testing.T) {
 		t.Fatalf("ping reopened db: %v", err)
 	}
 	var count int
-	if err := db.QueryRow("SELECT count(*) FROM published_files WHERE id = ?", policy.ID).Scan(&count); err != nil {
-		t.Fatalf("query policy after restart: %v", err)
+	if err := db.QueryRow("SELECT count(*) FROM shares WHERE id = ?", created.ID).Scan(&count); err != nil {
+		t.Fatalf("query share after restart: %v", err)
 	}
 	if count != 1 {
-		t.Fatalf("policy rows after restart = %d, want 1", count)
+		t.Fatalf("share rows after restart = %d, want 1", count)
 	}
 }
 
-// TestPublishedServingRejectsSymlinkReplacement：策略创建成功之后，
+// TestSharedServingRejectsSymlinkReplacement：共享创建成功之后，
 // canonical 目标自身或其父目录被替换为指向 LocalRoot 之外的 symlink
-// 时，公开 serving 必须拒绝——serving 以持久化 canonical local_path
+// 时，公开直链必须拒绝——serving 以持久化 canonical local_path
 // 为身份，全链解析结果偏离持久化形态即同形 404，不跟随 symlink 读
 // 取外部文件。
-func TestPublishedServingRejectsSymlinkReplacement(t *testing.T) {
+func TestSharedServingRejectsSymlinkReplacement(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		swap func(t *testing.T, file string)
@@ -704,17 +709,17 @@ func TestPublishedServingRejectsSymlinkReplacement(t *testing.T) {
 			e.createJob(syncjob.ModeCopy)
 			e.sync()
 
-			w := e.doJSON(http.MethodPost, "/api/v1/published-files",
-				`{"job_id":"`+e.job.ID+`","path":"/docs/published.txt","public_path":"/share/published.txt","enabled":true}`)
+			w := e.doJSON(http.MethodPost, "/api/v1/shares",
+				`{"job_id":"`+e.job.ID+`","path":"/docs/published.txt","name":"share-it","enabled":true}`)
 			if w.Code != http.StatusCreated {
-				t.Fatalf("create policy = %d, body %s", w.Code, w.Body.String())
+				t.Fatalf("create share = %d, body %s", w.Code, w.Body.String())
 			}
 
 			// 创建成功之后文件系统发生替换：创建时的校验不再可信，
 			// serving 必须重新复验 canonical 身份。
 			tc.swap(t, filepath.Join(e.localRoot, "docs", "published.txt"))
 
-			w = e.get("/published/share/published.txt")
+			w = e.get("/shared/share-it/published.txt")
 			if w.Code != http.StatusNotFound {
 				t.Fatalf("serving after symlink replacement = %d body %q, want 404", w.Code, w.Body.String())
 			}
