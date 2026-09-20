@@ -21,7 +21,7 @@ export default function App() {
         <AuthProvider>
             <Routes>
                 <Route path="/login" element={<LoginPage />} />
-                <Route path="/shared/:slug" element={<SharedBrowsePage />} />
+                <Route path="/shared/:slug/*" element={<SharedBrowsePage />} />
                 <Route
                     element={
                         <RequireAuth>

@@ -691,14 +691,24 @@ export function listPublicShareEntries(
     )
 }
 
-// sharedBrowseURL 构造共享浏览页地址（第二层页面）。
+// sharedBrowsePath 构造共享目录的应用内路由；每段单独编码以保留层级。
+export function sharedBrowsePath(slug: string, path = '/'): string {
+    const encodedPath = path
+        .split('/')
+        .filter(Boolean)
+        .map(part => encodeURIComponent(part))
+        .join('/')
+    return `/shared/${encodeURIComponent(slug)}${encodedPath === '' ? '' : `/${encodedPath}`}`
+}
+
+// sharedBrowseURL 构造共享浏览页的绝对地址（供管理侧复制）。
 export function sharedBrowseURL(slug: string): string {
-    return `${window.location.origin}/shared/${slug}`
+    return `${window.location.origin}${sharedBrowsePath(slug)}`
 }
 
 // sharedFileURL 构造共享内文件的公开直链（支持 Range / HEAD）。
 export function sharedFileURL(slug: string, path: string): string {
-    return `${window.location.origin}/shared/${slug}${path}`
+    return `${window.location.origin}${sharedBrowsePath(slug, path)}`
 }
 
 // ===== API Token 管理（v0.7）=====

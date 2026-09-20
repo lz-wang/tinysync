@@ -261,8 +261,8 @@ func TestSharedServing(t *testing.T) {
 		t.Errorf("missing = %d %q, want same shape as disabled (%q)", w.Code, w.Body.String(), disabledBody)
 	}
 
-	// 恢复后：文件共享只服务 basename 那一条路径；指向目录、逃逸与
-	// 未知 slug 全部 404（绝不进入 SPA fallback 或文件系统根）。
+	// 恢复后：文件共享只服务 basename 那一条路径；文件、逃逸与未知
+	// slug 仍不落入 SPA fallback。
 	enabled := true
 	if _, err := env.svc.Update(context.Background(), created.ID, share.UpdateInput{Enabled: &enabled}); err != nil {
 		t.Fatalf("enable: %v", err)
@@ -277,6 +277,24 @@ func TestSharedServing(t *testing.T) {
 		if w.Code != http.StatusNotFound {
 			t.Errorf("GET %s = %d, want 404", p, w.Code)
 		}
+	}
+}
+
+func TestSharedDirectoryDeepLinkReturnsSPA(t *testing.T) {
+	env := newShareEnv(t)
+	env.write(t, "photos/trips/cover.jpg", "jpeg")
+	if _, err := env.svc.Create(context.Background(), share.CreateInput{
+		JobID: env.jobID, Path: "/photos", Name: "album", Enabled: true,
+	}); err != nil {
+		t.Fatalf("create share: %v", err)
+	}
+	w := httptest.NewRecorder()
+	env.router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/shared/album/trips", nil))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "<html") {
+		t.Errorf("deep directory page = %d %q, want SPA html", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("X-Robots-Tag"); got != "noindex" {
+		t.Errorf("deep directory x-robots-tag = %q, want noindex", got)
 	}
 }
 

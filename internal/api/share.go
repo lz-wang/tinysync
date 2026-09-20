@@ -41,8 +41,8 @@ func registerSharedServingRoutes(router *gin.Engine, webFS fs.FS, svc *share.Ser
 	h := &shareHandlers{svc: svc, webFS: webFS}
 	router.GET("/shared/:slug", h.page)
 	router.HEAD("/shared/:slug", h.page)
-	router.GET("/shared/:slug/*path", h.serve)
-	router.HEAD("/shared/:slug/*path", h.serve)
+	router.GET("/shared/:slug/*path", h.serveOrPage)
+	router.HEAD("/shared/:slug/*path", h.serveOrPage)
 }
 
 // registerPublicShareRoutes 注册无认证的公开共享浏览分页端点。svc 为 nil
@@ -243,13 +243,24 @@ func (h *shareHandlers) page(c *gin.Context) {
 // 共享或文件缺失 / 指向目录 / 逃逸 / 文件共享的非常规路径一律同形
 // 404；Range → 206 / 416；响应固定 Cache-Control: no-store + nosniff
 // + noindex。
-func (h *shareHandlers) serve(c *gin.Context) {
+func (h *shareHandlers) serveOrPage(c *gin.Context) {
 	rest := c.Param("path")
 	if rest == "/" {
 		// 显式尾随斜杠回到浏览页（/shared/<slug>/ → /shared/<slug>）。
 		c.Redirect(http.StatusPermanentRedirect, "/shared/"+c.Param("slug"))
 		return
 	}
+	// 深层目录 URL 返回 SPA，使刷新 /shared/:slug/a/b 时仍能浏览；
+	// 文件则继续走公开下载直链。
+	if _, _, err := h.svc.Browse(c.Request.Context(), c.Param("slug"), rest, source.ListOptions{Limit: 1}); err == nil {
+		h.page(c)
+		return
+	}
+	h.serveFile(c, rest)
+}
+
+// serveFile 服务共享内的普通文件直链。
+func (h *shareHandlers) serveFile(c *gin.Context, rest string) {
 	// OpenFile 在服务侧完成可服务判定与 canonical 身份复验，任何
 	// 失败都与「共享不存在」同形返回 404，不泄露当前状态。
 	name, f, info, err := h.svc.OpenFile(c.Request.Context(), c.Param("slug"), rest)
