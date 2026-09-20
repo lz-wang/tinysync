@@ -37,5 +37,6 @@ logs/
 # Local agent state
 .codegraph/
 .playwright-cli/
+.scratch/
 .superpowers/
 agents/
