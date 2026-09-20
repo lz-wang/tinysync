@@ -92,6 +92,18 @@ jobs:
             exit 2
           fi
 
+      # Homebrew 发布是该 workflow 的一部分：凭证缺失应在 prepare 阶段
+      # 失败，而不是等 publish 全部完成后 homebrew 才发现无法推送 tap。
+      - name: Validate Homebrew publishing credential
+        shell: bash
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [[ -z "${HOMEBREW_TAP_TOKEN}" ]]; then
+            echo "Error: HOMEBREW_TAP_TOKEN is required to publish Formula/tinysync.rb."
+            exit 2
+          fi
+
   test:
     name: Release checks
     needs: prepare
@@ -228,15 +240,15 @@ jobs:
 
       # 幂等发布：Release 已存在时 upload --clobber + 覆盖 notes，
       # 否则创建；支持 workflow_dispatch 重跑补救失败的发布。
-      # GitHub Release 只含 6 archives + checksums.txt（逐文件
-      # .sha256 仅供 WebDAV / 本地 dist）。
+      # GitHub Release 含 6 archives + 逐文件 .sha256（Homebrew tap
+      # 与下游校验直接引用）+ checksums.txt（整目录一次性校验）。
       - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.prepare.outputs.tag }}
         shell: bash
         run: |
-          assets=(dist/*.tar.gz dist/*.zip dist/checksums.txt)
+          assets=(dist/*.tar.gz dist/*.zip dist/*.sha256 dist/checksums.txt)
           if gh release view "${TAG}" >/dev/null 2>&1; then
             gh release upload "${TAG}" "${assets[@]}" --clobber
             gh release edit "${TAG}" --title "${TAG}" --notes-file release-notes.md
@@ -261,16 +273,175 @@ jobs:
           webdav_upload_path: "/Shares/github/${{ github.repository }}/${{ needs.prepare.outputs.version }}"
           files: |
             dist/tinysync_${{ needs.prepare.outputs.version }}_linux_amd64.tar.gz
+            dist/tinysync_${{ needs.prepare.outputs.version }}_linux_amd64.tar.gz.sha256
             dist/tinysync_${{ needs.prepare.outputs.version }}_linux_arm64.tar.gz
+            dist/tinysync_${{ needs.prepare.outputs.version }}_linux_arm64.tar.gz.sha256
             dist/tinysync_${{ needs.prepare.outputs.version }}_darwin_amd64.tar.gz
+            dist/tinysync_${{ needs.prepare.outputs.version }}_darwin_amd64.tar.gz.sha256
             dist/tinysync_${{ needs.prepare.outputs.version }}_darwin_arm64.tar.gz
+            dist/tinysync_${{ needs.prepare.outputs.version }}_darwin_arm64.tar.gz.sha256
             dist/tinysync_${{ needs.prepare.outputs.version }}_windows_amd64.zip
+            dist/tinysync_${{ needs.prepare.outputs.version }}_windows_amd64.zip.sha256
             dist/tinysync_${{ needs.prepare.outputs.version }}_windows_arm64.zip
+            dist/tinysync_${{ needs.prepare.outputs.version }}_windows_arm64.zip.sha256
             dist/checksums.txt
+
+  # Homebrew tap 发布：Formula 的 sha256 直接读 GitHub Release 上的
+  # 逐文件 .sha256，因此必须排在 publish 之后。仅在当前 tag 仍是仓库
+  # latest release 时推送，防止旧 tag 补跑把 tap 回滚到旧版本；本地
+  # tap 路径先 audit / install / test，全部通过才 push。
+  homebrew:
+    name: Publish Homebrew Formula
+    needs: [prepare, publish]
+    runs-on: macos-latest
+    concurrency:
+      group: homebrew-tap
+      cancel-in-progress: false
+    steps:
+      - name: Check latest release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          latest="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name')"
+          if [[ "${latest}" != "${TAG}" ]]; then
+            echo "Skip stale release: ${TAG}; latest is ${latest}."
+            echo "publish=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          echo "publish=true" >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout Homebrew tap
+        if: steps.release.outputs.publish == 'true'
+        uses: actions/checkout@v6
+        with:
+          repository: lz-wang/homebrew-tap
+          ref: main
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      # darwin / linux 四个安装目标进 Formula；windows 发行档不进
+      # Homebrew（brew 不分发 Windows 包）。
+      - name: Read release checksums
+        if: steps.release.outputs.publish == 'true'
+        id: sha
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          base="https://github.com/lz-wang/tinysync/releases/download/${TAG}"
+          for target in darwin_amd64 darwin_arm64 linux_amd64 linux_arm64; do
+            file="tinysync_${VERSION}_${target}.tar.gz.sha256"
+            sha="$(curl -fsSL "${base}/${file}" | awk 'NR == 1 { print $1 }')"
+
+            if [[ ! "${sha}" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "Error: invalid SHA-256 for ${file}."
+              exit 2
+            fi
+
+            echo "${target}=${sha}" >> "${GITHUB_OUTPUT}"
+          done
+
+      - name: Generate Formula
+        if: steps.release.outputs.publish == 'true'
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          DARWIN_AMD64_SHA: ${{ steps.sha.outputs.darwin_amd64 }}
+          DARWIN_ARM64_SHA: ${{ steps.sha.outputs.darwin_arm64 }}
+          LINUX_AMD64_SHA: ${{ steps.sha.outputs.linux_amd64 }}
+          LINUX_ARM64_SHA: ${{ steps.sha.outputs.linux_arm64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > homebrew-tap/Formula/tinysync.rb <<RUBY
+          class Tinysync < Formula
+            desc "File sync server for HomeLab with WebDAV, S3 and SFTP sources"
+            homepage "https://github.com/lz-wang/tinysync"
+            license "MIT"
+
+            on_macos do
+              on_arm do
+                url "https://github.com/lz-wang/tinysync/releases/download/v${VERSION}/tinysync_${VERSION}_darwin_arm64.tar.gz"
+                sha256 "${DARWIN_ARM64_SHA}"
+              end
+
+              on_intel do
+                url "https://github.com/lz-wang/tinysync/releases/download/v${VERSION}/tinysync_${VERSION}_darwin_amd64.tar.gz"
+                sha256 "${DARWIN_AMD64_SHA}"
+              end
+            end
+
+            on_linux do
+              on_arm do
+                url "https://github.com/lz-wang/tinysync/releases/download/v${VERSION}/tinysync_${VERSION}_linux_arm64.tar.gz"
+                sha256 "${LINUX_ARM64_SHA}"
+              end
+
+              on_intel do
+                url "https://github.com/lz-wang/tinysync/releases/download/v${VERSION}/tinysync_${VERSION}_linux_amd64.tar.gz"
+                sha256 "${LINUX_AMD64_SHA}"
+              end
+            end
+
+            def install
+              bin.install "tinysync"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/tinysync --version")
+            end
+          end
+          RUBY
+
+      - name: Commit Formula locally
+        if: steps.release.outputs.publish == 'true'
+        id: formula
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git -C homebrew-tap config user.name "github-actions[bot]"
+          git -C homebrew-tap config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if [[ -z "$(git -C homebrew-tap status --porcelain -- Formula/tinysync.rb)" ]]; then
+            echo "changed=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          git -C homebrew-tap add Formula/tinysync.rb
+          git -C homebrew-tap commit -m "tinysync ${{ needs.prepare.outputs.version }}"
+          echo "changed=true" >> "${GITHUB_OUTPUT}"
+
+      - name: Test Formula
+        if: steps.release.outputs.publish == 'true' && steps.formula.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          brew tap lz-wang/tap "file://${GITHUB_WORKSPACE}/homebrew-tap"
+          brew audit --strict --formula lz-wang/tap/tinysync
+          brew install --formula lz-wang/tap/tinysync
+          brew test lz-wang/tap/tinysync
+
+      - name: Publish Formula
+        if: steps.release.outputs.publish == 'true' && steps.formula.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C homebrew-tap push origin HEAD:main
 
   notify:
     name: Pushover notification
-    needs: [prepare, test, integration, hardening, smoke, publish]
+    needs: [prepare, test, integration, hardening, smoke, publish, homebrew]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -290,7 +461,8 @@ jobs:
           HARDENING_RESULT="${{ needs.hardening.result }}"
           SMOKE_RESULT="${{ needs.smoke.result }}"
           PUBLISH_RESULT="${{ needs.publish.result }}"
-          if [[ "${TEST_RESULT}" == "success" && "${INTEGRATION_RESULT}" == "success" && "${HARDENING_RESULT}" == "success" && "${SMOKE_RESULT}" == "success" && "${PUBLISH_RESULT}" == "success" ]]; then
+          HOMEBREW_RESULT="${{ needs.homebrew.result }}"
+          if [[ "${TEST_RESULT}" == "success" && "${INTEGRATION_RESULT}" == "success" && "${HARDENING_RESULT}" == "success" && "${SMOKE_RESULT}" == "success" && "${PUBLISH_RESULT}" == "success" && "${HOMEBREW_RESULT}" == "success" ]]; then
             PRIORITY="0"
             TITLE="TinySync 发布成功"
           else
@@ -305,6 +477,7 @@ jobs:
           <u>Hardening</u>: ${HARDENING_RESULT}
           <u>三平台 Smoke</u>: ${SMOKE_RESULT}
           <u>GitHub Release</u>: ${PUBLISH_RESULT}
+          <u>Homebrew</u>: ${HOMEBREW_RESULT}
           <u>版本</u>: <font color="#0000ff">${RELEASE_TAG}</font>
           <u>触发人</u>: <i>${{ github.actor }}</i>
           <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">查看运行详情</a>
