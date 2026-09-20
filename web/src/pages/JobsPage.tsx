@@ -7,8 +7,6 @@ import {
     Alert,
     Box,
     Button,
-    Card,
-    CardContent,
     Checkbox,
     Chip,
     CircularProgress,
@@ -19,12 +17,14 @@ import {
     IconButton,
     InputAdornment,
     MenuItem,
+    Paper,
     Stack,
     Table,
     TableBody,
     TableCell,
     TableContainer,
     TableHead,
+    TablePagination,
     TableRow,
     TableSortLabel,
     TextField,
@@ -119,38 +119,40 @@ export default function JobsPage() {
         }
     }
     return (
-        <Stack spacing={2}>
-            <Card variant="outlined">
-                <CardContent>
-                    {loadError !== null && (
-                        <Alert severity="error" onClose={() => setLoadError(null)} sx={{ mb: 2 }}>
-                            {loadError}
-                        </Alert>
-                    )}
-                    {jobs === null && loadError === null ? (
-                        <CircularProgress size={24} />
-                    ) : (
-                        jobs !== null && (
-                            <JobTable
-                                jobs={jobs}
-                                sources={sources}
-                                runStates={runStates}
-                                onAdd={() => {
-                                    setEditing(null)
-                                    setDialogOpen(true)
-                                }}
-                                onRun={job => void handleRun(job)}
-                                onEdit={job => {
-                                    setEditing(job)
-                                    setDialogOpen(true)
-                                }}
-                                onDelete={setDeleting}
-                                onBatchDelete={setBatchDeleting}
-                            />
-                        )
-                    )}
-                </CardContent>
-            </Card>
+        <Stack
+            spacing={2}
+            sx={{
+                height: { xs: 'calc(100dvh - 96px)', md: 'calc(100dvh - 112px)' },
+                minHeight: 420,
+            }}
+        >
+            {loadError !== null && (
+                <Alert severity="error" onClose={() => setLoadError(null)}>
+                    {loadError}
+                </Alert>
+            )}
+            {jobs === null && loadError === null ? (
+                <CircularProgress size={24} />
+            ) : (
+                jobs !== null && (
+                    <JobTable
+                        jobs={jobs}
+                        sources={sources}
+                        runStates={runStates}
+                        onAdd={() => {
+                            setEditing(null)
+                            setDialogOpen(true)
+                        }}
+                        onRun={job => void handleRun(job)}
+                        onEdit={job => {
+                            setEditing(job)
+                            setDialogOpen(true)
+                        }}
+                        onDelete={setDeleting}
+                        onBatchDelete={setBatchDeleting}
+                    />
+                )
+            )}
             <JobDialog
                 open={dialogOpen}
                 job={editing}
@@ -227,6 +229,8 @@ function JobTable({
         field: 'name',
         direction: 'asc',
     })
+    const [page, setPage] = useState(0)
+    const [rowsPerPage, setRowsPerPage] = useState(15)
     const sourceName = useCallback(
         (sourceId: string) => sources.find(source => source.id === sourceId)?.name ?? sourceId,
         [sources],
@@ -267,13 +271,24 @@ function JobTable({
                 }),
         [jobs, query, runStates, sort, sourceFilter, sourceName, statusFilter],
     )
+    const paginated = useMemo(
+        () => visible.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage),
+        [page, rowsPerPage, visible],
+    )
+    useEffect(() => {
+        const lastPage = Math.max(0, Math.ceil(visible.length / rowsPerPage) - 1)
+        if (page > lastPage) setPage(lastPage)
+    }, [page, rowsPerPage, visible.length])
     const chosen = jobs.filter(job => selected.includes(job.id))
-    const allVisible = visible.length > 0 && visible.every(job => selected.includes(job.id))
-    const toggleSort = (field: SortField) =>
+    const allVisible = paginated.length > 0 && paginated.every(job => selected.includes(job.id))
+    const someVisible = paginated.some(job => selected.includes(job.id))
+    const toggleSort = (field: SortField) => {
         setSort(prev => ({
             field,
             direction: prev.field === field && prev.direction === 'asc' ? 'desc' : 'asc',
         }))
+        setPage(0)
+    }
     const header = (label: string, field: SortField) => (
         <TableSortLabel
             active={sort.field === field}
@@ -284,7 +299,7 @@ function JobTable({
         </TableSortLabel>
     )
     return (
-        <Stack spacing={2}>
+        <Stack spacing={2} sx={{ flex: 1, minHeight: 0 }}>
             <Stack
                 direction={{ xs: 'column', md: 'row' }}
                 spacing={1}
@@ -324,7 +339,10 @@ function JobTable({
                     size="small"
                     placeholder="搜索任务或同步源"
                     value={query}
-                    onChange={event => setQuery(event.target.value)}
+                    onChange={event => {
+                        setQuery(event.target.value)
+                        setPage(0)
+                    }}
                     slotProps={{
                         input: {
                             startAdornment: (
@@ -340,7 +358,10 @@ function JobTable({
                     size="small"
                     label="同步源"
                     value={sourceFilter}
-                    onChange={event => setSourceFilter(event.target.value)}
+                    onChange={event => {
+                        setSourceFilter(event.target.value)
+                        setPage(0)
+                    }}
                     sx={{ minWidth: 130 }}
                 >
                     <MenuItem value="all">全部同步源</MenuItem>
@@ -355,7 +376,10 @@ function JobTable({
                     size="small"
                     label="结果"
                     value={statusFilter}
-                    onChange={event => setStatusFilter(event.target.value)}
+                    onChange={event => {
+                        setStatusFilter(event.target.value)
+                        setPage(0)
+                    }}
                     sx={{ minWidth: 110 }}
                 >
                     <MenuItem value="all">全部结果</MenuItem>
@@ -366,154 +390,186 @@ function JobTable({
                     <MenuItem value="skipped">已跳过</MenuItem>
                 </TextField>
             </Stack>
-            <TableContainer sx={{ overflow: 'auto' }}>
-                <Table size="small" sx={{ minWidth: 860 }}>
-                    <TableHead>
-                        <TableRow>
-                            <TableCell padding="checkbox">
-                                <Checkbox
-                                    size="small"
-                                    checked={allVisible}
-                                    indeterminate={chosen.length > 0 && !allVisible}
-                                    onChange={event =>
-                                        setSelected(
-                                            event.target.checked
-                                                ? [
-                                                      ...new Set([
-                                                          ...selected,
-                                                          ...visible.map(job => job.id),
-                                                      ]),
-                                                  ]
-                                                : selected.filter(
-                                                      id => !visible.some(job => job.id === id),
-                                                  ),
-                                        )
-                                    }
-                                />
-                            </TableCell>
-                            <TableCell>{header('名称', 'name')}</TableCell>
-                            <TableCell>{header('同步源', 'source')}</TableCell>
-                            <TableCell>{header('模式', 'mode')}</TableCell>
-                            <TableCell>{header('状态', 'enabled')}</TableCell>
-                            <TableCell>{header('最近运行', 'lastRun')}</TableCell>
-                            <TableCell>{header('下次运行', 'nextRun')}</TableCell>
-                            <TableCell align="center">操作</TableCell>
-                        </TableRow>
-                    </TableHead>
-                    <TableBody>
-                        {visible.map(job => {
-                            const state = runStates[job.id]
-                            const running = state?.state === 'running'
-                            return (
-                                <TableRow key={job.id} hover selected={selected.includes(job.id)}>
-                                    <TableCell padding="checkbox">
-                                        <Checkbox
-                                            size="small"
-                                            checked={selected.includes(job.id)}
-                                            onChange={event =>
-                                                setSelected(prev =>
-                                                    event.target.checked
-                                                        ? [...prev, job.id]
-                                                        : prev.filter(id => id !== job.id),
-                                                )
-                                            }
-                                        />
-                                    </TableCell>
-                                    <TableCell>
-                                        <Typography variant="body2" sx={{ fontWeight: 500 }}>
-                                            {job.name}
-                                        </Typography>
-                                    </TableCell>
-                                    <TableCell>{sourceName(job.source_id)}</TableCell>
-                                    <TableCell>
-                                        <Chip
-                                            label={job.mode === 'mirror' ? '镜像' : '复制'}
-                                            color={job.mode === 'mirror' ? 'warning' : 'default'}
-                                            size="small"
-                                        />
-                                    </TableCell>
-                                    <TableCell>
-                                        <Chip
-                                            label={job.enabled ? '已启用' : '已停用'}
-                                            color={job.enabled ? 'success' : 'default'}
-                                            size="small"
-                                        />
-                                    </TableCell>
-                                    <TableCell>
-                                        <LastRunTime status={state} />
-                                    </TableCell>
-                                    <TableCell>
-                                        <Typography variant="body2" color="text.secondary">
-                                            {formatDateTime(state?.next_run_at)}
-                                        </Typography>
-                                    </TableCell>
-                                    <TableCell align="center">
-                                        <Stack
-                                            direction="row"
-                                            spacing={0.25}
-                                            sx={{ justifyContent: 'center' }}
-                                        >
-                                            <Tooltip title="立即运行">
-                                                <span>
-                                                    <IconButton
-                                                        size="small"
-                                                        color="primary"
-                                                        aria-label={`运行 ${job.name}`}
-                                                        disabled={!job.enabled || running}
-                                                        onClick={() => onRun(job)}
-                                                    >
-                                                        {running ? (
-                                                            <CircularProgress size={18} />
-                                                        ) : (
-                                                            <BoltIcon fontSize="small" />
-                                                        )}
-                                                    </IconButton>
-                                                </span>
-                                            </Tooltip>
-                                            <Tooltip title="编辑">
-                                                <span>
-                                                    <IconButton
-                                                        size="small"
-                                                        aria-label={`编辑 ${job.name}`}
-                                                        disabled={running}
-                                                        onClick={() => onEdit(job)}
-                                                    >
-                                                        <EditOutlinedIcon fontSize="small" />
-                                                    </IconButton>
-                                                </span>
-                                            </Tooltip>
-                                            <Tooltip title="删除">
-                                                <span>
-                                                    <IconButton
-                                                        size="small"
-                                                        color="error"
-                                                        aria-label={`删除 ${job.name}`}
-                                                        disabled={running}
-                                                        onClick={() => onDelete(job)}
-                                                    >
-                                                        <DeleteOutlineIcon fontSize="small" />
-                                                    </IconButton>
-                                                </span>
-                                            </Tooltip>
-                                        </Stack>
+            <Paper
+                variant="outlined"
+                sx={{
+                    flex: 1,
+                    width: '100%',
+                    minWidth: 0,
+                    minHeight: 0,
+                    display: 'flex',
+                    flexDirection: 'column',
+                }}
+            >
+                <TableContainer sx={{ flexGrow: 1, minHeight: 0, overflow: 'auto' }}>
+                    <Table size="small" sx={{ minWidth: 860 }}>
+                        <TableHead>
+                            <TableRow>
+                                <TableCell padding="checkbox">
+                                    <Checkbox
+                                        size="small"
+                                        checked={allVisible}
+                                        indeterminate={someVisible && !allVisible}
+                                        onChange={event =>
+                                            setSelected(
+                                                event.target.checked
+                                                    ? [
+                                                          ...new Set([
+                                                              ...selected,
+                                                              ...paginated.map(job => job.id),
+                                                          ]),
+                                                      ]
+                                                    : selected.filter(
+                                                          id =>
+                                                              !paginated.some(job => job.id === id),
+                                                      ),
+                                            )
+                                        }
+                                    />
+                                </TableCell>
+                                <TableCell>{header('名称', 'name')}</TableCell>
+                                <TableCell>{header('同步源', 'source')}</TableCell>
+                                <TableCell>{header('模式', 'mode')}</TableCell>
+                                <TableCell>{header('状态', 'enabled')}</TableCell>
+                                <TableCell>{header('最近运行', 'lastRun')}</TableCell>
+                                <TableCell>{header('下次运行', 'nextRun')}</TableCell>
+                                <TableCell align="center">操作</TableCell>
+                            </TableRow>
+                        </TableHead>
+                        <TableBody>
+                            {paginated.map(job => {
+                                const state = runStates[job.id]
+                                const running = state?.state === 'running'
+                                return (
+                                    <TableRow
+                                        key={job.id}
+                                        hover
+                                        selected={selected.includes(job.id)}
+                                    >
+                                        <TableCell padding="checkbox">
+                                            <Checkbox
+                                                size="small"
+                                                checked={selected.includes(job.id)}
+                                                onChange={event =>
+                                                    setSelected(prev =>
+                                                        event.target.checked
+                                                            ? [...prev, job.id]
+                                                            : prev.filter(id => id !== job.id),
+                                                    )
+                                                }
+                                            />
+                                        </TableCell>
+                                        <TableCell>
+                                            <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                                                {job.name}
+                                            </Typography>
+                                        </TableCell>
+                                        <TableCell>{sourceName(job.source_id)}</TableCell>
+                                        <TableCell>
+                                            <Chip
+                                                label={job.mode === 'mirror' ? '镜像' : '复制'}
+                                                color={
+                                                    job.mode === 'mirror' ? 'warning' : 'default'
+                                                }
+                                                size="small"
+                                            />
+                                        </TableCell>
+                                        <TableCell>
+                                            <Chip
+                                                label={job.enabled ? '已启用' : '已停用'}
+                                                color={job.enabled ? 'success' : 'default'}
+                                                size="small"
+                                            />
+                                        </TableCell>
+                                        <TableCell>
+                                            <LastRunTime status={state} />
+                                        </TableCell>
+                                        <TableCell>
+                                            <Typography variant="body2" color="text.secondary">
+                                                {formatDateTime(state?.next_run_at)}
+                                            </Typography>
+                                        </TableCell>
+                                        <TableCell align="center">
+                                            <Stack
+                                                direction="row"
+                                                spacing={0.25}
+                                                sx={{ justifyContent: 'center' }}
+                                            >
+                                                <Tooltip title="立即运行">
+                                                    <span>
+                                                        <IconButton
+                                                            size="small"
+                                                            color="primary"
+                                                            aria-label={`运行 ${job.name}`}
+                                                            disabled={!job.enabled || running}
+                                                            onClick={() => onRun(job)}
+                                                        >
+                                                            {running ? (
+                                                                <CircularProgress size={18} />
+                                                            ) : (
+                                                                <BoltIcon fontSize="small" />
+                                                            )}
+                                                        </IconButton>
+                                                    </span>
+                                                </Tooltip>
+                                                <Tooltip title="编辑">
+                                                    <span>
+                                                        <IconButton
+                                                            size="small"
+                                                            aria-label={`编辑 ${job.name}`}
+                                                            disabled={running}
+                                                            onClick={() => onEdit(job)}
+                                                        >
+                                                            <EditOutlinedIcon fontSize="small" />
+                                                        </IconButton>
+                                                    </span>
+                                                </Tooltip>
+                                                <Tooltip title="删除">
+                                                    <span>
+                                                        <IconButton
+                                                            size="small"
+                                                            color="error"
+                                                            aria-label={`删除 ${job.name}`}
+                                                            disabled={running}
+                                                            onClick={() => onDelete(job)}
+                                                        >
+                                                            <DeleteOutlineIcon fontSize="small" />
+                                                        </IconButton>
+                                                    </span>
+                                                </Tooltip>
+                                            </Stack>
+                                        </TableCell>
+                                    </TableRow>
+                                )
+                            })}
+                            {paginated.length === 0 && (
+                                <TableRow>
+                                    <TableCell colSpan={8}>
+                                        <Box sx={{ py: 6, textAlign: 'center' }}>
+                                            <Typography color="text.secondary">
+                                                暂无匹配的同步任务
+                                            </Typography>
+                                        </Box>
                                     </TableCell>
                                 </TableRow>
-                            )
-                        })}
-                        {visible.length === 0 && (
-                            <TableRow>
-                                <TableCell colSpan={8}>
-                                    <Box sx={{ py: 6, textAlign: 'center' }}>
-                                        <Typography color="text.secondary">
-                                            暂无匹配的同步任务
-                                        </Typography>
-                                    </Box>
-                                </TableCell>
-                            </TableRow>
-                        )}
-                    </TableBody>
-                </Table>
-            </TableContainer>
+                            )}
+                        </TableBody>
+                    </Table>
+                </TableContainer>
+                <TablePagination
+                    component="div"
+                    count={visible.length}
+                    page={page}
+                    rowsPerPage={rowsPerPage}
+                    rowsPerPageOptions={[10, 15, 20, 50, 100]}
+                    labelRowsPerPage="每页"
+                    onPageChange={(_, nextPage) => setPage(nextPage)}
+                    onRowsPerPageChange={event => {
+                        setRowsPerPage(Number.parseInt(event.target.value, 10))
+                        setPage(0)
+                    }}
+                />
+            </Paper>
         </Stack>
     )
 }
