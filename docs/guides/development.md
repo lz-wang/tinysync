@@ -1,7 +1,7 @@
 # 开发与验证
 
-涉及代码、测试、格式化、配置或 API 变更时阅读。架构与阶段见
-[ROADMAP.md](../../ROADMAP.md)，CI 与发布见[构建与发布](release.md)。
+涉及代码、测试、格式化、配置或 API 变更时阅读。领域术语见
+[CONTEXT.md](../../CONTEXT.md)，CI 与发布见[构建与发布](release.md)。
 
 ## 命令入口
 
@@ -29,7 +29,7 @@
 ## 实现约定
 
 - Go 使用 `gofmt`（Tab 缩进），导入顺序与 Makefile 的 goimports-reviser 配置一致，标准库在前。
-- 包保持单一职责，业务逻辑放在 `internal/` 对应领域包；遵守 ROADMAP 中的启动链路和装配边界。
+- 包保持单一职责，业务逻辑放在 `internal/` 对应领域包；启动链路与装配边界以 `main.go` 现状为准。
 - 错误包含操作与目标上下文，保留底层错误，支持 `errors.Is/As`。
 - HTTP handler 与生命周期覆盖成功和失败路径；配置变更覆盖默认值、环境变量、CLI 优先级及无效输入。
 - Web 使用严格 TypeScript，不用 `any` 或非空断言绕过边界校验；React 负责 UI，API 访问统一走 [api.ts](../../web/src/api.ts) 的类型化客户端。

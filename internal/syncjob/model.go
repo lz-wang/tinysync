@@ -1,7 +1,7 @@
 // Package syncjob 承载 Sync Job 领域：模型、Selector、远端扫描、
 // 同步计划与引擎、LocalRoot 归属保护和手动运行状态。
 // Job 把一个 Source 的远端子树单向同步到本地目录；
-// 删除授权唯一来源是 managed_files（见 docs/roadmap/03-webdav-pull-sync.md）。
+// 删除授权唯一来源是 managed_files。
 package syncjob
 
 import (

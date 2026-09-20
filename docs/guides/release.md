@@ -1,7 +1,7 @@
 # 构建与发布
 
 涉及版本、CI、打包或发布时阅读。命令以 [Makefile](../../Makefile) 为准，
-整体进度见 [ROADMAP.md](../../ROADMAP.md)，常规检查见[开发与验证](development.md)。
+常规检查见[开发与验证](development.md)。
 
 ## 版本与产物
 
@@ -43,6 +43,6 @@ Windows 将二进制路径换为 `./tinysync.exe`，在 Git Bash 执行并与 wo
 1. 核对工作区、目标提交和 CHANGELOG 对应版本段，执行 `make ci`；只纳入本次发布内容。
 2. 使用不可变 `vX.Y.Z` tag 指向明确提交，推送后由 Release workflow 发布；已有 tag 可通过手动触发重试，不移动已公开 tag。
 3. 核对真实远端 run / job 结果、tag 对应提交、Release Notes、六个发行档和 `checksums.txt`；本地构建不能替代远端验收。
-4. 单独记录 WebDAV 镜像与通知结果，不能从主流程成功推断其成功。同步更新阶段方案与 ROADMAP 的验收状态。
+4. 单独记录 WebDAV 镜像与通知结果，不能从主流程成功推断其成功。
 
 开发检查、GitHub 发布和镜像配置保持分离；不要为文档整理或普通代码修改触发发布。
