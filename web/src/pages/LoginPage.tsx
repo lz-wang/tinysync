@@ -1,12 +1,14 @@
 import { Alert, Box, Button, Card, CardContent, TextField, Typography } from '@mui/material'
 import { type FormEvent, useState } from 'react'
 import { Navigate } from 'react-router-dom'
+import { usePageTitle } from '../app/usePageTitle'
 import { useAuth } from '../features/auth/AuthProvider'
 
 // LoginPage 是唯一登录入口：只有密码（单一 Local Admin，无注册 /
 // 忘记密码入口）；忘记密码由 operator 在服务器执行
 // `tinysync auth set-password`。
 export default function LoginPage() {
+    usePageTitle('登录')
     const auth = useAuth()
     const [password, setPassword] = useState('')
     const [submitting, setSubmitting] = useState(false)

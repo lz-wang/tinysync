@@ -43,6 +43,7 @@ import {
     runJob,
     type SourceResponse,
 } from '../api'
+import { usePageTitle } from '../app/usePageTitle'
 import { formatDateTime } from '../features/history/shared'
 import DeleteJobDialog from '../features/jobs/DeleteJobDialog'
 import JobDialog from '../features/jobs/JobDialog'
@@ -52,6 +53,7 @@ type SortField = 'name' | 'source' | 'mode' | 'enabled' | 'lastRun' | 'nextRun'
 
 // JobsPage 将任务配置、最近一次运行和常用操作收敛到一个可筛选的基础表格。
 export default function JobsPage() {
+    usePageTitle('同步任务')
     const [jobs, setJobs] = useState<JobResponse[] | null>(null)
     const [sources, setSources] = useState<SourceResponse[]>([])
     const [loadError, setLoadError] = useState<string | null>(null)

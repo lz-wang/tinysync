@@ -1,6 +1,7 @@
 import { Box, Card, CardContent, Chip, CircularProgress, Stack, Typography } from '@mui/material'
 import { useEffect, useState } from 'react'
 import { fetchHealth, fetchVersion } from '../api'
+import { usePageTitle } from '../app/usePageTitle'
 
 // StatusView 是服务状态快照：health 与 version 的加载结果。
 interface StatusView {
@@ -11,6 +12,7 @@ interface StatusView {
 
 // OverviewPage 展示服务健康状态与版本信息。
 export default function OverviewPage() {
+    usePageTitle('概览')
     const [status, setStatus] = useState<StatusView | null>(null)
 
     useEffect(() => {

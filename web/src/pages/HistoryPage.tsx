@@ -18,6 +18,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link as RouterLink } from 'react-router-dom'
 import type { RunRecordResponse } from '../api'
 import { listRuns } from '../api'
+import { usePageTitle } from '../app/usePageTitle'
 import {
     formatBytes,
     formatDateTime,
@@ -31,6 +32,7 @@ const pageSize = 50
 // HistoryPage 提供全局同步历史：所有 Job 最近的成功 / 失败 / 跳过
 // 一览，分页浏览，点击行进入运行详情。
 export default function HistoryPage() {
+    usePageTitle('运行历史')
     const [runs, setRuns] = useState<RunRecordResponse[] | null>(null)
     const [total, setTotal] = useState(0)
     const [page, setPage] = useState(1)

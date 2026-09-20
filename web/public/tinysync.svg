@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <title>TinySync 云端与本地双向同步</title>
+  <path d="M10 26a7 7 0 0 1-1-14 9 9 0 0 1 17-1 7.5 7.5 0 0 1-1 15H10Z" fill="#2563eb"/>
+  <g stroke="#2563eb" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M37 13c11 0 17 6 17 17m-5-5 5 5 5-5"/>
+    <path d="M27 51c-11 0-17-6-17-17m-5 5 5-5 5 5"/>
+    <rect x="35" y="39" width="23" height="15" rx="2"/>
+    <path d="M32 58h29"/>
+  </g>
+</svg>

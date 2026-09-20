@@ -1,6 +1,7 @@
 import { Box, Tab, Tabs } from '@mui/material'
 import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
+import { usePageTitle } from '../app/usePageTitle'
 import LocalFileBrowser from '../features/files/LocalFileBrowser'
 import PublishedPanel from '../features/files/PublishedPanel'
 import RemoteFileBrowser from '../features/files/RemoteFileBrowser'
@@ -12,6 +13,13 @@ export default function FilesPage() {
     const [searchParams, setSearchParams] = useSearchParams()
     const queryTab = searchParams.get('tab')
     const tab = queryTab === 'local' || queryTab === 'published' ? queryTab : 'remote'
+    const viewTitle = tab === 'local' ? '本地文件' : tab === 'published' ? '已发布' : '远端文件'
+    const path = searchParams.get('path') ?? '/'
+    usePageTitle(
+        tab !== 'published' && path !== '/'
+            ? `${path} · ${viewTitle} · 文件管理`
+            : `${viewTitle} · 文件管理`,
+    )
     // publishNonce 在新策略创建后递增，驱动 Published 列表刷新。
     const [publishNonce, setPublishNonce] = useState(0)
 

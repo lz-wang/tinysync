@@ -12,6 +12,7 @@ import {
 import { useEffect, useState } from 'react'
 import { Link as RouterLink, useParams } from 'react-router-dom'
 import { getRun, listRunItems, type RunItemResponse, type RunRecordResponse } from '../api'
+import { usePageTitle } from '../app/usePageTitle'
 import {
     formatBytes,
     formatDateTime,
@@ -25,6 +26,7 @@ import {
 export default function RunDetailPage() {
     const { runId } = useParams<{ runId: string }>()
     const [run, setRun] = useState<RunRecordResponse | null>(null)
+    usePageTitle(run && run.id === runId ? `${run.job_name} · 运行详情` : '运行详情')
     const [items, setItems] = useState<RunItemResponse[]>([])
     const [itemTotal, setItemTotal] = useState(0)
     const [error, setError] = useState<string | null>(null)

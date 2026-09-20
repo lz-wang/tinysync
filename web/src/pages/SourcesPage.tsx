@@ -43,6 +43,7 @@ import {
     updateSource,
     type WebDAVConfig,
 } from '../api'
+import { usePageTitle } from '../app/usePageTitle'
 import DeleteSourceDialog from '../features/sources/DeleteSourceDialog'
 import SourceDialog from '../features/sources/SourceDialog'
 
@@ -51,6 +52,7 @@ type Toast = { message: string; severity: 'success' | 'error' } | null
 
 // SourcesPage 使用原生 MUI Table 管理同步源；连接测试结果以 toast 呈现。
 export default function SourcesPage() {
+    usePageTitle('同步源')
     const [sources, setSources] = useState<SourceResponse[] | null>(null)
     const [loadError, setLoadError] = useState<string | null>(null)
     const [dialogOpen, setDialogOpen] = useState(false)
