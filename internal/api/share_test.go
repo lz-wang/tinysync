@@ -177,7 +177,7 @@ func TestShareCRUD(t *testing.T) {
 
 // 公开直链 serving：200 / Range 206 / 非法 Range 416 / HEAD / no-store；
 // disabled / 缺失 / 指向目录 / 文件共享的非常规路径 一律同形 404；
-// 浏览页深链接返回 SPA index.html（noindex，ADR-0001）。
+// 浏览页深链接返回 SPA index.html（noindex）。
 func TestSharedServing(t *testing.T) {
 	env := newShareEnv(t)
 	env.write(t, "synced/data.bin", "0123456789abcdef")
@@ -303,9 +303,8 @@ type entriesPage struct {
 	NextCursor string `json:"next_cursor"`
 }
 
-// 公开端点：卡片只含可服务共享且展示名回落；entries 单层分页、
-// 点文件隐藏、symlink 跳过、子目录下钻；文件共享单条目虚拟根；
-// 禁用后卡片消失且浏览同形 404；无认证可访问。
+// 公开浏览端点：entries 单层分页、点文件隐藏、symlink 跳过、子目录
+// 下钻；文件共享单条目虚拟根；禁用后与未知 slug 同形 404；无认证可访问。
 func TestPublicShareEndpoints(t *testing.T) {
 	env := newShareEnv(t)
 	env.write(t, "photos/a.jpg", "jpeg")
@@ -328,19 +327,12 @@ func TestPublicShareEndpoints(t *testing.T) {
 		t.Fatalf("create file share: %v", err)
 	}
 
-	// 卡片：两条均可服务；命名共享显示名称、未命名回落 basename。
-	// 直接打 Engine（不经 testRouter 的 cookie 注入）证明无认证可用。
+	// 公开索引已移除：不能通过 API 枚举可服务共享。直接打 Engine
+	// （不经 testRouter 的 cookie 注入）证明无认证端点仍可用。
 	w := httptest.NewRecorder()
 	env.router.Engine.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/public/shares", nil))
-	if w.Code != http.StatusOK {
-		t.Fatalf("public cards = %d %s", w.Code, w.Body.String())
-	}
-	body := w.Body.String()
-	if !strings.Contains(body, `"slug":"album"`) || !strings.Contains(body, `"name":"album"`) {
-		t.Errorf("cards missing named dir share: %s", body)
-	}
-	if !strings.Contains(body, `"name":"a.jpg"`) || !strings.Contains(body, `"is_dir":false`) {
-		t.Errorf("cards missing file share with fallback name: %s", body)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("public index = %d %s, want 404", w.Code, w.Body.String())
 	}
 
 	// 目录 entries：单层且点文件 / symlink 不可见，无下一页。
@@ -406,15 +398,10 @@ func TestPublicShareEndpoints(t *testing.T) {
 		t.Errorf("file share subpath = %d, want 404", w.Code)
 	}
 
-	// 禁用后：卡片消失，浏览 404 且与未知 slug 同形。
+	// 禁用后：浏览 404 且与未知 slug 同形。
 	disabled := false
 	if _, err := env.svc.Update(context.Background(), dirShare.ID, share.UpdateInput{Enabled: &disabled}); err != nil {
 		t.Fatalf("disable: %v", err)
-	}
-	w = httptest.NewRecorder()
-	env.router.Engine.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/public/shares", nil))
-	if strings.Contains(w.Body.String(), "album") {
-		t.Errorf("cards after disable = %s, want album hidden", w.Body.String())
 	}
 	w = httptest.NewRecorder()
 	env.router.Engine.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/public/shares/album/entries", nil))
@@ -426,5 +413,21 @@ func TestPublicShareEndpoints(t *testing.T) {
 	env.router.Engine.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/public/shares/never/entries", nil))
 	if w.Code != http.StatusNotFound || w.Body.String() != disabledBody {
 		t.Errorf("entries unknown = %d %q, want same shape as disabled (%q)", w.Code, w.Body.String(), disabledBody)
+	}
+}
+
+// 裸 /shared 没有公开索引且不能落入 SPA fallback；仅带 slug 的共享
+// 浏览页和文件直链能公开访问。
+func TestSharedIndexRouteNotServed(t *testing.T) {
+	env := newShareEnv(t)
+	for _, p := range []string{"/shared", "/shared/"} {
+		w := httptest.NewRecorder()
+		env.router.Engine.ServeHTTP(w, httptest.NewRequest(http.MethodGet, p, nil))
+		if w.Code != http.StatusNotFound {
+			t.Errorf("GET %s = %d, want 404", p, w.Code)
+		}
+		if strings.Contains(w.Body.String(), "<html") {
+			t.Errorf("GET %s returned SPA HTML", p)
+		}
 	}
 }

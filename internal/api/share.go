@@ -31,7 +31,7 @@ func registerShareRoutes(group *gin.RouterGroup, svc *share.Service) {
 }
 
 // registerSharedServingRoutes 注册公开共享路由：/shared/:slug 是浏览页
-// 深链接（返回 SPA index.html，带 noindex，ADR-0001）；
+// 深链接（返回 SPA index.html，带 noindex）；
 // /shared/:slug/*path 是文件直链。二者均为 Gin 显式注册的路由，
 // 不落入 SPA NoRoute fallback。svc 为 nil 时跳过注册。
 func registerSharedServingRoutes(router *gin.Engine, webFS fs.FS, svc *share.Service) {
@@ -45,53 +45,14 @@ func registerSharedServingRoutes(router *gin.Engine, webFS fs.FS, svc *share.Ser
 	router.HEAD("/shared/:slug/*path", h.serve)
 }
 
-// registerPublicShareRoutes 注册无认证的公开共享端点：索引卡片与
-// 浏览分页。svc 为 nil 时跳过注册。
+// registerPublicShareRoutes 注册无认证的公开共享浏览分页端点。svc 为 nil
+// 时跳过注册。
 func registerPublicShareRoutes(group *gin.RouterGroup, svc *share.Service) {
 	if svc == nil {
 		return
 	}
 	h := &shareHandlers{svc: svc}
-	group.GET("/public/shares", h.publicList)
 	group.GET("/public/shares/:slug/entries", h.publicEntries)
-}
-
-// publicShareCardDTO 是公开索引卡片的 API 表示：name 为回落后的
-// 展示名（未命名共享显示目标 basename）；expires_at 为 RFC3339 或
-// 空串（永不过期）。
-type publicShareCardDTO struct {
-	Slug      string `json:"slug"`
-	Name      string `json:"name"`
-	IsDir     bool   `json:"is_dir"`
-	CreatedAt string `json:"created_at"`
-	ExpiresAt string `json:"expires_at"`
-}
-
-// publicList 返回全部可服务共享的卡片：过期 / 禁用共享完全不出现在
-// 结果中（ADR-0001）。
-func (h *shareHandlers) publicList(c *gin.Context) {
-	shares, err := h.svc.ListPublic(c.Request.Context())
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
-		return
-	}
-	if shares == nil {
-		shares = []share.Share{}
-	}
-	cards := make([]publicShareCardDTO, 0, len(shares))
-	for _, s := range shares {
-		card := publicShareCardDTO{
-			Slug:      s.Slug,
-			Name:      s.DisplayName(),
-			IsDir:     s.IsDir,
-			CreatedAt: s.CreatedAt.Format(time.RFC3339),
-		}
-		if s.ExpiresAt != nil {
-			card.ExpiresAt = s.ExpiresAt.Format(time.RFC3339)
-		}
-		cards = append(cards, card)
-	}
-	c.JSON(http.StatusOK, gin.H{"shares": cards})
 }
 
 // publicEntries 返回共享浏览视图的一页条目（目录单层或文件共享的
@@ -265,7 +226,7 @@ func (h *shareHandlers) remove(c *gin.Context) {
 
 // page 服务 /shared/:slug 浏览页深链接：返回 SPA index.html，由前端
 // 公开路由渲染。页面不落缓存（发版即生效），并以 X-Robots-Tag
-// 拒绝收录（ADR-0001）。
+// 拒绝收录。
 func (h *shareHandlers) page(c *gin.Context) {
 	data, err := fs.ReadFile(h.webFS, "index.html")
 	if err != nil {

@@ -17,7 +17,7 @@ TinySync 是一个面向 HomeLab 的文件同步服务：单一 Go 二进制，�
 > 本地根）显式共享为受控 HTTP URL 与公开浏览页。
 >
 > **认证**：REST API 与 Web UI 全面 default-deny——除 health /
-> version / 登录与 `/shared` 公开共享外，所有端点都需要认证。
+> version / 登录与带唯一 slug 的 `/shared/<slug>` 公开共享外，所有端点都需要认证。
 > 单一 Local Admin 经密码登录建立 Web Session（HttpOnly Cookie），
 > 自动化脚本使用 scoped API Token（`Authorization: Bearer`）。
 > 首次启动时 `serve` 会生成高熵管理员密码并仅打印到当前终端一次；
@@ -69,8 +69,8 @@ tinysync --version        # 打印版本号
 
 REST API 与 Web UI 默认拒绝匿名访问（401）；公开端点只有
 `GET /api/v1/health`、`GET /api/v1/version`、`POST /api/v1/auth/login`
-与 `/shared` 公开共享（索引页、浏览页、文件直链与
-`/api/v1/public/shares` 公开卡片 / 目录浏览 API）。
+与带唯一 slug 的 `/shared/<slug>` 公开共享（浏览页、文件直链与
+`/api/v1/public/shares/:slug/entries` 目录浏览 API）。
 
 Web UI 使用 HttpOnly Session Cookie（7 天绝对过期、`SameSite=Strict`、
 HTTPS 下自动 `Secure`）；凭据绝不进入 URL，跨源变更请求一律拒绝。
@@ -335,14 +335,13 @@ curl -X POST http://127.0.0.1:9466/api/v1/shares \
   留空生成 10 字符随机标识；改名会同步改写 URL（旧链接立即失效）。
 - 共享与 Job 生命周期解耦：Job 修改 LocalRoot 不会隐式改写既有
   URL；Mirror 删除文件后直链自然 404。
-- 公开访问：`/shared` 索引页以卡片列出全部可服务共享（名称、分享
-  时间、过期时间；过期 / 禁用完全隐藏）；`/shared/<slug>` 浏览页
-  支持目录下钻、分页、下载与复制链接（单文件共享为单行列表）；
+- 公开访问仅限带唯一 slug 的 URL：裸 `/shared` 不提供索引且返回 404；
+  `/shared/<slug>` 浏览页支持目录下钻、分页、下载与复制链接（单文件
+  共享为单行列表）；
   文件直链 `/shared/<slug>/<path>` 支持 Range / HEAD。禁用、过期或
   目标缺失统一返回 404，不区分原因；响应固定
   `Cache-Control: no-store`，页面与直链带 `X-Robots-Tag: noindex`。
-- 无认证公开 API：`GET /api/v1/public/shares`（索引卡片）与
-  `GET /api/v1/public/shares/:slug/entries?path=&limit=&cursor=`（目录
+- 无认证公开 API：`GET /api/v1/public/shares/:slug/entries?path=&limit=&cursor=`（目录
   分页浏览；文件共享的根返回恰含自身的单条目）。
 
 ### v0.9 → v0.10 升级（破坏性）

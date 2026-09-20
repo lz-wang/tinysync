@@ -7,7 +7,6 @@
 package share
 
 import (
-	"path/filepath"
 	"time"
 )
 
@@ -24,8 +23,7 @@ type Share struct {
 	// Slug 是 /shared 之下的唯一 URL 标识段：自定义名称或随机生成。
 	Slug string
 	// Name 为 nil 表示未命名（随机 slug）；非 nil 时等于自定义名称
-	// （此时 Slug 与之相等），公开卡片展示名由此决定是否回落
-	// basename。
+	// （此时 Slug 与之相等），仅用于管理侧辨识。
 	Name *string
 	// IsDir 记录创建时目标是目录（含 Job 本地根）还是普通文件。
 	// 文件共享的公开浏览根是恰含自身一条目的虚拟目录。
@@ -40,15 +38,6 @@ type Share struct {
 // Expired 判断共享在给定时刻是否已过期。
 func (s Share) Expired(now time.Time) bool {
 	return s.ExpiresAt != nil && !now.Before(*s.ExpiresAt)
-}
-
-// DisplayName 返回公开卡片展示名：命名共享显示名称，未命名回落
-// 目标 basename。
-func (s Share) DisplayName() string {
-	if s.Name != nil && *s.Name != "" {
-		return *s.Name
-	}
-	return filepath.Base(s.LocalPath)
 }
 
 // CreateInput 是创建输入：目标以 Job + LocalRoot 内逻辑路径表达，

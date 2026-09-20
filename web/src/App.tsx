@@ -11,9 +11,8 @@ import RunDetailPage from './pages/RunDetailPage'
 import SettingsPage from './pages/SettingsPage'
 import SourcesPage from './pages/SourcesPage'
 import SharedBrowsePage from './pages/shared/SharedBrowsePage'
-import SharedIndexPage from './pages/shared/SharedIndexPage'
 
-// App 定义前端路由：/login 与 /shared/*（公开索引 / 浏览页）独立于
+// App 定义前端路由：/login 与 /shared/:slug（公开浏览页）独立于
 // 应用骨架与登录守卫，其余路由经 RequireAuth；服务端对 /shared/:slug
 // 显式返回 SPA（带 noindex），其余深链接走 SPA fallback。
 export default function App() {
@@ -21,7 +20,6 @@ export default function App() {
         <AuthProvider>
             <Routes>
                 <Route path="/login" element={<LoginPage />} />
-                <Route path="/shared" element={<SharedIndexPage />} />
                 <Route path="/shared/:slug" element={<SharedBrowsePage />} />
                 <Route
                     element={

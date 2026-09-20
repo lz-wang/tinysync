@@ -28,7 +28,7 @@ import { copyText } from '../../app/clipboard'
 
 // SharePanel 是共享策略管理视图：列表、复制链接、启用/停用、修改
 // 过期与删除（带确认）。公开侧语义由后端保证（禁用 / 过期 / 目标
-// 缺失一律 404，索引页隐藏）。
+// 缺失一律 404，不区分原因），且不存在公开枚举入口。
 export default function SharePanel() {
     const [shares, setShares] = useState<ShareResponse[] | null>(null)
     const [error, setError] = useState<string | null>(null)

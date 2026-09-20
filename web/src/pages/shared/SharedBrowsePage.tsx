@@ -1,18 +1,11 @@
 import ContentCopyOutlinedIcon from '@mui/icons-material/ContentCopyOutlined'
-import { Alert, Box, IconButton, Snackbar, Tooltip, Typography } from '@mui/material'
-import { useCallback, useEffect, useState } from 'react'
+import { Box, IconButton, Snackbar, Tooltip, Typography } from '@mui/material'
+import { useCallback, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import {
-    type FileEntry,
-    listPublicShareEntries,
-    listPublicShares,
-    type PublicShareCard,
-    sharedFileURL,
-} from '../../api'
+import { type FileEntry, listPublicShareEntries, sharedFileURL } from '../../api'
 import { copyText } from '../../app/clipboard'
 import { usePageTitle } from '../../app/usePageTitle'
 import ReadOnlyFileManager from '../../features/files/ReadOnlyFileManager'
-import { formatDateTime } from '../../features/history/shared'
 
 // SharedBrowsePage 是 /shared/:slug 公开浏览页：复用文件管理器的
 // 位置栏 + 表格工作流，只保留公开分享必需的列（名称 / 类型 / 大小 /
@@ -21,27 +14,9 @@ import { formatDateTime } from '../../features/history/shared'
 export default function SharedBrowsePage() {
     const { slug = '' } = useParams()
     const [path, setPath] = useState('/')
-    const [card, setCard] = useState<PublicShareCard | null>(null)
-    const [metaError, setMetaError] = useState<string | null>(null)
     const [copied, setCopied] = useState(false)
     const [copyError, setCopyError] = useState<string | null>(null)
-    usePageTitle(card?.name ?? '共享内容')
-
-    // 页头元信息来自公开卡片：共享不存在 / 过期时给出明确提示。
-    useEffect(() => {
-        let cancelled = false
-        listPublicShares()
-            .then(cards => {
-                if (cancelled) return
-                setCard(cards.find(item => item.slug === slug) ?? null)
-            })
-            .catch(err => {
-                if (!cancelled) setMetaError(err instanceof Error ? err.message : String(err))
-            })
-        return () => {
-            cancelled = true
-        }
-    }, [slug])
+    usePageTitle('共享内容')
 
     const load = useCallback(
         async (targetPath: string, cursor?: string) => {
@@ -62,23 +37,14 @@ export default function SharedBrowsePage() {
         }
     }
 
-    if (metaError !== null) return <Alert severity="error">{metaError}</Alert>
-    if (card === null) {
-        return <Alert severity="warning">共享不存在或已过期。</Alert>
-    }
-
     return (
         <Box sx={{ minHeight: '100vh', bgcolor: 'background.default', px: 2, py: 3 }}>
             <Typography variant="h5" component="h1" gutterBottom>
-                {card.name}
-            </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                分享于 {formatDateTime(card.created_at)}
-                {card.expires_at !== '' && ` · 过期于 ${formatDateTime(card.expires_at)}`}
+                共享内容
             </Typography>
             <ReadOnlyFileManager
                 resourceLabel="共享"
-                resources={[{ id: slug, label: card.name }]}
+                resources={[{ id: slug, label: '共享内容' }]}
                 resourceId={slug}
                 path={path}
                 onResourceChange={() => undefined}

@@ -153,8 +153,8 @@ func TestCreateSharesFileDirectoryAndRoot(t *testing.T) {
 	if named.LocalPath != filepath.Join(env.root, "photos", "a.jpg") || named.IsDir || named.Slug != "album" {
 		t.Errorf("file share = %+v, want canonical file with slug album", named)
 	}
-	if named.Name == nil || *named.Name != "album" || named.DisplayName() != "album" {
-		t.Errorf("display name = %+v, want album", named.Name)
+	if named.Name == nil || *named.Name != "album" {
+		t.Errorf("name = %+v, want album", named.Name)
 	}
 
 	dirShare, err := env.svc.Create(context.Background(), CreateInput{
@@ -163,8 +163,8 @@ func TestCreateSharesFileDirectoryAndRoot(t *testing.T) {
 	if err != nil || !dirShare.IsDir || dirShare.LocalPath != filepath.Join(env.root, "photos") {
 		t.Fatalf("Create dir = %+v, %v; want canonical dir", dirShare, err)
 	}
-	if dirShare.Name != nil || dirShare.DisplayName() != "photos" {
-		t.Errorf("dir display name = %+v, want fallback photos", dirShare.Name)
+	if dirShare.Name != nil {
+		t.Errorf("dir name = %+v, want nil", dirShare.Name)
 	}
 	if len(dirShare.Slug) != 10 {
 		t.Errorf("random slug = %q, want 10 chars", dirShare.Slug)
@@ -284,14 +284,14 @@ func TestUpdateMutatesOnlyMutableFields(t *testing.T) {
 		t.Errorf("immutable fields changed: %v -> %v", p, updated)
 	}
 
-	// 清除名称：展示回落 basename，slug 保持。
+	// 清除名称后 slug 保持不变。
 	empty := ""
 	updated, err = env.svc.Update(context.Background(), p.ID, UpdateInput{Name: &empty})
 	if err != nil || updated.Name != nil {
 		t.Fatalf("clear name = %+v, %v; want nil name", updated, err)
 	}
-	if updated.Slug != "album" || updated.DisplayName() != "a.jpg" {
-		t.Errorf("after clear = %+v, want slug album and fallback display", updated)
+	if updated.Slug != "album" {
+		t.Errorf("after clear = %+v, want slug album", updated)
 	}
 
 	// 启停与过期。
@@ -401,17 +401,6 @@ func TestExpiredBoundary(t *testing.T) {
 	}
 	if (Share{}).Expired(at.Add(time.Hour)) {
 		t.Error("nil expiry = expired, want never")
-	}
-}
-
-// DisplayName：命名显示名称，未命名回落 basename。
-func TestDisplayName(t *testing.T) {
-	named := "album"
-	if (Share{Name: &named, LocalPath: "/srv/photos"}).DisplayName() != "album" {
-		t.Error("named display = want album")
-	}
-	if (Share{LocalPath: "/srv/photos"}).DisplayName() != "photos" {
-		t.Error("unnamed display = want photos")
 	}
 }
 

@@ -727,9 +727,9 @@ func TestSharedServingRejectsSymlinkReplacement(t *testing.T) {
 	}
 }
 
-// TestSharedDirBrowseLifecycle：目录共享的公开浏览链：卡片索引 →
-// entries 分页（点文件隐藏、symlink 跳过）→ 子目录下钻 → 目录内
-// 文件直链 → 禁用后卡片消失且浏览 / 直链 404。
+// TestSharedDirBrowseLifecycle：目录共享的公开浏览链：entries 分页
+// （点文件隐藏、symlink 跳过）→ 子目录下钻 → 目录内文件直链 →
+// 禁用后浏览 / 直链 404。
 func TestSharedDirBrowseLifecycle(t *testing.T) {
 	remote := newWebDAVFixture(t)
 	e := newBrowserEnv(t, remote)
@@ -759,12 +759,6 @@ func TestSharedDirBrowseLifecycle(t *testing.T) {
 		`{"job_id":"`+e.job.ID+`","path":"/docs","name":"docs-share","enabled":true}`)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create dir share = %d, body %s", w.Code, w.Body.String())
-	}
-
-	// 公开卡片包含该共享。
-	w = e.get("/api/v1/public/shares")
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "docs-share") {
-		t.Fatalf("public cards = %d %s", w.Code, w.Body.String())
 	}
 
 	// entries：单层（a.txt、sub），点文件与 symlink 不可见；limit=1
@@ -810,7 +804,7 @@ func TestSharedDirBrowseLifecycle(t *testing.T) {
 		t.Errorf("dir file direct link = %d %q", w.Code, w.Body.String())
 	}
 
-	// 禁用后：卡片消失，浏览与直链 404。
+	// 禁用后：浏览与直链 404。
 	w = e.doJSON(http.MethodGet, "/api/v1/shares", "")
 	if w.Code != http.StatusOK {
 		t.Fatalf("list shares = %d %s", w.Code, w.Body.String())
@@ -836,10 +830,6 @@ func TestSharedDirBrowseLifecycle(t *testing.T) {
 	w = e.doJSON(http.MethodPatch, "/api/v1/shares/"+shareID, `{"enabled":false}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("disable = %d, body %s", w.Code, w.Body.String())
-	}
-	w = e.get("/api/v1/public/shares")
-	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "docs-share") {
-		t.Errorf("cards after disable = %d %s, want docs-share hidden", w.Code, w.Body.String())
 	}
 	if w := e.get("/api/v1/public/shares/docs-share/entries"); w.Code != http.StatusNotFound {
 		t.Errorf("entries after disable = %d, want 404", w.Code)
