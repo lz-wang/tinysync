@@ -995,3 +995,110 @@ func TestMigrateV6ToV7AddsAuthentication(t *testing.T) {
 		t.Fatalf("backup files = %v, want one tinysync-v6-* entry", entries)
 	}
 }
+
+// TestMigrateV8ToV9AddsShares：v8 库升级后新增 shares 表（slug 唯一、
+// name 可空、is_dir/enabled CHECK 生效），既有业务数据完整保留；
+// published_files 由后续 0010 随发布域退役废弃，本迁移不触碰。
+func TestMigrateV8ToV9AddsShares(t *testing.T) {
+	dataDir := t.TempDir()
+	db, err := Open(dataDir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	// 用真实的 0001-0008 schema 构造 v8 形态的库。
+	v8FS := fstest.MapFS{}
+	for _, name := range []string{
+		"0001_sources.sql", "0002_sync_jobs.sql",
+		"0003_scheduler_history.sql", "0004_once_consumption.sql",
+		"0005_source_configs.sql", "0006_published_files.sql",
+		"0007_authentication.sql", "0008_admin_profile.sql",
+	} {
+		data, err := fs.ReadFile(migrationFS, "migrations/"+name)
+		if err != nil {
+			t.Fatalf("read embedded %s: %v", name, err)
+		}
+		v8FS["migrations/"+name] = &fstest.MapFile{Data: data}
+	}
+	if err := migrate(ctx, db, dataDir, v8FS); err != nil {
+		t.Fatalf("build v8 database: %v", err)
+	}
+	assertVersion(t, db, 8)
+
+	// 存量数据：Source、Job 与一条发布策略（旧表尚存）。
+	if _, err := db.Exec(`INSERT INTO sources
+		(id, name, type, endpoint, username, password,
+		 config_json, credentials_json, enabled, created_at, updated_at)
+		VALUES ('src_a', 'nas', 'webdav', '', '', '',
+		 '{"endpoint":"https://example.com/dav/","username":"user"}', '{}', 1, 1, 1)`); err != nil {
+		t.Fatalf("insert source: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO sync_jobs
+		(id, name, source_id, remote_root, local_root, mode,
+		 include_patterns, exclude_patterns, enabled,
+		 schedule_type, schedule_value, schedule_timezone,
+		 once_consumed_for, created_at, updated_at)
+		VALUES ('job_a', 'photos', 'src_a', '/photos', '/tmp/backup', 'copy',
+		 '[]', '[]', 1, 'manual', '', '', NULL, 1, 1)`); err != nil {
+		t.Fatalf("insert job: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO published_files
+		(id, local_path, public_path, enabled, expires_at, created_at, updated_at)
+		VALUES ('pub_a', '/tmp/a.txt', '/a.txt', 1, NULL, 1, 1)`); err != nil {
+		t.Fatalf("insert published file: %v", err)
+	}
+
+	if err := Migrate(ctx, db, dataDir); err != nil {
+		t.Fatalf("Migrate v8->v9: %v", err)
+	}
+	assertVersion(t, db, embeddedLatestVersion(t))
+
+	// 既有业务记录完整无损，published_files 暂存（0010 才废弃）。
+	var jobName string
+	if err := db.QueryRow("SELECT name FROM sync_jobs WHERE id = 'job_a'").Scan(&jobName); err != nil {
+		t.Fatalf("query job after upgrade: %v", err)
+	}
+	if jobName != "photos" {
+		t.Errorf("job name after upgrade = %q, want photos", jobName)
+	}
+	var publicPath string
+	if err := db.QueryRow("SELECT public_path FROM published_files WHERE id = 'pub_a'").Scan(&publicPath); err != nil {
+		t.Fatalf("query published file after upgrade: %v", err)
+	}
+	if publicPath != "/a.txt" {
+		t.Errorf("public_path = %q, want /a.txt", publicPath)
+	}
+
+	// shares 可用：约束生效。
+	if _, err := db.Exec(`INSERT INTO shares
+		(id, local_path, slug, name, is_dir, enabled, expires_at, created_at, updated_at)
+		VALUES ('shr_a', '/tmp/backup', 'photos', NULL, 1, 1, NULL, 1, 1)`); err != nil {
+		t.Fatalf("insert share: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO shares
+		(id, local_path, slug, name, is_dir, enabled, expires_at, created_at, updated_at)
+		VALUES ('shr_b', '/tmp/other', 'photos', 'second', 0, 1, NULL, 1, 1)`); err == nil {
+		t.Fatal("insert duplicate slug = nil, want UNIQUE violation")
+	}
+	if _, err := db.Exec(`INSERT INTO shares
+		(id, local_path, slug, name, is_dir, enabled, expires_at, created_at, updated_at)
+		VALUES ('shr_c', '/tmp/c', 'c', NULL, 2, 1, NULL, 1, 1)`); err == nil {
+		t.Fatal("insert is_dir=2 = nil, want CHECK violation")
+	}
+	if _, err := db.Exec(`INSERT INTO shares
+		(id, local_path, slug, name, is_dir, enabled, expires_at, created_at, updated_at)
+		VALUES ('shr_d', '/tmp/d', 'd', NULL, 1, 2, NULL, 1, 1)`); err == nil {
+		t.Fatal("insert enabled=2 = nil, want CHECK violation")
+	}
+
+	// 升级备份存在且停留在 v8。
+	entries, err := os.ReadDir(filepath.Join(dataDir, backupsDirName))
+	if err != nil {
+		t.Fatalf("read backups dir: %v", err)
+	}
+	if len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), "tinysync-v8-") {
+		t.Fatalf("backup files = %v, want one tinysync-v8-* entry", entries)
+	}
+}

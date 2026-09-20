@@ -403,3 +403,53 @@ func TestOpenCanonicalRegularFile(t *testing.T) {
 		}
 	})
 }
+
+// TestResolveCanonicalTarget：文件 / 目录 / root 均解析为 canonical
+// 目标（Share 创建的目标校验链）；缺失、symlink 终组件与父目录
+// 逃逸拒绝。
+func TestResolveCanonicalTarget(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	canonical, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("evalsymlinks: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(canonical, "a.txt"), []byte("a"), 0o644); err != nil {
+		t.Fatalf("write a.txt: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(canonical, "sub"), 0o755); err != nil {
+		t.Fatalf("mkdir sub: %v", err)
+	}
+	outsideFile := filepath.Join(outside, "secret.txt")
+	if err := os.WriteFile(outsideFile, []byte("s"), 0o644); err != nil {
+		t.Fatalf("write outside: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(canonical, "out-link")); err != nil {
+		t.Fatalf("symlink out-link: %v", err)
+	}
+	if err := os.Symlink("a.txt", filepath.Join(canonical, "alias.txt")); err != nil {
+		t.Fatalf("symlink alias: %v", err)
+	}
+
+	file, info, err := ResolveCanonicalTarget(canonical, "/a.txt")
+	if err != nil || file != filepath.Join(canonical, "a.txt") || !info.Mode().IsRegular() {
+		t.Errorf("resolve file = (%q, %+v), %v; want canonical regular file", file, info, err)
+	}
+	dir, info, err := ResolveCanonicalTarget(canonical, "/sub")
+	if err != nil || dir != filepath.Join(canonical, "sub") || !info.IsDir() {
+		t.Errorf("resolve dir = (%q, %+v), %v; want canonical dir", dir, info, err)
+	}
+	self, info, err := ResolveCanonicalTarget(canonical, "/")
+	if err != nil || self != canonical || !info.IsDir() {
+		t.Errorf("resolve root = (%q, %+v), %v; want canonical root dir", self, info, err)
+	}
+	if _, _, err := ResolveCanonicalTarget(canonical, "/nope.txt"); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("missing target error = %v, want fs.ErrNotExist", err)
+	}
+	if _, _, err := ResolveCanonicalTarget(canonical, "/alias.txt"); !errors.Is(err, ErrNotRegularFile) {
+		t.Errorf("symlink target error = %v, want ErrNotRegularFile", err)
+	}
+	if _, _, err := ResolveCanonicalTarget(canonical, "/out-link/secret.txt"); !errors.Is(err, ErrEscape) {
+		t.Errorf("parent escape error = %v, want ErrEscape", err)
+	}
+}

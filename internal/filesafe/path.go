@@ -122,6 +122,58 @@ func ResolveRegularFile(root, logicalPath string) (string, os.FileInfo, error) {
 	return resolved, info, nil
 }
 
+// ResolveCanonicalTarget 在 ResolveWithinRoot 之上要求目标已存在且是
+// 普通文件或目录（Share 的创建校验：目标可以是文件、目录或 root
+// 本身），整条路径不含 symlink：
+//   - Lstat 拒绝目标自身是 symlink（无论指向 root 内还是外）；
+//   - EvalSymlinks 解析全部组件后用 Rel 验证仍在 root 内，防御
+//     父目录组件中的 symlink 逃逸。
+//
+// 返回 canonical 绝对路径与目标 FileInfo。目标不存在时返回包装
+// fs.ErrNotExist 的错误；既非普通文件也非目录（设备、socket 等）与
+// symlink 一样归入 ErrNotRegularFile。
+func ResolveCanonicalTarget(root, logicalPath string) (string, os.FileInfo, error) {
+	// root 先归一为 canonical 形态，与 ResolveRegularFile 同一防御。
+	if canonicalRoot, err := filepath.EvalSymlinks(root); err != nil {
+		return "", nil, err
+	} else if canonicalRoot != root {
+		root = canonicalRoot
+	}
+	target, err := ResolveWithinRoot(root, logicalPath)
+	if err != nil {
+		return "", nil, err
+	}
+	info, err := os.Lstat(target)
+	if err != nil {
+		return "", nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", nil, fmt.Errorf("%w: %s is a symlink", ErrNotRegularFile, logicalPath)
+	}
+	if !info.Mode().IsRegular() && !info.IsDir() {
+		return "", nil, fmt.Errorf("%w: %s is not a regular file or directory", ErrNotRegularFile, logicalPath)
+	}
+	resolved, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		return "", nil, err
+	}
+	if resolved != target {
+		// target 自身不是 symlink，解析差异只能来自父目录组件中的
+		// symlink；确认解析结果仍在 root 内。
+		rel, relErr := filepath.Rel(root, resolved)
+		if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return "", nil, fmt.Errorf("%w: logical path %q escapes root %s via symlink", ErrEscape, logicalPath, root)
+		}
+		// info 取自 target，与 resolved 指向同一目标；重新 Stat 保证
+		// 返回的 FileInfo 对应最终路径。
+		info, err = os.Stat(resolved)
+		if err != nil {
+			return "", nil, err
+		}
+	}
+	return resolved, info, nil
+}
+
 // LstatWithinRoot 把逻辑路径解析为 root 之下的文件系统路径并返回
 // 最终组件的 Lstat 信息：父目录组件不得经 symlink 逃逸 root，最终
 // 组件保留 Lstat 语义（symlink 原样呈现、不跟随）。浏览 Stat 场景
