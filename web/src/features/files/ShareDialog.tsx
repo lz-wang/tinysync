@@ -16,6 +16,7 @@ import {
 } from '@mui/material'
 import { useState } from 'react'
 import { createShare, type ShareResponse, shareEntryURL } from '../../api'
+import { copyText } from '../../app/clipboard'
 
 // ShareDialog 是共享创建对话框：目标为 Local 浏览中选中的文件、
 // 目录或本地根本身；共享名称可选（即 URL slug，留空随机生成）。
@@ -64,7 +65,7 @@ export default function ShareDialog({
 
     const link = created === null ? '' : shareEntryURL(created)
     const copyLink = async () => {
-        await navigator.clipboard.writeText(link)
+        await copyText(link)
         setCopied(true)
         window.setTimeout(() => setCopied(false), 1500)
     }

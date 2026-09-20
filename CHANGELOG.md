@@ -43,6 +43,7 @@ GitHub Release 摘要一致。
 
 ### 修复
 
+- 以 HTTP（非 localhost）访问 Web UI 时，共享浏览页与共享管理页的“复制链接”及 raw token 复制不再报 `Cannot read properties of undefined (reading 'writeText')`：剪贴板写入在非安全上下文下自动回退到兼容方式，复制功能恢复可用。
 - Web UI 的 Cron 计划不再显示单独的时区输入，缺省按运行 TinySync 机器的本地时区解释，和单次指定时间运行保持一致。
 - 首次 `serve` 启动自动生成高熵管理员密码并仅在本机输出一次；后续认证继续使用 HttpOnly Web Session，密码变更会立即废弃全部已有会话。
 

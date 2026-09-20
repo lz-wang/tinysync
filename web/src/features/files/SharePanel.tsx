@@ -24,6 +24,7 @@ import {
 } from '@mui/material'
 import { useCallback, useEffect, useState } from 'react'
 import { deleteShare, listShares, type ShareResponse, shareEntryURL, updateShare } from '../../api'
+import { copyText } from '../../app/clipboard'
 
 // SharePanel 是共享策略管理视图：列表、复制链接、启用/停用、修改
 // 过期与删除（带确认）。公开侧语义由后端保证（禁用 / 过期 / 目标
@@ -97,7 +98,7 @@ export default function SharePanel() {
     }
 
     const copyURL = async (share: ShareResponse) => {
-        await navigator.clipboard.writeText(shareEntryURL(share))
+        await copyText(shareEntryURL(share))
         setCopied(share.id)
         window.setTimeout(() => setCopied(null), 1500)
     }

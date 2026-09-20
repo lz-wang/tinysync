@@ -1,5 +1,6 @@
 import { Alert, Box, Button, Dialog, DialogContent, DialogTitle, Typography } from '@mui/material'
 import { useEffect, useState } from 'react'
+import { copyText } from '../../app/clipboard'
 
 interface RawTokenDialogProps {
     // 待展示的 raw token；null 表示关闭。关闭后父组件必须清空
@@ -23,7 +24,7 @@ export default function RawTokenDialog({ token, onClose }: RawTokenDialogProps) 
         if (token === null) {
             return
         }
-        await navigator.clipboard.writeText(token.raw)
+        await copyText(token.raw)
         setCopied(true)
     }
 

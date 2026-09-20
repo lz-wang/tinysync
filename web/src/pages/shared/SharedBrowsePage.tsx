@@ -9,6 +9,7 @@ import {
     type PublicShareCard,
     sharedFileURL,
 } from '../../api'
+import { copyText } from '../../app/clipboard'
 import { usePageTitle } from '../../app/usePageTitle'
 import ReadOnlyFileManager from '../../features/files/ReadOnlyFileManager'
 import { formatDateTime } from '../../features/history/shared'
@@ -52,7 +53,7 @@ export default function SharedBrowsePage() {
 
     const copyLink = async (entry: FileEntry) => {
         try {
-            await navigator.clipboard.writeText(sharedFileURL(slug, entry.path))
+            await copyText(sharedFileURL(slug, entry.path))
             setCopyError(null)
             setCopied(true)
             setTimeout(() => setCopied(false), 1500)
