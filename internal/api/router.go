@@ -22,7 +22,7 @@ import (
 //   - /api/v1/* 分两层：public（health / version / login）与
 //     protected（default-deny，经 authMiddleware 认证）；
 //   - 仅 /shared/:slug（浏览页）与 /shared/:slug/*path（直链）显式注册；
-//     裸 /shared（含尾随斜杠）一律 404；
+//     裸 /shared（含尾随斜杠）重定向至主页；
 //     /mcp 显式注册，其余 /mcp/* 路径 404，不落入 SPA fallback；
 //   - 其余路径由 NoRoute 承接：命中嵌入文件按静态资源服务
 //     （assets 带 immutable 缓存），未命中回退 index.html（前端路由深链接）；
@@ -60,7 +60,7 @@ func NewRouter(webFS fs.FS, deps Dependencies) *gin.Engine {
 		registerAPITokenRoutes(protected, deps.Auth)
 	}
 	// 仅 /shared/:slug（浏览页）与 /shared/:slug/*path（直链）显式注册：
-	// 公开服务不落入 SPA fallback，裸 /shared 则由 NoRoute 拒绝。
+	// 公开服务不落入 SPA fallback，裸 /shared 则由 NoRoute 重定向主页。
 	registerSharedServingRoutes(router, webFS, deps.Share)
 	// /mcp 显式注册：MCP adapter 自带认证与跨源防护链（auth 只认
 	// Bearer API Token），不走 Gin 中间件。nil 时路径不存在（fail
@@ -113,10 +113,15 @@ func handleVersion(c *gin.Context) {
 // Allow 头）；其余未匹配请求全部进入本处理器。
 func handleWeb(webFS fs.FS) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// API、MCP 与裸 /shared namespace 必须 404：不能让 SPA fallback
-		// 吞掉未知 adapter 路径或公开共享索引。精确 /mcp 与带 slug 的
-		// /shared 路径均由显式路由处理。
-		if strings.HasPrefix(c.Request.URL.Path, "/api/") || c.Request.URL.Path == "/mcp" || strings.HasPrefix(c.Request.URL.Path, "/mcp/") || c.Request.URL.Path == "/shared" || c.Request.URL.Path == "/shared/" {
+		// 裸 /shared 不提供公开索引，统一回到主页；带 slug 的共享路径
+		// 已由显式路由处理，因而不会进入这里。
+		if c.Request.URL.Path == "/shared" || c.Request.URL.Path == "/shared/" {
+			c.Redirect(http.StatusFound, "/")
+			return
+		}
+		// API 与 MCP namespace 必须 404：不能让 SPA fallback 吞掉未知
+		// adapter 路径。精确 /mcp 由显式路由处理，此处覆盖 /mcp/*。
+		if strings.HasPrefix(c.Request.URL.Path, "/api/") || c.Request.URL.Path == "/mcp" || strings.HasPrefix(c.Request.URL.Path, "/mcp/") {
 			c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "not found"})
 			return
 		}

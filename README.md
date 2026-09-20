@@ -335,7 +335,8 @@ curl -X POST http://127.0.0.1:9466/api/v1/shares \
   留空生成 10 字符随机标识；改名会同步改写 URL（旧链接立即失效）。
 - 共享与 Job 生命周期解耦：Job 修改 LocalRoot 不会隐式改写既有
   URL；Mirror 删除文件后直链自然 404。
-- 公开访问仅限带唯一 slug 的 URL：裸 `/shared` 不提供索引且返回 404；
+- 公开访问仅限带唯一 slug 的 URL：裸 `/shared` 不提供索引并重定向到
+  主页；
   `/shared/<slug>` 浏览页支持目录下钻、分页、下载与复制链接（单文件
   共享为单行列表）；
   文件直链 `/shared/<slug>/<path>` 支持 Range / HEAD。禁用、过期或

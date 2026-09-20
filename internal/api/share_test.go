@@ -416,18 +416,15 @@ func TestPublicShareEndpoints(t *testing.T) {
 	}
 }
 
-// 裸 /shared 没有公开索引且不能落入 SPA fallback；仅带 slug 的共享
-// 浏览页和文件直链能公开访问。
-func TestSharedIndexRouteNotServed(t *testing.T) {
+// 裸 /shared 没有公开索引，统一回到主页；仅带 slug 的共享浏览页和
+// 文件直链能公开访问。
+func TestSharedIndexRouteRedirectsHome(t *testing.T) {
 	env := newShareEnv(t)
 	for _, p := range []string{"/shared", "/shared/"} {
 		w := httptest.NewRecorder()
 		env.router.Engine.ServeHTTP(w, httptest.NewRequest(http.MethodGet, p, nil))
-		if w.Code != http.StatusNotFound {
-			t.Errorf("GET %s = %d, want 404", p, w.Code)
-		}
-		if strings.Contains(w.Body.String(), "<html") {
-			t.Errorf("GET %s returned SPA HTML", p)
+		if w.Code != http.StatusFound || w.Header().Get("Location") != "/" {
+			t.Errorf("GET %s = %d %q, want 302 to /", p, w.Code, w.Header().Get("Location"))
 		}
 	}
 }
