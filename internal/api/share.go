@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"tinysync/internal/auth"
+	"tinysync/internal/browser"
 	"tinysync/internal/filesafe"
 	"tinysync/internal/share"
 	"tinysync/internal/source"
@@ -42,6 +43,80 @@ func registerSharedServingRoutes(router *gin.Engine, webFS fs.FS, svc *share.Ser
 	router.HEAD("/shared/:slug", h.page)
 	router.GET("/shared/:slug/*path", h.serve)
 	router.HEAD("/shared/:slug/*path", h.serve)
+}
+
+// registerPublicShareRoutes 注册无认证的公开共享端点：索引卡片与
+// 浏览分页。svc 为 nil 时跳过注册。
+func registerPublicShareRoutes(group *gin.RouterGroup, svc *share.Service) {
+	if svc == nil {
+		return
+	}
+	h := &shareHandlers{svc: svc}
+	group.GET("/public/shares", h.publicList)
+	group.GET("/public/shares/:slug/entries", h.publicEntries)
+}
+
+// publicShareCardDTO 是公开索引卡片的 API 表示：name 为回落后的
+// 展示名（未命名共享显示目标 basename）；expires_at 为 RFC3339 或
+// 空串（永不过期）。
+type publicShareCardDTO struct {
+	Slug      string `json:"slug"`
+	Name      string `json:"name"`
+	IsDir     bool   `json:"is_dir"`
+	CreatedAt string `json:"created_at"`
+	ExpiresAt string `json:"expires_at"`
+}
+
+// publicList 返回全部可服务共享的卡片：过期 / 禁用共享完全不出现在
+// 结果中（ADR-0001）。
+func (h *shareHandlers) publicList(c *gin.Context) {
+	shares, err := h.svc.ListPublic(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return
+	}
+	if shares == nil {
+		shares = []share.Share{}
+	}
+	cards := make([]publicShareCardDTO, 0, len(shares))
+	for _, s := range shares {
+		card := publicShareCardDTO{
+			Slug:      s.Slug,
+			Name:      s.DisplayName(),
+			IsDir:     s.IsDir,
+			CreatedAt: s.CreatedAt.Format(time.RFC3339),
+		}
+		if s.ExpiresAt != nil {
+			card.ExpiresAt = s.ExpiresAt.Format(time.RFC3339)
+		}
+		cards = append(cards, card)
+	}
+	c.JSON(http.StatusOK, gin.H{"shares": cards})
+}
+
+// publicEntries 返回共享浏览视图的一页条目（目录单层或文件共享的
+// 单条目虚拟根）：path 缺省 /，limit / cursor 与本地浏览端点同一
+// 语义；共享不可服务或路径不可用一律同形 404。
+func (h *shareHandlers) publicEntries(c *gin.Context) {
+	p := queryPath(c)
+	opts, err := listOptionsFromQuery(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	entries, nextCursor, err := h.svc.Browse(c.Request.Context(), c.Param("slug"), p, opts)
+	if err != nil {
+		handleShareError(c, err)
+		return
+	}
+	if entries == nil {
+		entries = []browser.Entry{}
+	}
+	c.JSON(http.StatusOK, localListResponse{
+		Path:       p,
+		Entries:    entries,
+		NextCursor: nextCursor,
+	})
 }
 
 // shareHandlers 是共享端点的 handler 集合。

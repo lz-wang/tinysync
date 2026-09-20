@@ -293,3 +293,138 @@ func TestSharedRouteNotSwallowedBySPA(t *testing.T) {
 		t.Error("response contains HTML, want JSON 404")
 	}
 }
+
+// entriesPage 是公开浏览端点响应的解析形态。
+type entriesPage struct {
+	Entries []struct {
+		Path string `json:"path"`
+		Kind string `json:"kind"`
+	} `json:"entries"`
+	NextCursor string `json:"next_cursor"`
+}
+
+// 公开端点：卡片只含可服务共享且展示名回落；entries 单层分页、
+// 点文件隐藏、symlink 跳过、子目录下钻；文件共享单条目虚拟根；
+// 禁用后卡片消失且浏览同形 404；无认证可访问。
+func TestPublicShareEndpoints(t *testing.T) {
+	env := newShareEnv(t)
+	env.write(t, "photos/a.jpg", "jpeg")
+	env.write(t, "photos/b.jpg", "jpeg2")
+	env.write(t, "photos/.hidden", "h")
+	env.write(t, "photos/sub/c.txt", "c")
+	if err := os.Symlink(env.root, filepath.Join(env.root, "photos", "alias")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	dirShare, err := env.svc.Create(context.Background(), share.CreateInput{
+		JobID: env.jobID, Path: "/photos", Name: "album", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create dir share: %v", err)
+	}
+	fileShare, err := env.svc.Create(context.Background(), share.CreateInput{
+		JobID: env.jobID, Path: "/photos/a.jpg", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create file share: %v", err)
+	}
+
+	// 卡片：两条均可服务；命名共享显示名称、未命名回落 basename。
+	// 直接打 Engine（不经 testRouter 的 cookie 注入）证明无认证可用。
+	w := httptest.NewRecorder()
+	env.router.Engine.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/public/shares", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("public cards = %d %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `"slug":"album"`) || !strings.Contains(body, `"name":"album"`) {
+		t.Errorf("cards missing named dir share: %s", body)
+	}
+	if !strings.Contains(body, `"name":"a.jpg"`) || !strings.Contains(body, `"is_dir":false`) {
+		t.Errorf("cards missing file share with fallback name: %s", body)
+	}
+
+	// 目录 entries：单层且点文件 / symlink 不可见，无下一页。
+	w = httptest.NewRecorder()
+	env.router.Engine.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/public/shares/album/entries?path=/", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("entries = %d %s", w.Code, w.Body.String())
+	}
+	var page entriesPage
+	if err := json.Unmarshal(w.Body.Bytes(), &page); err != nil {
+		t.Fatalf("unmarshal entries: %v", err)
+	}
+	if len(page.Entries) != 3 || page.Entries[0].Path != "/a.jpg" || page.Entries[1].Path != "/b.jpg" || page.Entries[2].Path != "/sub" {
+		t.Errorf("entries = %+v, want a.jpg / b.jpg / sub", page.Entries)
+	}
+	if page.NextCursor != "" {
+		t.Errorf("next_cursor = %q, want empty", page.NextCursor)
+	}
+
+	// limit=1 分页 + 子目录下钻。
+	w = httptest.NewRecorder()
+	env.router.Engine.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/public/shares/album/entries?path=/&limit=1", nil))
+	var paged entriesPage
+	if err := json.Unmarshal(w.Body.Bytes(), &paged); err != nil {
+		t.Fatalf("unmarshal paged: %v", err)
+	}
+	if len(paged.Entries) != 1 || paged.Entries[0].Path != "/a.jpg" || paged.NextCursor == "" {
+		t.Fatalf("paged = %+v, want /a.jpg with cursor", paged.Entries)
+	}
+	w = httptest.NewRecorder()
+	env.router.Engine.ServeHTTP(w, httptest.NewRequest(http.MethodGet,
+		"/api/v1/public/shares/album/entries?path=/&limit=1&cursor="+paged.NextCursor, nil))
+	if err := json.Unmarshal(w.Body.Bytes(), &paged); err != nil {
+		t.Fatalf("unmarshal page2: %v", err)
+	}
+	if len(paged.Entries) != 1 || paged.Entries[0].Path != "/b.jpg" {
+		t.Errorf("page2 = %+v, want /b.jpg", paged.Entries)
+	}
+	w = httptest.NewRecorder()
+	env.router.Engine.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/public/shares/album/entries?path=/sub", nil))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "/sub/c.txt") {
+		t.Errorf("sub entries = %d %s", w.Code, w.Body.String())
+	}
+
+	// 文件共享：根返回单条目；子路径 404。
+	w = httptest.NewRecorder()
+	env.router.Engine.ServeHTTP(w, httptest.NewRequest(http.MethodGet,
+		"/api/v1/public/shares/"+fileShare.Slug+"/entries?path=/", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("file share entries = %d %s", w.Code, w.Body.String())
+	}
+	var single entriesPage
+	if err := json.Unmarshal(w.Body.Bytes(), &single); err != nil {
+		t.Fatalf("unmarshal single: %v", err)
+	}
+	if len(single.Entries) != 1 || single.Entries[0].Path != "/a.jpg" || single.Entries[0].Kind != "file" {
+		t.Errorf("file share entries = %+v, want single /a.jpg", single.Entries)
+	}
+	w = httptest.NewRecorder()
+	env.router.Engine.ServeHTTP(w, httptest.NewRequest(http.MethodGet,
+		"/api/v1/public/shares/"+fileShare.Slug+"/entries?path=/sub", nil))
+	if w.Code != http.StatusNotFound {
+		t.Errorf("file share subpath = %d, want 404", w.Code)
+	}
+
+	// 禁用后：卡片消失，浏览 404 且与未知 slug 同形。
+	disabled := false
+	if _, err := env.svc.Update(context.Background(), dirShare.ID, share.UpdateInput{Enabled: &disabled}); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	w = httptest.NewRecorder()
+	env.router.Engine.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/public/shares", nil))
+	if strings.Contains(w.Body.String(), "album") {
+		t.Errorf("cards after disable = %s, want album hidden", w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	env.router.Engine.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/public/shares/album/entries", nil))
+	disabledBody := w.Body.String()
+	if w.Code != http.StatusNotFound {
+		t.Errorf("entries after disable = %d, want 404", w.Code)
+	}
+	w = httptest.NewRecorder()
+	env.router.Engine.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/public/shares/never/entries", nil))
+	if w.Code != http.StatusNotFound || w.Body.String() != disabledBody {
+		t.Errorf("entries unknown = %d %q, want same shape as disabled (%q)", w.Code, w.Body.String(), disabledBody)
+	}
+}

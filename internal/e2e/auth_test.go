@@ -493,6 +493,9 @@ func TestAuthE2EProtectedScopeMatrix(t *testing.T) {
 		http.MethodGet + " /api/v1/health":      true,
 		http.MethodGet + " /api/v1/version":     true,
 		http.MethodPost + " /api/v1/auth/login": true,
+		// 公开共享端点：索引卡片与浏览分页，无认证（ADR-0001）。
+		http.MethodGet + " /api/v1/public/shares":               true,
+		http.MethodGet + " /api/v1/public/shares/:slug/entries": true,
 	}
 	matrixKeys := map[string]bool{}
 	for _, row := range routes {

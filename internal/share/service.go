@@ -10,8 +10,10 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"tinysync/internal/browser"
 	"tinysync/internal/filesafe"
 	"tinysync/internal/source"
 	"tinysync/internal/syncjob"
@@ -231,6 +233,102 @@ func (s *Service) OpenFile(ctx context.Context, slug, logicalPath string) (strin
 		return "", nil, nil, fmt.Errorf("%w: %v", ErrNotFound, err)
 	}
 	return path.Base(logicalPath), f, info, nil
+}
+
+// ListPublic 返回全部可服务共享（启用且未过期），按 slug 字典序。
+// 公开索引卡片只由此产生：过期 / 禁用共享对公开侧完全不存在
+// （ADR-0001）。
+func (s *Service) ListPublic(ctx context.Context) ([]Share, error) {
+	all, err := s.repo.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	now := s.Now()
+	servable := make([]Share, 0, len(all))
+	for _, found := range all {
+		if found.Enabled && !found.Expired(now) {
+			servable = append(servable, found)
+		}
+	}
+	return servable, nil
+}
+
+// Browse 返回共享浏览视图的一页条目：
+//   - 目录共享：单层列举（os.ReadDir 天然按名称排序），公开侧始终
+//     隐藏点文件并跳过 symlink 条目（最小暴露面，无开关）；
+//   - 文件共享：根 path 返回恰含自身的一条目（虚拟目录），任何
+//     子路径不可用。
+//
+// 共享不可服务（禁用 / 过期 / 不存在）或路径不可用一律 ErrNotFound
+// （公开侧同形 404）。分页为 opaque offset cursor，与本地浏览同
+// 语义。
+func (s *Service) Browse(ctx context.Context, slug, logicalPath string, opts source.ListOptions) ([]browser.Entry, string, error) {
+	notFound := func(err error) ([]browser.Entry, string, error) {
+		return nil, "", fmt.Errorf("%w: %v", ErrNotFound, err)
+	}
+	found, err := s.ResolveForRequest(ctx, slug)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := filesafe.ValidateLogicalPath(logicalPath); err != nil {
+		return notFound(err)
+	}
+	var all []browser.Entry
+	if !found.IsDir {
+		if logicalPath != "/" {
+			return notFound(fmt.Errorf("%s is not served by this share", logicalPath))
+		}
+		info, err := os.Lstat(found.LocalPath)
+		if err != nil {
+			return notFound(err)
+		}
+		modified := info.ModTime()
+		all = []browser.Entry{{
+			Path:       "/" + filepath.Base(found.LocalPath),
+			Name:       filepath.Base(found.LocalPath),
+			Kind:       browser.KindFile,
+			Size:       info.Size(),
+			ModifiedAt: &modified,
+		}}
+	} else {
+		if err := verifyDirRoot(found.LocalPath); err != nil {
+			return notFound(err)
+		}
+		entries, err := browser.ListDirWithinRoot(found.LocalPath, logicalPath, nil)
+		if err != nil {
+			return notFound(err)
+		}
+		all = make([]browser.Entry, 0, len(entries))
+		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name, ".") || entry.Kind == browser.KindSymlink {
+				continue
+			}
+			all = append(all, entry)
+		}
+	}
+	return paginateEntries(all, opts)
+}
+
+// paginateEntries 对浏览条目执行位置分页：cursor 为 opaque offset
+// token、EOF 以空 cursor 表达，与本地浏览 pageOf 同语义。
+func paginateEntries(entries []browser.Entry, opts source.ListOptions) ([]browser.Entry, string, error) {
+	offset, err := source.DecodeListOffset(opts.Cursor)
+	if err != nil {
+		return nil, "", err
+	}
+	limit := source.NormalizeListLimit(opts.Limit)
+	if offset >= len(entries) {
+		return nil, "", nil
+	}
+	end := offset + limit
+	if end > len(entries) {
+		end = len(entries)
+	}
+	next := ""
+	if end < len(entries) {
+		next = source.EncodeListOffset(end)
+	}
+	return entries[offset:end], next, nil
 }
 
 // verifyDirRoot 复验目录共享根的身份：最终组件非 symlink、是目录、

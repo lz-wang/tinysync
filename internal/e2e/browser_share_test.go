@@ -726,3 +726,125 @@ func TestSharedServingRejectsSymlinkReplacement(t *testing.T) {
 		})
 	}
 }
+
+// TestSharedDirBrowseLifecycle：目录共享的公开浏览链：卡片索引 →
+// entries 分页（点文件隐藏、symlink 跳过）→ 子目录下钻 → 目录内
+// 文件直链 → 禁用后卡片消失且浏览 / 直链 404。
+func TestSharedDirBrowseLifecycle(t *testing.T) {
+	remote := newWebDAVFixture(t)
+	e := newBrowserEnv(t, remote)
+
+	remote.put(t, "/docs/a.txt", "alpha")
+	e.createJob(syncjob.ModeCopy)
+	e.sync()
+
+	// 本地构造子目录、点文件与指向 root 外的 symlink——目录共享公开
+	// 的是整棵本地目录（ADR-0002），不依赖 managed；点文件与 symlink
+	// 在公开侧必须不可见。
+	if err := os.MkdirAll(filepath.Join(e.localRoot, "docs", "sub"), 0o755); err != nil {
+		t.Fatalf("mkdir sub: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(e.localRoot, "docs", "sub", "b.txt"), []byte("bravo"), 0o644); err != nil {
+		t.Fatalf("write b.txt: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(e.localRoot, "docs", ".hidden.txt"), []byte("h"), 0o644); err != nil {
+		t.Fatalf("write hidden: %v", err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(e.localRoot, "docs", "escape")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	// 创建目录共享（自定义名称即 slug）。
+	w := e.doJSON(http.MethodPost, "/api/v1/shares",
+		`{"job_id":"`+e.job.ID+`","path":"/docs","name":"docs-share","enabled":true}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create dir share = %d, body %s", w.Code, w.Body.String())
+	}
+
+	// 公开卡片包含该共享。
+	w = e.get("/api/v1/public/shares")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "docs-share") {
+		t.Fatalf("public cards = %d %s", w.Code, w.Body.String())
+	}
+
+	// entries：单层（a.txt、sub），点文件与 symlink 不可见；limit=1
+	// 分页后仍有下一页。
+	w = e.get("/api/v1/public/shares/docs-share/entries?path=/&limit=1")
+	if w.Code != http.StatusOK {
+		t.Fatalf("entries = %d %s", w.Code, w.Body.String())
+	}
+	var page struct {
+		Entries []struct {
+			Path string `json:"path"`
+			Kind string `json:"kind"`
+		} `json:"entries"`
+		NextCursor string `json:"next_cursor"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &page); err != nil {
+		t.Fatalf("unmarshal entries: %v", err)
+	}
+	if len(page.Entries) != 1 || page.Entries[0].Path != "/a.txt" || page.Entries[0].Kind != "file" {
+		t.Fatalf("first page = %+v, want /a.txt file", page.Entries)
+	}
+	if page.NextCursor == "" {
+		t.Fatal("next cursor = empty, want pagination continuation")
+	}
+	w = e.get("/api/v1/public/shares/docs-share/entries?path=/&limit=1&cursor=" + page.NextCursor)
+	if err := json.Unmarshal(w.Body.Bytes(), &page); err != nil {
+		t.Fatalf("unmarshal page2: %v", err)
+	}
+	if len(page.Entries) != 1 || page.Entries[0].Path != "/sub" || page.Entries[0].Kind != "directory" {
+		t.Fatalf("second page = %+v, want /sub directory", page.Entries)
+	}
+	if strings.Contains(w.Body.String(), ".hidden") || strings.Contains(w.Body.String(), "escape") {
+		t.Error("entries leak hidden file or symlink")
+	}
+
+	// 子目录下钻与目录内文件直链。
+	w = e.get("/api/v1/public/shares/docs-share/entries?path=/sub")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "/sub/b.txt") {
+		t.Errorf("sub entries = %d %s", w.Code, w.Body.String())
+	}
+	w = e.get("/shared/docs-share/sub/b.txt")
+	if w.Code != http.StatusOK || w.Body.String() != "bravo" {
+		t.Errorf("dir file direct link = %d %q", w.Code, w.Body.String())
+	}
+
+	// 禁用后：卡片消失，浏览与直链 404。
+	w = e.doJSON(http.MethodGet, "/api/v1/shares", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("list shares = %d %s", w.Code, w.Body.String())
+	}
+	var list struct {
+		Shares []struct {
+			ID   string `json:"id"`
+			Slug string `json:"slug"`
+		} `json:"shares"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
+		t.Fatalf("unmarshal shares: %v", err)
+	}
+	var shareID string
+	for _, s := range list.Shares {
+		if s.Slug == "docs-share" {
+			shareID = s.ID
+		}
+	}
+	if shareID == "" {
+		t.Fatal("docs-share not found in admin list")
+	}
+	w = e.doJSON(http.MethodPatch, "/api/v1/shares/"+shareID, `{"enabled":false}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("disable = %d, body %s", w.Code, w.Body.String())
+	}
+	w = e.get("/api/v1/public/shares")
+	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "docs-share") {
+		t.Errorf("cards after disable = %d %s, want docs-share hidden", w.Code, w.Body.String())
+	}
+	if w := e.get("/api/v1/public/shares/docs-share/entries"); w.Code != http.StatusNotFound {
+		t.Errorf("entries after disable = %d, want 404", w.Code)
+	}
+	if w := e.get("/shared/docs-share/a.txt"); w.Code != http.StatusNotFound {
+		t.Errorf("direct link after disable = %d, want 404", w.Code)
+	}
+}

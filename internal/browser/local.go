@@ -122,13 +122,25 @@ func (s *LocalService) List(ctx context.Context, jobID, logicalDir string, opts 
 	if err != nil {
 		return nil, "", err
 	}
-	dirAbs, err := resolveDir(root, logicalDir)
+	all, err := ListDirWithinRoot(root, logicalDir, managed)
 	if err != nil {
 		return nil, "", err
 	}
+	return pageOf(all, opts)
+}
+
+// ListDirWithinRoot 列出 canonical root 下逻辑目录的一层条目（分页
+// 由调用方决定）：条目类型按 Lstat 语义分类，symlink 只显示不跟随。
+// managed 为 nil 时条目不带 Managed 标记。供本地浏览与共享公开
+// 浏览共用同一套列举与分类语义。
+func ListDirWithinRoot(root, logicalDir string, managed map[string]bool) ([]Entry, error) {
+	dirAbs, err := resolveDir(root, logicalDir)
+	if err != nil {
+		return nil, err
+	}
 	dirEntries, err := os.ReadDir(dirAbs)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	all := make([]Entry, 0, len(dirEntries))
 	for _, de := range dirEntries {
@@ -138,9 +150,11 @@ func (s *LocalService) List(ctx context.Context, jobID, logicalDir string, opts 
 		}
 		info, infoErr := de.Info()
 		entry := Entry{
-			Path:    entryPath,
-			Name:    de.Name(),
-			Managed: boolPtr(managed[strings.TrimPrefix(entryPath, "/")]),
+			Path: entryPath,
+			Name: de.Name(),
+		}
+		if managed != nil {
+			entry.Managed = boolPtr(managed[strings.TrimPrefix(entryPath, "/")])
 		}
 		switch {
 		case infoErr != nil:
@@ -159,7 +173,7 @@ func (s *LocalService) List(ctx context.Context, jobID, logicalDir string, opts 
 		}
 		all = append(all, entry)
 	}
-	return pageOf(all, opts)
+	return all, nil
 }
 
 // Stat 读取单个本地路径的元信息（Lstat 语义：symlink 原样呈现）。

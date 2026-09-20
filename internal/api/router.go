@@ -45,6 +45,7 @@ func NewRouter(webFS fs.FS, deps Dependencies) *gin.Engine {
 		api.GET("/health", handleHealth)
 		api.GET("/version", handleVersion)
 		registerAuthRoutes(api, deps.Auth)
+		registerPublicShareRoutes(api, deps.Share)
 	}
 	// 受保护 API：default-deny。Auth 为 nil 时中间件 fail closed（500）。
 	protected := router.Group("/api/v1", authMiddleware(deps.Auth))
