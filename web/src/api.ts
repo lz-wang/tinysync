@@ -669,6 +669,52 @@ export function publishedFileURL(publicPath: string): string {
     return `${window.location.origin}/published${publicPath}`
 }
 
+// ===== 共享公开访问（v0.10）=====
+
+// PublicShareCard 对应 GET /api/v1/public/shares 的卡片条目：name 为
+// 回落后的展示名（未命名共享显示目标名），expires_at 空串表示永不
+// 过期。无认证端点，不触发 401 会话语义。
+export interface PublicShareCard {
+    slug: string
+    name: string
+    is_dir: boolean
+    created_at: string
+    expires_at: string
+}
+
+// PublicSharesResponse 对应 GET /api/v1/public/shares。
+export interface PublicSharesResponse {
+    shares: PublicShareCard[]
+}
+
+// listPublicShares 返回公开索引卡片（仅可服务共享）。
+export function listPublicShares(): Promise<PublicShareCard[]> {
+    return getJSON<PublicSharesResponse>('/api/v1/public/shares').then(body => body.shares)
+}
+
+// listPublicShareEntries 分页浏览共享目录（无认证端点）；文件共享的
+// 根 path 返回恰含自身的单条目（虚拟目录）。
+export function listPublicShareEntries(
+    slug: string,
+    path = '/',
+    limit?: number,
+    cursor?: string,
+): Promise<FilesPageResponse> {
+    return getJSON<FilesPageResponse>(
+        `/api/v1/public/shares/${slug}/entries?${filesQuery(path, limit, cursor)}`,
+    )
+}
+
+// sharedBrowseURL 构造共享浏览页地址（第二层页面）。
+export function sharedBrowseURL(slug: string): string {
+    return `${window.location.origin}/shared/${slug}`
+}
+
+// sharedFileURL 构造共享内文件的公开直链（支持 Range / HEAD）。
+export function sharedFileURL(slug: string, path: string): string {
+    return `${window.location.origin}/shared/${slug}${path}`
+}
+
 // ===== API Token 管理（v0.7）=====
 
 // APITokenScope 是 token 的授权 scope；admin 蕴含 read + run。

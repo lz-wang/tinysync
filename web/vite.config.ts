@@ -13,6 +13,11 @@ export default defineConfig({
                 target: 'http://127.0.0.1:9466',
                 changeOrigin: true,
             },
+            // /shared 直链与浏览页深链接也由后端服务（显式注册的路由）。
+            '/shared': {
+                target: 'http://127.0.0.1:9466',
+                changeOrigin: true,
+            },
         },
     },
     build: {
