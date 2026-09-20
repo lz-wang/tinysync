@@ -9,6 +9,7 @@ import LoginPage from './pages/LoginPage'
 import OverviewPage from './pages/OverviewPage'
 import RunDetailPage from './pages/RunDetailPage'
 import SettingsPage from './pages/SettingsPage'
+import SharesPage from './pages/SharesPage'
 import SourcesPage from './pages/SourcesPage'
 import SharedBrowsePage from './pages/shared/SharedBrowsePage'
 
@@ -32,6 +33,7 @@ export default function App() {
                     <Route path="sources" element={<SourcesPage />} />
                     <Route path="jobs" element={<JobsPage />} />
                     <Route path="files" element={<FilesPage />} />
+                    <Route path="shares" element={<SharesPage />} />
                     <Route path="history" element={<HistoryPage />} />
                     <Route path="history/:runId" element={<RunDetailPage />} />
                     <Route path="settings" element={<SettingsPage />} />

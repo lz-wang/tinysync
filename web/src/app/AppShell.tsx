@@ -8,6 +8,7 @@ import MenuIcon from '@mui/icons-material/Menu'
 import MenuOpenIcon from '@mui/icons-material/MenuOpen'
 import SettingsBrightnessOutlinedIcon from '@mui/icons-material/SettingsBrightnessOutlined'
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined'
+import ShareOutlinedIcon from '@mui/icons-material/ShareOutlined'
 import StorageOutlinedIcon from '@mui/icons-material/StorageOutlined'
 import SyncOutlinedIcon from '@mui/icons-material/SyncOutlined'
 import {
@@ -42,6 +43,7 @@ const items = [
     { to: '/sources', label: '同步源', icon: <StorageOutlinedIcon /> },
     { to: '/jobs', label: '同步任务', icon: <SyncOutlinedIcon /> },
     { to: '/files', label: '文件管理', icon: <FolderOutlinedIcon /> },
+    { to: '/shares', label: '共享管理', icon: <ShareOutlinedIcon /> },
     { to: '/history', label: '运行历史', icon: <HistoryOutlinedIcon /> },
 ]
 function ThemeIcon({ preference }: { preference: ThemePreference }) {
@@ -184,11 +186,13 @@ export default function AppShell() {
           ? '同步任务'
           : location.pathname.startsWith('/files')
             ? '文件管理'
-            : location.pathname.startsWith('/history')
-              ? '运行历史'
-              : location.pathname.startsWith('/settings')
-                ? '设置'
-                : '概览'
+            : location.pathname.startsWith('/shares')
+              ? '共享管理'
+              : location.pathname.startsWith('/history')
+                ? '运行历史'
+                : location.pathname.startsWith('/settings')
+                  ? '设置'
+                  : '概览'
     return (
         <Box sx={{ display: 'flex', minHeight: '100vh', bgcolor: 'background.default' }}>
             <AppBar
