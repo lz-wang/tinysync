@@ -13,11 +13,11 @@ TinySync 是一个面向 HomeLab 的文件同步服务：单一 Go 二进制，�
 > 跳过）、受控并发（`--max-concurrent-jobs` /
 > `--max-concurrent-transfers`）与持久化运行历史（每轮运行与
 > 文件级变更明细经 Web UI 与 REST 可查，重启不丢）。文件访问与
-> 发布：远端与本地文件浏览、文件下载与把同步后的受管本地文件
-> 显式发布为受控 HTTP URL。
+> 共享：远端与本地文件浏览、文件下载与把本地文件或目录（含任务
+> 本地根）显式共享为受控 HTTP URL 与公开浏览页。
 >
 > **认证**：REST API 与 Web UI 全面 default-deny——除 health /
-> version / 登录与 `/published` 公开文件外，所有端点都需要认证。
+> version / 登录与 `/shared` 公开共享外，所有端点都需要认证。
 > 单一 Local Admin 经密码登录建立 Web Session（HttpOnly Cookie），
 > 自动化脚本使用 scoped API Token（`Authorization: Bearer`）。
 > 首次启动时 `serve` 会生成高熵管理员密码并仅打印到当前终端一次；
@@ -69,7 +69,8 @@ tinysync --version        # 打印版本号
 
 REST API 与 Web UI 默认拒绝匿名访问（401）；公开端点只有
 `GET /api/v1/health`、`GET /api/v1/version`、`POST /api/v1/auth/login`
-与 `/published/*path` 公开文件。
+与 `/shared` 公开共享（索引页、浏览页、文件直链与
+`/api/v1/public/shares` 公开卡片 / 目录浏览 API）。
 
 Web UI 使用 HttpOnly Session Cookie（7 天绝对过期、`SameSite=Strict`、
 HTTPS 下自动 `Secure`）；凭据绝不进入 URL，跨源变更请求一律拒绝。
@@ -101,7 +102,7 @@ Scope 语义（创建后不可变，变更需撤销重建）：
 
 | Scope | 权限 |
 | --- | --- |
-| `read` | 查询 Source / Job / Run / File / Published metadata，下载文件 |
+| `read` | 查询 Source / Job / Run / File / Share metadata，下载文件 |
 | `run` | 手动触发 Job（不含 read） |
 | `admin` | 全部权限（read + run + 配置修改 + Token 管理） |
 
@@ -120,7 +121,8 @@ raw token 与 SHA-256 摘要绝不出现。
 ```
 
 v0.6 的匿名脚本访问自 v0.7 起必须携带 Bearer Token；
-`/published/*path` 公开语义不受升级影响。
+`/published/*path` 公开端点已在 v0.10 被 `/shared` 取代（见「Files」
+章节）。
 
 ## MCP（Agent / LLM 接入）
 
@@ -300,7 +302,7 @@ fingerprint），防止 Mirror 把既有本地文件误判为远端消失而删�
 secret 轮换始终允许。更换远端的正确路径是新建 Source 后切换 Job 的
 source_id。
 
-## Files：文件浏览与发布
+## Files：文件浏览与共享
 
 Remote 浏览经 `GET /api/v1/sources/:id/files`（分页查询参数
 `path` / `limit` / `cursor`，limit 默认 100、上限 500）分页浏览远端
@@ -309,27 +311,51 @@ Remote 浏览经 `GET /api/v1/sources/:id/files`（分页查询参数
 Job 的 LocalRoot 之下的内容，条目携带 `managed` 标记（TinySync 当前
 管理 vs 目录原有 / 已 relinquish 的文件）；本地下载支持 Range / HEAD。
 
-发布策略把同步后的 managed 本地文件显式暴露为受控 URL：
+共享策略把本地文件或目录（含整个任务本地根）显式暴露为受控
+URL：
 
 ```bash
-curl -X POST http://127.0.0.1:9466/api/v1/published-files \
+curl -X POST http://127.0.0.1:9466/api/v1/shares \
   -H "Authorization: Bearer $TINYSYNC_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
     "job_id": "job_xxx",
-    "path": "/photos/a.jpg",
-    "public_path": "/photos/a.jpg",
+    "path": "/photos",
+    "name": "album",
     "enabled": true
   }'
 ```
 
-- 目标必须是该 Job 管理的普通文件（路径逃逸、symlink 与目录一律
-  拒绝）；`local_path` 创建后不可变，要换文件就新建策略。
-- 策略与 Job 生命周期解耦：Job 修改 LocalRoot 不会隐式改写既有
-  URL；Mirror 删除文件后 URL 自然 404。
-- 公开访问地址为 `/published/<public_path>`（同源拼接），支持
-  Range / HEAD；禁用、过期或文件缺失统一返回 404，不区分原因；
-  响应固定 `Cache-Control: no-store`。
+- 目标可以是该 Job LocalRoot 内的普通文件、目录或本地根（`"/"`）；
+  创建时目标必须已存在；路径逃逸与 symlink 一律拒绝。**共享目录
+  即整棵公开**（含未同步文件，见 `docs/adr/0002`）；公开浏览始终
+  隐藏点文件且不展示 symlink 条目。`local_path` 创建后不可变，要换
+  目标就新建共享。
+- 共享名称可选且即 URL slug（`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`），
+  留空生成 10 字符随机标识；改名会同步改写 URL（旧链接立即失效）。
+- 共享与 Job 生命周期解耦：Job 修改 LocalRoot 不会隐式改写既有
+  URL；Mirror 删除文件后直链自然 404。
+- 公开访问：`/shared` 索引页以卡片列出全部可服务共享（名称、分享
+  时间、过期时间；过期 / 禁用完全隐藏）；`/shared/<slug>` 浏览页
+  支持目录下钻、分页、下载与复制链接（单文件共享为单行列表）；
+  文件直链 `/shared/<slug>/<path>` 支持 Range / HEAD。禁用、过期或
+  目标缺失统一返回 404，不区分原因；响应固定
+  `Cache-Control: no-store`，页面与直链带 `X-Robots-Tag: noindex`。
+- 无认证公开 API：`GET /api/v1/public/shares`（索引卡片）与
+  `GET /api/v1/public/shares/:slug/entries?path=&limit=&cursor=`（目录
+  分页浏览；文件共享的根返回恰含自身的单条目）。
+
+### v0.9 → v0.10 升级（破坏性）
+
+```text
+1. 停止 v0.9 服务
+2. 安装 v0.10 二进制
+3. 启动：migration 0009/0010 自动完成——published_files 表被废弃
+   且旧发布策略不迁移，升级后共享列表为空，按需重建
+```
+
+v0.6 的「发布」端点（`/api/v1/published-files`、`/published/*path`）
+自 v0.10 起整体移除，不留兼容别名。
 
 ## 版本机制
 
