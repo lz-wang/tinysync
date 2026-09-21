@@ -43,31 +43,32 @@ const (
 
 // startTestServer 启动进程内 SSH/SFTP 服务。pkg/sftp server 按请求的
 // 绝对路径读写真实文件系统，测试用 remote_root 指向临时目录。
-func startTestServer(t *testing.T) *testServer {
-	t.Helper()
+// 接受 testing.TB：单元测试与 benchmark（10k 目录数据集）共用。
+func startTestServer(tb testing.TB) *testServer {
+	tb.Helper()
 
 	// 服务端 host key。
 	_, hostPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("generate host key: %v", err)
+		tb.Fatalf("generate host key: %v", err)
 	}
 	hostSigner, err := ssh.NewSignerFromKey(hostPriv)
 	if err != nil {
-		t.Fatalf("host signer: %v", err)
+		tb.Fatalf("host signer: %v", err)
 	}
 
 	// 客户端私钥（private_key 认证测试用）。
 	_, clientPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("generate client key: %v", err)
+		tb.Fatalf("generate client key: %v", err)
 	}
 	clientSigner, err := ssh.NewSignerFromKey(clientPriv)
 	if err != nil {
-		t.Fatalf("client signer: %v", err)
+		tb.Fatalf("client signer: %v", err)
 	}
 	encryptedBlock, err := ssh.MarshalPrivateKeyWithPassphrase(clientPriv, "tinysync-test", []byte(testPassphr))
 	if err != nil {
-		t.Fatalf("marshal private key: %v", err)
+		tb.Fatalf("marshal private key: %v", err)
 	}
 	clientKeyPEM := string(pem.EncodeToMemory(encryptedBlock))
 
@@ -89,7 +90,7 @@ func startTestServer(t *testing.T) *testServer {
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("listen: %v", err)
+		tb.Fatalf("listen: %v", err)
 	}
 	ts := &testServer{
 		hostKeyFingerprint: ssh.FingerprintSHA256(hostSigner.PublicKey()),
@@ -99,7 +100,7 @@ func startTestServer(t *testing.T) *testServer {
 		acceptDone:         make(chan struct{}),
 	}
 	go ts.serve(config)
-	t.Cleanup(ts.close)
+	tb.Cleanup(ts.close)
 	return ts
 }
 
@@ -176,14 +177,14 @@ func (ts *testServer) addr() string {
 }
 
 // seedFile 在 root 下创建带内容的文件（自动建父目录）。
-func seedFile(t *testing.T, root, rel, content string) {
-	t.Helper()
+func seedFile(tb testing.TB, root, rel, content string) {
+	tb.Helper()
 	abs := filepath.Join(root, filepath.FromSlash(rel))
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-		t.Fatalf("mkdir for %s: %v", rel, err)
+		tb.Fatalf("mkdir for %s: %v", rel, err)
 	}
 	if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
-		t.Fatalf("write %s: %v", rel, err)
+		tb.Fatalf("write %s: %v", rel, err)
 	}
 }
 
@@ -218,8 +219,8 @@ func portOf(addr string) int {
 }
 
 // newSFTPFactoryRemote 用真实 Factory 连接测试服务。
-func newSFTPFactoryRemote(t *testing.T, ts *testServer, cfg source.SFTPConfig, creds source.Credentials) source.Remote {
-	t.Helper()
+func newSFTPFactoryRemote(tb testing.TB, ts *testServer, cfg source.SFTPConfig, creds source.Credentials) source.Remote {
+	tb.Helper()
 	factory := NewFactory()
 	r, err := factory.Create(context.Background(), source.Source{
 		Name:   "test",
@@ -227,9 +228,9 @@ func newSFTPFactoryRemote(t *testing.T, ts *testServer, cfg source.SFTPConfig, c
 		Config: source.Config{SFTP: &cfg},
 	}, creds)
 	if err != nil {
-		t.Fatalf("Factory.Create: %v", err)
+		tb.Fatalf("Factory.Create: %v", err)
 	}
-	t.Cleanup(func() { _ = r.Close() })
+	tb.Cleanup(func() { _ = r.Close() })
 	return r
 }
 

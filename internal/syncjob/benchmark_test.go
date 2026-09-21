@@ -116,7 +116,6 @@ func BenchmarkLargeFileTransfer(b *testing.B) {
 type benchRemote struct {
 	files map[string]string
 }
-
 func (r *benchRemote) Stat(ctx context.Context, path string) (source.FileInfo, error) {
 	content, ok := r.files[path]
 	if !ok {
@@ -138,3 +137,59 @@ func (r *benchRemote) Open(ctx context.Context, path string) (io.ReadCloser, err
 }
 
 func (r *benchRemote) Close() error { return nil }
+
+// scanBenchRemote 是按固定页大小吐出预生成文件的 Remote：隔离协议
+// 成本，度量 scanner/collector 本身在 10k flat 集合上的纯 Go 开销。
+type scanBenchRemote struct {
+	files []source.FileInfo
+	page  int
+}
+
+func (r *scanBenchRemote) Stat(ctx context.Context, path string) (source.FileInfo, error) {
+	return source.FileInfo{}, os.ErrNotExist
+}
+
+func (r *scanBenchRemote) List(ctx context.Context, path string, opts source.ListOptions) (source.FilePage, error) {
+	if path != "/" {
+		return source.FilePage{}, nil
+	}
+	offset, err := source.DecodeListOffset(opts.Cursor)
+	if err != nil {
+		return source.FilePage{}, err
+	}
+	end := offset + r.page
+	if end > len(r.files) {
+		end = len(r.files)
+	}
+	next := ""
+	if end < len(r.files) {
+		next = source.EncodeListOffset(end)
+	}
+	return source.FilePage{Entries: r.files[offset:end], NextCursor: next}, nil
+}
+
+func (r *scanBenchRemote) Open(ctx context.Context, path string) (io.ReadCloser, error) {
+	return nil, os.ErrNotExist
+}
+
+func (r *scanBenchRemote) Close() error { return nil }
+
+// BenchmarkScanRemote10KFlat：scanner 本身（分页循环 + 条目校验 +
+// 收集）在 10,000 文件单层集合上的成本，协议无关。
+func BenchmarkScanRemote10KFlat(b *testing.B) {
+	const total = 10000
+	remote := &scanBenchRemote{files: b10kRemote(total), page: source.DefaultListLimit}
+	ctx := context.Background()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		files, err := ScanRemote(ctx, remote, "/")
+		if err != nil {
+			b.Fatalf("scan: %v", err)
+		}
+		if len(files) != total {
+			b.Fatalf("scanned %d files, want %d", len(files), total)
+		}
+	}
+}
