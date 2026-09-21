@@ -167,10 +167,13 @@ func engineProgress(p ProgressReporter) ProgressReporter {
 // 无人观察的丢弃句柄，add/reset 的开销为零值 atomic 操作。
 type nullProgress struct{}
 
-func (nullProgress) SetPhase(RunPhase)  {}
+func (nullProgress) SetPhase(RunPhase) {}
+
 func (nullProgress) SetWorkTotal(int64) {}
-func (nullProgress) AddWorkDone(int64)  {}
-func (nullProgress) EndFile(string)     {}
+
+func (nullProgress) AddWorkDone(int64) {}
+
+func (nullProgress) EndFile(string) {}
 
 func (nullProgress) BeginFile(path string, action RunItemAction, totalBytes int64) *FileProgress {
 	return &FileProgress{Path: path, Action: action, BytesTotal: totalBytes}
