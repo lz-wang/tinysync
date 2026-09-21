@@ -338,8 +338,7 @@ func TestScanRemoteRejectsCrossPageCollision(t *testing.T) {
 
 // 本地路径组件检查：既有路径中的 symlink 一律拒绝，普通树放行，
 // 尚不存在的目标放行（由下载时的创建策略负责）。
-func TestRejectSymlinkComponents(t *testing.T) {
-	root := t.TempDir()
+func TestRejectSymlinkComponents(t *testing.T) {	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -371,4 +370,130 @@ func TestRejectSymlinkComponents(t *testing.T) {
 	}
 
 	// 指向 root 外部与否无关紧要：v0.3 一律从严拒绝。
+}
+
+// treeRemote 是实现 TreeScanner 的 fake：List 恒定失败，ScanRemote
+// 若仍调 List 即失败——以此证明 fast path 确实生效。
+type treeRemote struct {
+	entries []source.FileInfo
+	calls   int
+}
+
+func (t *treeRemote) Stat(ctx context.Context, path string) (source.FileInfo, error) {
+	return source.FileInfo{}, errors.New("not implemented")
+}
+
+func (t *treeRemote) List(ctx context.Context, path string, opts source.ListOptions) (source.FilePage, error) {
+	t.calls++
+	return source.FilePage{}, errors.New("List must not be called when TreeScanner is available")
+}
+
+func (t *treeRemote) ScanTree(ctx context.Context, root string, visit func(source.FileInfo) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	for _, entry := range t.entries {
+		if err := visit(entry); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (t *treeRemote) Open(ctx context.Context, path string) (io.ReadCloser, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (t *treeRemote) Close() error {
+	return nil
+}
+
+// ScanRemote 优先走 TreeScanner fast path：全部条目（含目录）经
+// collector 校验后文件进入快照，List 不被调用。
+func TestScanRemotePrefersTreeScanner(t *testing.T) {
+	remote := &treeRemote{entries: []source.FileInfo{
+		{Path: "/photos/docs", IsDir: true},
+		{Path: "/photos/a.jpg"},
+		{Path: "/photos/docs/report.txt"},
+	}}
+	files, err := ScanRemote(context.Background(), remote, "/photos")
+	if err != nil {
+		t.Fatalf("ScanRemote: %v", err)
+	}
+	if remote.calls != 0 {
+		t.Errorf("List called %d times on TreeScanner fast path, want 0", remote.calls)
+	}
+	if len(files) != 2 {
+		t.Fatalf("files = %v, want [/photos/a.jpg /photos/docs/report.txt]", files)
+	}
+	for _, f := range files {
+		if f.IsDir {
+			t.Errorf("scan returned directory %s", f.Path)
+		}
+	}
+}
+
+// fast path 同样维持 file/dir collision fail-fast：目录 visit 让
+// S3 式「同 path 既是文件又是目录」在本地 mutation 前整体失败。
+func TestScanRemoteTreeScannerRejectsCollision(t *testing.T) {
+	remote := &treeRemote{entries: []source.FileInfo{
+		{Path: "/photos/foo"},
+		{Path: "/photos/foo/bar.txt"},
+		{Path: "/photos/foo", IsDir: true},
+	}}
+	if _, err := ScanRemote(context.Background(), remote, "/photos"); !errors.Is(err, ErrInvalid) {
+		t.Errorf("tree scan collision error = %v, want ErrInvalid", err)
+	}
+}
+
+// fast path 复用同一 collector：非法 logical path 与越出 RemoteRoot
+// 的条目照常拒绝（前者是 source.ErrInvalid，后者是扫描边界语义的
+// ErrInvalid）。
+func TestScanRemoteTreeScannerRejectsInvalidAndEscape(t *testing.T) {
+	cases := map[string]struct {
+		entries []source.FileInfo
+		want    error
+	}{
+		"invalid path": {entries: []source.FileInfo{{Path: `/photos\file.txt`}}, want: source.ErrInvalid},
+		"dot segments": {entries: []source.FileInfo{{Path: "/photos/../file.txt"}}, want: source.ErrInvalid},
+		"escape root":  {entries: []source.FileInfo{{Path: "/other/file.txt"}}, want: ErrInvalid},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			remote := &treeRemote{entries: tc.entries}
+			if _, err := ScanRemote(context.Background(), remote, "/photos"); !errors.Is(err, tc.want) {
+				t.Errorf("tree scan error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+// fast path 维持 max depth：超出 maxScanDepth 的目录条目整体失败，
+// 不依赖 adapter 自我约束。
+func TestScanRemoteTreeScannerDepthLimit(t *testing.T) {
+	entries := []source.FileInfo{}
+	prefix := ""
+	for i := 0; i <= maxScanDepth; i++ {
+		prefix += "/d"
+		entries = append(entries, source.FileInfo{Path: prefix, IsDir: true})
+	}
+	remote := &treeRemote{entries: entries}
+	_, err := ScanRemote(context.Background(), remote, "/")
+	if err == nil {
+		t.Fatal("tree scan beyond max depth = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "max depth") {
+		t.Errorf("error = %v, want max depth message", err)
+	}
+}
+
+// fast path 及时响应 ctx 取消（契约由 adapter 保证，collector 透传
+// 错误即可）。
+func TestScanRemoteTreeScannerContextCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	remote := &treeRemote{entries: []source.FileInfo{{Path: "/photos/a.jpg"}}}
+	if _, err := ScanRemote(ctx, remote, "/photos"); !errors.Is(err, context.Canceled) {
+		t.Errorf("tree scan canceled error = %v, want context.Canceled", err)
+	}
 }

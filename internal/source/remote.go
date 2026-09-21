@@ -143,6 +143,31 @@ type DirectoryCreator interface {
 	Mkdir(ctx context.Context, path string) error
 }
 
+// TreeScanner 是 Remote 可选的全树扫描能力：面向同步引擎的批量枚举，
+// 把「浏览分页」（List，供 Files / API 使用）与「同步扫描」（ScanTree）
+// 两个访问模式分离。WebDAV / SFTP 的 List 是伪分页（协议层每次请求
+// 都枚举整层目录）；S3 的 Delimiter 逐目录递归则把请求量放大到与
+// 目录数线性相关。ScanTree 让 adapter 用协议原生的最高效方式一次
+// 枚举整个子树：WebDAV / SFTP 每目录一次枚举、S3 flat prefix 扫描。
+//
+// Remote 实现方可选择性提供；同步引擎优先断言此能力，未实现时回退
+// 既有 List 递归——测试 fake 与第三方 adapter 无需为此付出成本。
+//
+// ScanTree 契约：
+//   - root 是 Source-relative logical path（"/" 或以 / 开头）；root
+//     自身不 visit，其全部后代全量遍历。
+//   - 文件与目录都必须 visit：目录条目用于维持 file/dir collision、
+//     max depth 等安全语义（S3 等无目录协议从 key 推导虚拟目录）。
+//   - 遍历顺序不作为契约，消费方不得依赖。
+//   - 部分扫描等于失败：任何一层枚举错误都整体失败，绝不返回部分
+//     结果（Mirror 的删除授权依赖完整快照）。
+//   - 必须及时响应 ctx 取消。
+//   - visit 返回错误时立即终止且原样透传（含调用方安全策略的拒绝）。
+//   - 扫描只读：禁止对远端做任何变更。
+type TreeScanner interface {
+	ScanTree(ctx context.Context, root string, visit func(FileInfo) error) error
+}
+
 // RemoteFactory 按 Source 配置构造远端客户端。每个协议 adapter 实现
 // 一份，经 RemoteRegistry 按类型 dispatch。
 type RemoteFactory interface {
