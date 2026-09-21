@@ -384,8 +384,8 @@ export async function deleteJob(id: string): Promise<void> {
 }
 
 // RunState 是运行的状态机取值。运行记录持久化于服务端，
-// 重启后最近一次运行（含 skipped）仍可查询。
-export type RunState = 'idle' | 'running' | 'succeeded' | 'failed' | 'skipped'
+// 重启后最近一次运行（含 skipped）仍可查询。canceled 专指用户手动停止。
+export type RunState = 'idle' | 'running' | 'succeeded' | 'failed' | 'skipped' | 'canceled'
 
 // RunStatsResponse 是一轮同步的统计摘要。
 export interface RunStatsResponse {
@@ -415,8 +415,41 @@ export interface RunJobResponse {
     state: RunState
 }
 
+// RunPhase 是运行中 run 的生命周期阶段。scanning / planning 阶段工作
+// 量未知（前端以 indeterminate 进度表达），transferring 起 work_total
+// 可用。
+export type RunPhase = 'connecting' | 'scanning' | 'planning' | 'transferring' | 'finalizing'
+
+// RunProgressFileResponse 是一个在途文件的单文件进度：后端只输出原始
+// 字节计数，百分比与显示文本由前端换算。
+export interface RunProgressFileResponse {
+    path: string
+    action: RunItemAction
+    bytes_done: number
+    bytes_total: number
+}
+
+// RunProgressResponse 是运行中 run 的实时进度（瞬态内存快照）。
+export interface RunProgressResponse {
+    phase: RunPhase
+    work_done: number
+    work_total: number
+    active_files?: RunProgressFileResponse[]
+}
+
 export function runJob(id: string): Promise<RunJobResponse> {
     return requestJSON<RunJobResponse>('POST', `/api/v1/jobs/${id}/run`)
+}
+
+// CancelRunResponse 对应 POST /api/v1/runs/:id/cancel 的 202 响应。
+// 409（已终态，附 state）与 404（不存在）以错误路径抛出。
+export interface CancelRunResponse {
+    run_id: string
+    state: RunState
+}
+
+export function cancelRun(runId: string): Promise<CancelRunResponse> {
+    return requestJSON<CancelRunResponse>('POST', `/api/v1/runs/${runId}/cancel`)
 }
 
 export function fetchJobStatus(id: string): Promise<RunStatusResponse> {
@@ -426,7 +459,8 @@ export function fetchJobStatus(id: string): Promise<RunStatusResponse> {
 // RunTriggerType 是一轮运行的触发方式。
 export type RunTriggerType = 'manual' | 'once' | 'interval' | 'cron'
 
-// RunRecordResponse 对应 GET /api/v1/runs/:id 的运行摘要。
+// RunRecordResponse 对应 GET /api/v1/runs/:id 的运行摘要。运行中的
+// run 附实时 progress（瞬态内存快照）；终态省略。
 export interface RunRecordResponse {
     id: string
     job_id: string
@@ -438,6 +472,7 @@ export interface RunRecordResponse {
     finished_at?: string
     stats: RunStatsResponse
     error?: string
+    progress?: RunProgressResponse
 }
 
 // RunsListResponse 对应 GET /api/v1/runs 的包装对象。
@@ -449,8 +484,8 @@ export interface RunsListResponse {
 // RunItemAction 是文件级变更动作。
 export type RunItemAction = 'create' | 'update' | 'delete' | 'relinquish'
 
-// RunItemStatus 是文件级变更结果。
-export type RunItemStatus = 'succeeded' | 'failed' | 'skipped'
+// RunItemStatus 是文件级变更结果。canceled 表示传输被用户手动停止中断。
+export type RunItemStatus = 'succeeded' | 'failed' | 'skipped' | 'canceled'
 
 // RunItemResponse 是文件级变更明细；unchanged 文件不产生明细。
 export interface RunItemResponse {

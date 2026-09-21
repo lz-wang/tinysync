@@ -61,6 +61,8 @@ export function runStateChipProps(state: RunState): {
             return { label: '运行中', color: 'info' }
         case 'skipped':
             return { label: '已跳过', color: 'warning' }
+        case 'canceled':
+            return { label: '已取消', color: 'default' }
         default:
             return { label: '空闲', color: 'default' }
     }
@@ -72,13 +74,16 @@ export function RunStatusChip({ state }: { state: RunState }) {
     return <Chip label={props.label} color={props.color} size="small" />
 }
 
-// itemStatusColor 把明细状态映射为时间线圆点颜色。
+// itemStatusColor 把明细状态映射为时间线圆点颜色。canceled 用中性灰：
+// 被用户停止中断不是失败（红），也不同于跳过（浅灰淡显）的语义。
 export function itemStatusColor(status: RunItemStatus): string {
     switch (status) {
         case 'succeeded':
             return 'success.main'
         case 'failed':
             return 'error.main'
+        case 'canceled':
+            return 'text.secondary'
         default:
             return 'text.disabled'
     }

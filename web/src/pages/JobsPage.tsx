@@ -3,6 +3,7 @@ import BoltIcon from '@mui/icons-material/Bolt'
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutlined'
 import EditOutlinedIcon from '@mui/icons-material/EditOutlined'
 import SearchOutlinedIcon from '@mui/icons-material/SearchOutlined'
+import StopCircleOutlinedIcon from '@mui/icons-material/StopCircleOutlined'
 import {
     Box,
     Button,
@@ -15,6 +16,7 @@ import {
     DialogTitle,
     IconButton,
     InputAdornment,
+    LinearProgress,
     MenuItem,
     Paper,
     Stack,
@@ -33,11 +35,14 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link as RouterLink } from 'react-router-dom'
 import {
+    cancelRun,
     deleteJob,
     fetchJobStatus,
+    getRun,
     type JobResponse,
     listJobs,
     listSources,
+    type RunProgressResponse,
     type RunStatusResponse,
     runJob,
     type SourceResponse,
@@ -63,6 +68,9 @@ export default function JobsPage() {
     const [deleting, setDeleting] = useState<JobResponse | null>(null)
     const [batchDeleting, setBatchDeleting] = useState<JobResponse[] | null>(null)
     const [runStates, setRunStates] = useState<Record<string, RunStatusResponse>>({})
+    // runProgress 是运行中任务的实时进度快照（经 GET /runs/:id 轮询），
+    // 供任务行内总进度摘要；任务落终态后移除。
+    const [runProgress, setRunProgress] = useState<Record<string, RunProgressResponse>>({})
     const runStatesRef = useRef(runStates)
     useEffect(() => {
         runStatesRef.current = runStates
@@ -93,11 +101,48 @@ export default function JobsPage() {
     }, [reload, toast])
     useEffect(() => {
         const timer = window.setInterval(() => {
-            for (const [id, state] of Object.entries(runStatesRef.current))
-                if (state.state === 'running')
-                    void fetchJobStatus(id)
-                        .then(status => setRunStates(prev => ({ ...prev, [id]: status })))
+            const finished: string[] = []
+            for (const [id, state] of Object.entries(runStatesRef.current)) {
+                if (state.state !== 'running') {
+                    finished.push(id)
+                    continue
+                }
+                void fetchJobStatus(id)
+                    .then(status => setRunStates(prev => ({ ...prev, [id]: status })))
+                    .catch(() => undefined)
+                // 运行中的任务顺带轮询运行详情：总进度摘要是运行详情
+                // progress 字段的投影；详情页仍是进度的唯一完整视图。
+                if (state.run_id !== undefined) {
+                    void getRun(state.run_id)
+                        .then(record =>
+                            setRunProgress(prev => {
+                                if (record.status === 'running' && record.progress !== undefined) {
+                                    return { ...prev, [id]: record.progress }
+                                }
+                                if (!(id in prev)) {
+                                    return prev
+                                }
+                                const next = { ...prev }
+                                delete next[id]
+                                return next
+                            }),
+                        )
                         .catch(() => undefined)
+                }
+            }
+            if (finished.length > 0) {
+                setRunProgress(prev => {
+                    const stale = finished.filter(id => id in prev)
+                    if (stale.length === 0) {
+                        return prev
+                    }
+                    const next = { ...prev }
+                    for (const id of stale) {
+                        delete next[id]
+                    }
+                    return next
+                })
+            }
         }, pollIntervalMs)
         return () => window.clearInterval(timer)
     }, [])
@@ -105,6 +150,18 @@ export default function JobsPage() {
         try {
             await runJob(job.id)
             setRunStates(prev => ({ ...prev, [job.id]: { state: 'running', stats: emptyStats() } }))
+        } catch (e) {
+            toast.error(e instanceof Error ? e.message : String(e))
+        }
+    }
+    const handleStop = async (job: JobResponse) => {
+        const runId = runStatesRef.current[job.id]?.run_id
+        if (runId === undefined) {
+            return
+        }
+        try {
+            await cancelRun(runId)
+            toast.info(`已发送停止请求：${job.name}`)
         } catch (e) {
             toast.error(e instanceof Error ? e.message : String(e))
         }
@@ -139,11 +196,13 @@ export default function JobsPage() {
                     jobs={jobs}
                     sources={sources}
                     runStates={runStates}
+                    runProgress={runProgress}
                     onAdd={() => {
                         setEditing(null)
                         setDialogOpen(true)
                     }}
                     onRun={job => void handleRun(job)}
+                    onStop={job => void handleStop(job)}
                     onEdit={job => {
                         setEditing(job)
                         setDialogOpen(true)
@@ -210,8 +269,10 @@ function JobTable({
     jobs,
     sources,
     runStates,
+    runProgress,
     onAdd,
     onRun,
+    onStop,
     onEdit,
     onDelete,
     onBatchDelete,
@@ -219,8 +280,10 @@ function JobTable({
     jobs: JobResponse[]
     sources: SourceResponse[]
     runStates: Record<string, RunStatusResponse>
+    runProgress: Record<string, RunProgressResponse>
     onAdd: () => void
     onRun: (job: JobResponse) => void
+    onStop: (job: JobResponse) => void
     onEdit: (job: JobResponse) => void
     onDelete: (job: JobResponse) => void
     onBatchDelete: (jobs: JobResponse[]) => void
@@ -392,6 +455,7 @@ function JobTable({
                     <MenuItem value="succeeded">成功</MenuItem>
                     <MenuItem value="failed">失败</MenuItem>
                     <MenuItem value="skipped">已跳过</MenuItem>
+                    <MenuItem value="canceled">已取消</MenuItem>
                 </TextField>
             </Stack>
             <Paper
@@ -486,7 +550,14 @@ function JobTable({
                                             />
                                         </TableCell>
                                         <TableCell>
-                                            <LastRunTime status={state} />
+                                            <Box>
+                                                <LastRunTime status={state} />
+                                                {running && runProgress[job.id] !== undefined && (
+                                                    <RunningProgress
+                                                        progress={runProgress[job.id]}
+                                                    />
+                                                )}
+                                            </Box>
                                         </TableCell>
                                         <TableCell>
                                             <Typography variant="body2" color="text.secondary">
@@ -499,23 +570,32 @@ function JobTable({
                                                 spacing={0.25}
                                                 sx={{ justifyContent: 'center' }}
                                             >
-                                                <Tooltip title="立即运行">
-                                                    <span>
+                                                {running ? (
+                                                    <Tooltip title="停止运行">
                                                         <IconButton
                                                             size="small"
-                                                            color="primary"
-                                                            aria-label={`运行 ${job.name}`}
-                                                            disabled={!job.enabled || running}
-                                                            onClick={() => onRun(job)}
+                                                            color="error"
+                                                            aria-label={`停止 ${job.name}`}
+                                                            onClick={() => onStop(job)}
                                                         >
-                                                            {running ? (
-                                                                <CircularProgress size={18} />
-                                                            ) : (
-                                                                <BoltIcon fontSize="small" />
-                                                            )}
+                                                            <StopCircleOutlinedIcon fontSize="small" />
                                                         </IconButton>
-                                                    </span>
-                                                </Tooltip>
+                                                    </Tooltip>
+                                                ) : (
+                                                    <Tooltip title="立即运行">
+                                                        <span>
+                                                            <IconButton
+                                                                size="small"
+                                                                color="primary"
+                                                                aria-label={`运行 ${job.name}`}
+                                                                disabled={!job.enabled}
+                                                                onClick={() => onRun(job)}
+                                                            >
+                                                                <BoltIcon fontSize="small" />
+                                                            </IconButton>
+                                                        </span>
+                                                    </Tooltip>
+                                                )}
                                                 <Tooltip title="编辑">
                                                     <span>
                                                         <IconButton
@@ -588,6 +668,30 @@ function emptyStats() {
     }
 }
 
+// RunningProgress 是运行中任务行内的总进度摘要：进度条 + 百分比。
+// 分母未定（扫描 / 计划阶段）时 indeterminate；原始计数在运行详情页。
+function RunningProgress({ progress }: { progress: RunProgressResponse }) {
+    const known = progress.work_total > 0
+    const percent = known
+        ? Math.min(100, (progress.work_done / progress.work_total) * 100)
+        : undefined
+    return (
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 0.5 }}>
+            <LinearProgress
+                variant={percent !== undefined ? 'determinate' : 'indeterminate'}
+                value={percent}
+                sx={{ width: 96, height: 4, borderRadius: 2 }}
+                aria-label="同步进度"
+            />
+            {percent !== undefined && (
+                <Typography variant="caption" color="text.secondary">
+                    {percent.toFixed(0)}%
+                </Typography>
+            )}
+        </Box>
+    )
+}
+
 // LastRunTime 用时间承载“最近运行”语义；文字颜色同时传达最终结果。
 function LastRunTime({ status }: { status: RunStatusResponse | undefined }) {
     if (status?.run_id === undefined) {
@@ -640,6 +744,8 @@ function runStateColor(state: RunStatusResponse['state']): string {
             return 'warning.main'
         case 'running':
             return 'info.main'
+        case 'canceled':
+            return 'text.primary'
         default:
             return 'text.secondary'
     }
@@ -655,6 +761,8 @@ function runStateLabel(state: RunStatusResponse['state']): string {
             return '运行已跳过'
         case 'running':
             return '正在运行'
+        case 'canceled':
+            return '已手动停止'
         default:
             return '尚未运行'
     }
