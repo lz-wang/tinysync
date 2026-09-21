@@ -148,6 +148,51 @@ func TestIntegrationRemoteContractSuite(t *testing.T) {
 	remotetest.RunSuite(t, &s3ContractHarness{})
 }
 
+// TestIntegrationScanTreeFlatPrefix：真实 S3 兼容服务上的 flat prefix
+// 扫描——嵌套子树完整、marker 是目录不是文件、prefix 边界成立。
+func TestIntegrationScanTreeFlatPrefix(t *testing.T) {
+	harness := &s3ContractHarness{}
+	r := harness.NewRemote(t)
+	endpoint := os.Getenv(contractS3Endpoint)
+	if endpoint == "" {
+		return // NewRemote 已 skip；防御直接调用。
+	}
+
+	harness.Write(t, "/docs/2026/report.pdf", "pdf")
+	harness.Write(t, "/docs/2026/q1/draft.txt", "draft")
+	harness.Mkdir(t, "/empty-dir")
+	harness.Write(t, "/top.bin", "top")
+
+	scanner, ok := r.(source.TreeScanner)
+	if !ok {
+		t.Fatal("s3 remote does not implement source.TreeScanner")
+	}
+	visited := map[string]bool{}
+	err := scanner.ScanTree(context.Background(), "/", func(fi source.FileInfo) error {
+		if visited[fi.Path] {
+			t.Errorf("entry %s visited twice", fi.Path)
+		}
+		visited[fi.Path] = fi.IsDir
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ScanTree: %v", err)
+	}
+	for _, dir := range []string{"/docs", "/docs/2026", "/docs/2026/q1", "/empty-dir"} {
+		if isDir, ok := visited[dir]; !ok || !isDir {
+			t.Errorf("directory %s = %v,%v; want present dir", dir, isDir, ok)
+		}
+	}
+	for _, file := range []string{"/top.bin", "/docs/2026/report.pdf", "/docs/2026/q1/draft.txt"} {
+		isDir, ok := visited[file]
+		if !ok {
+			t.Errorf("file %s missing from scan", file)
+		} else if isDir {
+			t.Errorf("file %s visited as directory", file)
+		}
+	}
+}
+
 // randomContractSuffix 生成契约 prefix 的随机后缀。
 func randomContractSuffix(t *testing.T) string {
 	t.Helper()

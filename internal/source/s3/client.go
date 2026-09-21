@@ -379,6 +379,114 @@ func (r *remote) Close() error {
 	return nil
 }
 
+// scanPageSize 是同步扫描的协议页大小。source.MaxListLimit(500) 是
+// Files / API 的分页契约，不是协议优化参数；ListObjectsV2 原生
+// MaxKeys ≤ 1000，同步 fast scan 单独用满，两个 workload 不强行绑定。
+const scanPageSize int32 = 1000
+
+// 编译期断言：ScanTree 可选能力。
+var _ source.TreeScanner = (*remote)(nil)
+
+// ScanTree 实现 source.TreeScanner：Delimiter="" 的 flat prefix 扫描
+// 一次读通整棵 object namespace，请求量只随对象页数线性增长——
+// Delimiter 逐目录递归的请求量与目录数线性相关，深层树会被放大到
+// 每目录一次请求。flat 模式不返回 CommonPrefixes，目录从 key 推导：
+// 每个对象的祖先目录链全部 visit（seenDirs 去重），folder marker
+// 是目录不是文件，root 自身不 visit。同 path 既是文件又是目录的
+// collision（foo 与 foo/bar.txt 共存）经虚拟目录 visit 暴露给上层
+// collector，在任何本地 mutation 前 fail-fast——这是 ScanTree 必须
+// visit 目录的主要原因。visit 错误原样透传，任何一页失败即整体
+// 失败（契约见 source.TreeScanner）。
+func (r *remote) ScanTree(ctx context.Context, root string, visit func(source.FileInfo) error) error {
+	if err := source.ValidateLogicalPath(root); err != nil {
+		return err
+	}
+	cleaned := path.Clean("/" + root)
+	prefix := r.dirPrefix(cleaned)
+	seenDirs := make(map[string]struct{})
+
+	// emitDir visit 一个推导出的虚拟目录（去重）。
+	emitDir := func(logicalDir string) error {
+		if _, seen := seenDirs[logicalDir]; seen {
+			return nil
+		}
+		seenDirs[logicalDir] = struct{}{}
+		return visit(source.FileInfo{Path: logicalDir, IsDir: true})
+	}
+
+	input := &s3.ListObjectsV2Input{
+		Bucket:    aws.String(r.bucket),
+		Prefix:    aws.String(prefix),
+		Delimiter: aws.String(""),
+		MaxKeys:   aws.Int32(scanPageSize),
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		out, err := r.client.ListObjectsV2(ctx, input)
+		if err != nil {
+			return wrapOp("scan", root, err)
+		}
+		for _, obj := range out.Contents {
+			key := derefStr(obj.Key)
+			if key == "" {
+				continue
+			}
+			logical, err := r.toLogical(key)
+			if err != nil {
+				return wrapOp("scan", root, err)
+			}
+			if logical == "/" {
+				// prefix 自身对象或 root 的 folder marker：root 不 visit。
+				continue
+			}
+			// root 内相对分量：logical = <root>/<segs...>。Trim 去掉
+			// 前导 / 后再分段，避免 Split 产生空首分量。
+			base := cleaned
+			if base == "/" {
+				base = ""
+			}
+			segs := strings.Split(strings.Trim(strings.TrimPrefix(logical, base), "/"), "/")
+			// 目录链深度：文件 visit 其全部祖先目录；folder marker
+			// （以 / 结尾的 key）自身就是目录，连同祖先一起 visit。
+			depth := len(segs) - 1
+			if strings.HasSuffix(key, "/") {
+				depth = len(segs)
+			}
+			logicalDir := base
+			for i := 0; i < depth; i++ {
+				logicalDir += "/" + segs[i]
+				if err := emitDir(logicalDir); err != nil {
+					return err
+				}
+			}
+			if strings.HasSuffix(key, "/") {
+				// folder marker：目录占位对象，不作为文件。
+				continue
+			}
+			if err := visit(source.FileInfo{
+				Path:  logical,
+				IsDir: false,
+				Fingerprint: source.Fingerprint{
+					Size:       deref64(obj.Size),
+					ModifiedAt: derefTime(obj.LastModified),
+					ETag:       derefStr(obj.ETag),
+				},
+			}); err != nil {
+				return err
+			}
+		}
+		if out.IsTruncated == nil || !*out.IsTruncated {
+			return nil
+		}
+		if out.NextContinuationToken == nil {
+			return wrapOp("scan", root, errors.New("truncated response without continuation token"))
+		}
+		input.ContinuationToken = out.NextContinuationToken
+	}
+}
+
 // isNotFound 判定 S3 侧「对象不存在」：NoSuchKey / NotFound API 错误
 // 或 HTTP 404。
 func isNotFound(err error) bool {

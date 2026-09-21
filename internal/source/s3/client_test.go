@@ -7,6 +7,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,6 +26,9 @@ type fakeS3 struct {
 	// ContinuationToken 循环。
 	pageSize int
 	listErr  error
+	// listRequests 累计 ListObjectsV2 调用次数：ScanTree 的请求规模
+	// 断言（页数主导 vs 目录数主导）用。
+	listRequests atomic.Int64
 }
 
 type fakeObject struct {
@@ -45,6 +49,7 @@ func (f *fakeS3) put(key string, data []byte, mod time.Time, etag string) {
 }
 
 func (f *fakeS3) ListObjectsV2(ctx context.Context, params *s3.ListObjectsV2Input, optFns ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
+	f.listRequests.Add(1)
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
@@ -73,13 +78,15 @@ func (f *fakeS3) ListObjectsV2(ctx context.Context, params *s3.ListObjectsV2Inpu
 			dirs[rest[:idx+len(delim)]] = true
 			continue
 		}
-		if strings.HasSuffix(key, "/") {
+		if strings.HasSuffix(key, "/") && delim != "" {
+			// delimiter 模式下 root 级 marker 由 rollup 表达。
 			markers = append(markers, key)
 			continue
 		}
+		// flat 模式（Delimiter=""）与真实 S3 一致：folder marker 以
+		// 普通对象形态进入 Contents，由 adapter 推导目录语义。
 		files = append(files, entry{key: key, size: int64(len(obj.data))})
 	}
-	// marker 对象本身也匹配 prefix（作为独立条目进入 Contents）。
 	_ = markers
 
 	// 与真实 S3 一致：keys 与 common prefixes 统一按字典序分页，
