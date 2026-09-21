@@ -443,7 +443,10 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
             <RemotePathPicker
                 open={pickerOpen}
                 onClose={() => setPickerOpen(false)}
-                onPick={path => setRemoteRoot(path)}
+                onPick={path => {
+                    setRemoteRoot(path)
+                    setPickerOpen(false)
+                }}
                 boundSourceId={sourceId}
                 initialPath={remoteRoot}
             />
