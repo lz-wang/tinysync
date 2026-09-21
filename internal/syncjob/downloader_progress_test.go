@@ -2,6 +2,7 @@ package syncjob
 
 import (
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"sync"
@@ -221,5 +222,65 @@ func TestFileProgressConcurrentReadWrite(t *testing.T) {
 		default:
 			_ = fp.BytesDone()
 		}
+	}
+}
+
+// halfWriter 每次写入请求只落地一半字节且不报错（模拟短写）。
+type halfWriter struct {
+	buf []byte
+}
+
+func (w *halfWriter) Write(p []byte) (int, error) {
+	n := len(p) / 2
+	if n == 0 {
+		n = len(p)
+	}
+	w.buf = append(w.buf, p[:n]...)
+	return n, nil
+}
+
+// partialFailWriter 首次写入全部成功，之后每次返回部分写入加错误
+//（模拟 ENOSPC：磁盘满时零散落地后写入失败）。
+type partialFailWriter struct {
+	calls int
+	err   error
+}
+
+func (w *partialFailWriter) Write(p []byte) (int, error) {
+	w.calls++
+	if w.calls == 1 {
+		return len(p), nil
+	}
+	return len(p) / 4, w.err
+}
+
+// 本地磁盘故障（短写）时，bytes_done 只能计已成功写入的字节，不能
+// 按远端读出字节数虚增。
+func TestCopyCountingShortWriteCountsWrittenBytesOnly(t *testing.T) {
+	data := strings.Repeat("a", 64*1024)
+	listener := &recordingListener{}
+	written, err := copyCounting(&halfWriter{}, strings.NewReader(data), listener)
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("err = %v, want io.ErrShortWrite", err)
+	}
+	if written != 16*1024 {
+		t.Errorf("written = %d, want %d", written, 16*1024)
+	}
+	if listener.total() != 16*1024 {
+		t.Errorf("listener total = %d, want %d（只计成功写入的字节）", listener.total(), 16*1024)
+	}
+}
+
+// 写入报错（ENOSPC）时同理：进度只反映真实落地的部分写入。
+func TestCopyCountingWriteErrorCountsWrittenBytesOnly(t *testing.T) {
+	data := strings.Repeat("b", 64*1024)
+	fp := &FileProgress{Path: "enospc.bin", BytesTotal: int64(len(data))}
+	listener := fileProgressListener{fp: fp}
+	_, err := copyCounting(&partialFailWriter{err: errors.New("no space left on device")}, strings.NewReader(data), listener)
+	if err == nil {
+		t.Fatal("err = nil, want write error")
+	}
+	if got := fp.BytesDone(); got != 32*1024+8*1024 {
+		t.Errorf("bytes done = %d, want %d（首次整写 + 部分写入）", got, 32*1024+8*1024)
 	}
 }
