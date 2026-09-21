@@ -49,17 +49,19 @@ func (a RunItemAction) Valid() bool {
 // RunItemStatus 是文件级变更结果。
 type RunItemStatus string
 
-// sync_run_items.status 的枚举值。
+// sync_run_items.status 的枚举值。canceled 表示文件在传输中被用户手动
+// 停止中断（Shutdown 中断仍记 failed，与 run 级状态语义一致）。
 const (
 	ItemSucceeded RunItemStatus = "succeeded"
 	ItemFailed    RunItemStatus = "failed"
 	ItemSkipped   RunItemStatus = "skipped"
+	ItemCanceled  RunItemStatus = "canceled"
 )
 
 // Valid 判断结果是否为受支持的枚举值。
 func (s RunItemStatus) Valid() bool {
 	switch s {
-	case ItemSucceeded, ItemFailed, ItemSkipped:
+	case ItemSucceeded, ItemFailed, ItemSkipped, ItemCanceled:
 		return true
 	}
 	return false
@@ -74,7 +76,7 @@ type RunRecord struct {
 	// ScheduledFor 是计划触发的 occurrence 时间；手动运行为 nil。
 	// 同一 (Job, Trigger, ScheduledFor) 只消费一次，是调度幂等依据。
 	ScheduledFor *time.Time
-	State        RunState // running | succeeded | failed | skipped
+	State        RunState // running | succeeded | failed | skipped | canceled
 	StartedAt    time.Time
 	FinishedAt   *time.Time
 	Stats        RunStats

@@ -2,6 +2,7 @@ package syncjob
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -132,6 +133,18 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 			return fmt.Errorf("record run item %s: %w", item.Path, err)
 		}
 		return nil
+	}
+
+	// recordDetachedItem 尽力记录失败 / 取消明细：使用脱离取消链的
+	// context——用户手动停止后 ctx 已取消，SQLite 写入会随之失败，
+	// canceled 明细将永远无法落库；此类明细本就是尽力而为（调用方
+	// 忽略错误），不因取消而静默丢失。
+	recordDetachedItem := func(item RunItem) {
+		if opts.Items == nil {
+			return
+		}
+		item.RunID = opts.RunID
+		_ = opts.Items.RecordItem(context.WithoutCancel(ctx), item)
 	}
 
 	// markPending 在派发前登记 pending（协调者串行写）：pending 先行
@@ -294,11 +307,17 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 			logging.Infof("event=sync_file_failed job_id=%s run_id=%s path=%s error=%q",
 				job.ID, opts.RunID, out.job.entry.relPath, out.err.Error())
 			// 失败明细尽力记录：主错误（传输失败）优先，不被覆盖。
-			// 因取消被中断的在途下载同样如实记 failed。
-			_ = recordItem(RunItem{
+			// 被用户手动停止中断的在途下载记 canceled（错误链是取消、
+			// 且取消原因是用户行为）；Shutdown 中断与真实传输失败
+			// 同样如实记 failed。
+			status := ItemFailed
+			if errors.Is(out.err, context.Canceled) && canceledByUser(ctx) {
+				status = ItemCanceled
+			}
+			recordDetachedItem(RunItem{
 				Path:   out.job.entry.relPath,
 				Action: out.job.action,
-				Status: ItemFailed,
+				Status: status,
 				Error:  out.err.Error(),
 			})
 			continue
@@ -318,8 +337,12 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 		return stats, transferFailure(err)
 	}
 
-	// 7. relinquish：仅清理 metadata，本地文件保留。
+	// 7. relinquish：仅清理 metadata，本地文件保留。取消后不再推进，
+	//    与传输阶段同语义（未发生的动作不留明细，下一轮重新计划）。
 	if len(plan.Relinquish) > 0 {
+		if err := ctx.Err(); err != nil {
+			return stats, transferFailure(err)
+		}
 		if err := opts.Managed.Delete(ctx, job.ID, plan.Relinquish); err != nil {
 			return stats, err
 		}
@@ -341,6 +364,11 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 	//    解析后的真实目标也在之内。
 	if len(plan.Deletes) > 0 {
 		for _, remotePath := range plan.Deletes {
+			// 逐项检查取消：已删除的保持 succeeded 明细，未删除的不留
+			// 明细（下一轮 Mirror 重新计划），与传输中断语义一致。
+			if err := ctx.Err(); err != nil {
+				return stats, transferFailure(err)
+			}
 			rel, err := remoteRelPath(job.RemoteRoot, remotePath)
 			if err != nil {
 				return stats, err
@@ -384,4 +412,11 @@ func transferFailure(err error) error {
 		return nil
 	}
 	return fmt.Errorf("transfer failed; metadata updates and mirror deletions were skipped: %w", err)
+}
+
+// canceledByUser 报告 ctx 的取消是否源于用户手动停止（Runner.Cancel 以
+// ErrRunCanceled 为 cause，经 context 取消链传播到子 context）；服务
+// Shutdown 的 cause 为 context.Canceled，返回 false。
+func canceledByUser(ctx context.Context) bool {
+	return errors.Is(context.Cause(ctx), ErrRunCanceled)
 }

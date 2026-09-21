@@ -13,9 +13,10 @@ import (
 	"tinysync/internal/source"
 )
 
-// RunState 是运行的状态机取值。running → succeeded | failed；
-// skipped 是调度触发但未执行（overlap / 容量不足）的持久化记录。
-// idle 不是持久化状态，仅表示「从未运行」的查询占位。
+// RunState 是运行的状态机取值。running → succeeded | failed | canceled；
+// canceled 专指用户手动停止（经 Runner.Cancel 触发）；Shutdown 等非用户
+// 意愿的中断仍记 failed。skipped 是调度触发但未执行（overlap / 容量不足）
+// 的持久化记录。idle 不是持久化状态，仅表示「从未运行」的查询占位。
 type RunState string
 
 // 运行状态机取值。运行记录持久化于 sync_runs，重启后仍可查询。
@@ -25,6 +26,7 @@ const (
 	RunSucceeded RunState = "succeeded"
 	RunFailed    RunState = "failed"
 	RunSkipped   RunState = "skipped"
+	RunCanceled  RunState = "canceled"
 )
 
 // 手动运行相关错误：API 层映射为 409 等状态码。
@@ -46,6 +48,13 @@ var (
 	// ErrJobMutating 表示 Job 的配置变更正在进行（手动触发返回 409；
 	// 调度触发视为瞬时状态，occurrence 不消费，稍后重试）。
 	ErrJobMutating = errors.New("sync job is being modified")
+	// ErrRunCanceled 是用户手动停止运行的取消原因（WithCancelCause）。
+	// finalize 据此把终态收敛为 canceled 而非 failed；同一取值也是
+	// canceled run 的 error 文案。
+	ErrRunCanceled = errors.New("run canceled by user")
+	// ErrRunNotActive 表示目标 run 不在进行中（不存在或已终态）。
+	// API 层结合持久化历史区分 404（不存在）与 409（已结束）。
+	ErrRunNotActive = errors.New("run not active")
 )
 
 // SourceGateway 是 Runner 访问 Source 领域的能力边界：读取 Source
@@ -74,8 +83,11 @@ type activeRun struct {
 	jobID        string
 	trigger      RunTrigger
 	scheduledFor *time.Time
-	cancel       context.CancelFunc
-	done         chan struct{}
+	// cancel 是本轮唯一的取消根。CancelCauseFunc 使「用户手动停止」
+	// （cancel(ErrRunCanceled)）与「服务 Shutdown」（cancel(nil)，cause
+	// 退化为 context.Canceled）在 finalize 中可区分。
+	cancel context.CancelCauseFunc
+	done   chan struct{}
 	// transfers 是本轮使用的进程级传输 limiter（Runner 单例的快照）。
 	transfers *TransferLimiter
 	// startedAt 在 goroutine 结束时用于填充最终状态。
@@ -240,13 +252,13 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 	now := r.Now()
 	// runCtx 是这一轮 run 的唯一取消根：Remote 创建（含 SFTP 拨号）、
 	// 有连接生命周期协议的关闭守护与引擎传输全部挂在其取消链上，
-	// Shutdown 取消 runCtx 即可打断上述全部阶段——context 取消只能
-	// 自父向子传播，取消根必须是 run 自身而不是其外的独立 context。
-	// cancel 先于发布创建：active 一旦可见，Shutdown 就一定能取到
-	// 取消函数，不存在 cancel 尚为 nil 的生命周期窗口；OpenRemote
-	// 也已纳入该生命周期，Shutdown 与仍在拨号中的启动阶段没有竞态。
-	// 运行 context 独立于调用方的 HTTP request context。
-	runCtx, cancel := context.WithCancel(context.Background())
+	// Shutdown 或用户手动停止取消 runCtx 即可打断上述全部阶段——
+	// context 取消只能自父向子传播，取消根必须是 run 自身而不是其外的
+	// 独立 context。cancel 先于发布创建：active 一旦可见，Shutdown 与
+	// Runner.Cancel 就一定能取到取消函数，不存在 cancel 尚为 nil 的
+	// 生命周期窗口；OpenRemote 也已纳入该生命周期，取消与仍在拨号中的
+	// 启动阶段没有竞态。运行 context 独立于调用方的 HTTP request context。
+	runCtx, cancel := context.WithCancelCause(context.Background())
 	run := &activeRun{
 		runID:        runID,
 		jobID:        jobID,
@@ -290,7 +302,8 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 		delete(r.occupancy, jobID)
 		r.mu.Unlock()
 		r.wg.Done()
-		cancel()
+		// goroutine 尚未启动，取消仅释放资源；cause 无意义。
+		cancel(nil)
 		return "", fmt.Errorf("persist run %s: %w", runID, err)
 	}
 
@@ -308,7 +321,8 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 			delete(r.active, jobID)
 			delete(r.occupancy, jobID)
 			r.mu.Unlock()
-			cancel()
+			// 运行已结束的兜底释放，cause 无意义；nil 不覆盖既有 cause。
+			cancel(nil)
 			close(run.done)
 		}()
 		r.runOne(runCtx, job, run)
@@ -385,6 +399,15 @@ func (r *Runner) finalize(ctx context.Context, run *activeRun, sourceID string, 
 	if runErr != nil {
 		final.State = RunFailed
 		final.Error = runErr.Error()
+		// 用户手动停止且取消正是失败原因：终态记 canceled 而非 failed。
+		// 判据是双重的——runErr 的错误链必须是取消（排除「取消到达前
+		// 运行已因真实错误失败」的情形），且取消原因必须是用户手动
+		// 停止（Shutdown 的 cause 为 context.Canceled，保持 failed）。
+		if errors.Is(runErr, context.Canceled) &&
+			errors.Is(context.Cause(ctx), ErrRunCanceled) {
+			final.State = RunCanceled
+			final.Error = ErrRunCanceled.Error()
+		}
 	}
 	logging.Infof("event=sync_run job_id=%s run_id=%s source_id=%s status=%s duration_ms=%d bytes=%d files_created=%d files_updated=%d files_deleted=%d error=%q",
 		run.jobID, run.runID, sourceID, final.State,
@@ -513,13 +536,16 @@ func (r *Runner) Wait(ctx context.Context, runID string) (RunStatus, error) {
 func (r *Runner) Shutdown(ctx context.Context) error {
 	r.mu.Lock()
 	r.shuttingDown = true
-	cancels := make([]context.CancelFunc, 0, len(r.active))
+	cancels := make([]context.CancelCauseFunc, 0, len(r.active))
 	for _, run := range r.active {
 		cancels = append(cancels, run.cancel)
 	}
 	r.mu.Unlock()
+	// cancel(nil)：cause 退化为 context.Canceled——Shutdown 不是用户
+	// 主动行为，finalize 据此保持 failed 终态，与启动恢复的 stale
+	// running 收敛语义一致。
 	for _, cancel := range cancels {
-		cancel()
+		cancel(nil)
 	}
 	done := make(chan struct{})
 	go func() {
@@ -532,6 +558,23 @@ func (r *Runner) Shutdown(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// Cancel 手动取消一轮进行中的运行：以 ErrRunCanceled 为原因触发 runCtx
+// 取消链（拨号、扫描、传输全部中断），终态由 finalize 收敛为 canceled。
+// run 已不在进行中（不存在或已终态）返回 ErrRunNotActive——按 run ID
+// 而非 Job 取消，杜绝「看到的 run 已结束、迟到的停止误伤下一轮」的
+// 竞态。仍 active 的重复取消幂等（cancel 为 no-op，返回 nil）。
+func (r *Runner) Cancel(runID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, run := range r.active {
+		if run.runID == runID {
+			run.cancel(ErrRunCanceled)
+			return nil
+		}
+	}
+	return ErrRunNotActive
 }
 
 // findActive 按 run ID 查找进行中的运行。

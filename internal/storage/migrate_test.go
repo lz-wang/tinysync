@@ -1212,3 +1212,140 @@ func TestMigrateV9ToV10DropsPublishedFiles(t *testing.T) {
 		t.Fatalf("backup files = %v, want one tinysync-v9-* entry", entries)
 	}
 }
+
+// TestMigrateV10ToV11AddsCanceledStatus：v10 库升级后 sync_runs 与
+// sync_run_items 的 status CHECK 接受 canceled，存量 run / item 数据
+// 完整保留，items 的 AUTOINCREMENT 单调性不回退。
+func TestMigrateV10ToV11AddsCanceledStatus(t *testing.T) {
+	dataDir := t.TempDir()
+	db, err := Open(dataDir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	// 用真实的 0001-0010 schema 构造 v10 形态的库。
+	v10FS := fstest.MapFS{}
+	for _, name := range []string{
+		"0001_sources.sql", "0002_sync_jobs.sql",
+		"0003_scheduler_history.sql", "0004_once_consumption.sql",
+		"0005_source_configs.sql", "0006_published_files.sql",
+		"0007_authentication.sql", "0008_admin_profile.sql",
+		"0009_shares.sql", "0010_drop_published_files.sql",
+	} {
+		data, err := fs.ReadFile(migrationFS, "migrations/"+name)
+		if err != nil {
+			t.Fatalf("read embedded %s: %v", name, err)
+		}
+		v10FS["migrations/"+name] = &fstest.MapFile{Data: data}
+	}
+	if err := migrate(ctx, db, dataDir, v10FS); err != nil {
+		t.Fatalf("build v10 database: %v", err)
+	}
+	assertVersion(t, db, 10)
+
+	if _, err := db.Exec(`INSERT INTO sources
+		(id, name, type, endpoint, username, password, enabled, created_at, updated_at)
+		VALUES ('src_a', 'nas', 'webdav', 'https://example.com/dav/', 'user', 'secret', 1, 1, 1)`); err != nil {
+		t.Fatalf("insert source: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO sync_jobs
+		(id, name, source_id, remote_root, local_root, mode,
+		 include_patterns, exclude_patterns, enabled,
+		 schedule_type, schedule_value, schedule_timezone,
+		 created_at, updated_at)
+		VALUES ('job_a', 'photos', 'src_a', '/', '/tmp/photos', 'mirror',
+		 '[]', '[]', 1, 'manual', '', '', 1, 1)`); err != nil {
+		t.Fatalf("insert job: %v", err)
+	}
+	// 存量数据：终态各异的 runs 与两种状态的 items。
+	if _, err := db.Exec(`INSERT INTO sync_runs
+		(id, job_id, trigger_type, scheduled_for, status, started_at, finished_at,
+		 files_total, files_created, error)
+		VALUES
+		('run_ok', 'job_a', 'manual', NULL, 'succeeded', 1000, 1100, 3, 3, ''),
+		('run_bad', 'job_a', 'cron', 2000, 'failed', 2000, 2500, 3, 1, 'boom')`); err != nil {
+		t.Fatalf("insert runs: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO sync_run_items
+		(run_id, path, action, status, bytes, error)
+		VALUES
+		('run_ok', 'a.txt', 'create', 'succeeded', 3, ''),
+		('run_bad', 'b.txt', 'update', 'failed', 0, 'boom')`); err != nil {
+		t.Fatalf("insert items: %v", err)
+	}
+
+	if err := Migrate(ctx, db, dataDir); err != nil {
+		t.Fatalf("Migrate v10->v11: %v", err)
+	}
+	assertVersion(t, db, embeddedLatestVersion(t))
+
+	// 存量 runs / items 完整保留（含统计列与 error 文案）。
+	var status string
+	var filesCreated int
+	if err := db.QueryRow(
+		"SELECT status, files_created FROM sync_runs WHERE id = 'run_bad'",
+	).Scan(&status, &filesCreated); err != nil {
+		t.Fatalf("query run after upgrade: %v", err)
+	}
+	if status != "failed" || filesCreated != 1 {
+		t.Errorf("run_bad = (%q, %d), want (failed, 1)", status, filesCreated)
+	}
+	var itemStatus, itemError string
+	if err := db.QueryRow(
+		"SELECT status, error FROM sync_run_items WHERE run_id = 'run_bad'",
+	).Scan(&itemStatus, &itemError); err != nil {
+		t.Fatalf("query item after upgrade: %v", err)
+	}
+	if itemStatus != "failed" || itemError != "boom" {
+		t.Errorf("item = (%q, %q), want (failed, boom)", itemStatus, itemError)
+	}
+
+	// 新 CHECK 生效：canceled 可写入 runs 与 items。
+	if _, err := db.Exec(`INSERT INTO sync_runs
+		(id, job_id, trigger_type, scheduled_for, status, started_at, finished_at, error)
+		VALUES ('run_cx', 'job_a', 'manual', NULL, 'canceled', 3000, 3100, 'run canceled by user')`); err != nil {
+		t.Fatalf("insert canceled run: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO sync_run_items
+		(run_id, path, action, status, bytes, error)
+		VALUES ('run_cx', 'c.txt', 'create', 'canceled', 5, 'context canceled')`); err != nil {
+		t.Fatalf("insert canceled item: %v", err)
+	}
+	// 非法值仍被拒绝。
+	if _, err := db.Exec(`INSERT INTO sync_runs
+		(id, job_id, trigger_type, scheduled_for, status, started_at)
+		VALUES ('run_bad2', 'job_a', 'manual', NULL, 'nope', 4000)`); err == nil {
+		t.Fatal("insert invalid run status = nil, want CHECK violation")
+	}
+	if _, err := db.Exec(`INSERT INTO sync_run_items
+		(run_id, path, action, status, bytes, error)
+		VALUES ('run_cx', 'd.txt', 'create', 'nope', 0, '')`); err == nil {
+		t.Fatal("insert invalid item status = nil, want CHECK violation")
+	}
+
+	// AUTOINCREMENT 单调性：迁移后序列未重置，max(id) 连续无空洞。
+	var maxID int
+	if err := db.QueryRow("SELECT max(id) FROM sync_run_items").Scan(&maxID); err != nil {
+		t.Fatalf("query max item id: %v", err)
+	}
+	// 既有 2 条 + canceled 1 条 = 3（非法值那条被 CHECK 拒绝未占位）。
+	if maxID != 3 {
+		t.Errorf("max item id = %d, want 3 (sequence preserved, no reset)", maxID)
+	}
+
+	// 外键完整性：迁移后的新表仍受 sync_runs 级联删除约束。
+	if _, err := db.Exec("DELETE FROM sync_runs WHERE id = 'run_ok'"); err != nil {
+		t.Fatalf("delete run: %v", err)
+	}
+	var items int
+	if err := db.QueryRow(
+		"SELECT count(*) FROM sync_run_items WHERE run_id = 'run_ok'",
+	).Scan(&items); err != nil {
+		t.Fatalf("count orphan items: %v", err)
+	}
+	if items != 0 {
+		t.Errorf("orphan items after cascade = %d, want 0", items)
+	}
+}
