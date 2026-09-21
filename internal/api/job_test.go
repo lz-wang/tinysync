@@ -957,3 +957,107 @@ func TestCancelRunAPI(t *testing.T) {
 	}
 	waitForRunState(t, router, jobID, syncjob.RunSucceeded, syncjob.RunFailed)
 }
+
+// gatedOpenRemote List 正常返回，Open 阻塞在 gate 上：构造传输阶段的
+// 确定性「运行中」窗口，供进度端点断言在途文件。
+type gatedOpenRemote struct {
+	list   []source.FileInfo
+	gate   chan struct{}
+	opened chan struct{}
+}
+
+func (r *gatedOpenRemote) Stat(ctx context.Context, path string) (source.FileInfo, error) {
+	return source.FileInfo{Path: path, IsDir: true}, nil
+}
+
+func (r *gatedOpenRemote) List(ctx context.Context, path string, opts source.ListOptions) (source.FilePage, error) {
+	return source.FilePage{Entries: r.list}, nil
+}
+
+func (r *gatedOpenRemote) Open(ctx context.Context, path string) (io.ReadCloser, error) {
+	select {
+	case r.opened <- struct{}{}:
+	default:
+	}
+	select {
+	case <-r.gate:
+		return io.NopCloser(strings.NewReader("v1")), nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (r *gatedOpenRemote) Close() error { return nil }
+
+// 运行中 run 的实时进度：GET /runs/:id 附 progress（phase / 工作量
+// 计数 / 在途文件字节），传输阶段可观察到 transferring 与 active_files；
+// 终态后 progress 省略——SQLite 历史是唯一事实来源。
+func TestRunProgressAPI(t *testing.T) {
+	gate := make(chan struct{})
+	opened := make(chan struct{}, 1)
+	remote := &gatedOpenRemote{
+		list: []source.FileInfo{{
+			Path: "/photos/a.jpg",
+			Fingerprint: source.Fingerprint{
+				Size:       2,
+				ModifiedAt: time.Unix(1757879400, 0).UTC(),
+				ETag:       `"a.jpg"`,
+			},
+		}},
+		gate:   gate,
+		opened: opened,
+	}
+	router := newJobRouter(t, remote)
+	sourceID := createSourceViaAPI(t, router, "NAS", true)
+	payload, _ := jobPayload(t, "Live", sourceID, "copy", true)
+	jobID, _ := decodeJSON(t, doJSON(t, router, "POST", "/api/v1/jobs", payload))["id"].(string)
+
+	rec := doJSON(t, router, "POST", "/api/v1/jobs/"+jobID+"/run", "")
+	runID, _ := decodeJSON(t, rec)["run_id"].(string)
+
+	// 等 run 进入 running，再等到下载已 Open（传输阶段开始）。
+	waitForRunState(t, router, jobID, syncjob.RunRunning)
+	select {
+	case <-opened:
+	case <-time.After(5 * time.Second):
+		t.Fatal("engine never opened the remote file")
+	}
+
+	// 运行中：progress 存在且为 transferring，在途文件带原始字节计数。
+	detail := decodeJSON(t, doJSON(t, router, "GET", "/api/v1/runs/"+runID, ""))
+	prog, ok := detail["progress"].(map[string]any)
+	if !ok {
+		t.Fatalf("running run detail missing progress: %v", detail)
+	}
+	if prog["phase"] != string(syncjob.RunPhaseTransferring) {
+		t.Errorf("progress phase = %v, want transferring", prog["phase"])
+	}
+	files, _ := prog["active_files"].([]any)
+	if len(files) != 1 {
+		t.Fatalf("active files = %v, want 1", prog["active_files"])
+	}
+	f0, _ := files[0].(map[string]any)
+	if f0["path"] != "a.jpg" || f0["action"] != "create" {
+		t.Errorf("active file = %v, want create a.jpg", f0)
+	}
+	if total, _ := f0["bytes_total"].(float64); total != 2 {
+		t.Errorf("bytes_total = %v, want 2 (fingerprint size)", f0["bytes_total"])
+	}
+	if _, has := f0["bytes_done"]; !has {
+		t.Errorf("active file missing bytes_done: %v", f0)
+	}
+	if _, has := prog["work_total"].(float64); !has {
+		t.Errorf("progress missing work_total: %v", prog)
+	}
+
+	// 放行完成传输：终态后 progress 省略。
+	close(gate)
+	waitForRunState(t, router, jobID, syncjob.RunSucceeded)
+	detail = decodeJSON(t, doJSON(t, router, "GET", "/api/v1/runs/"+runID, ""))
+	if _, has := detail["progress"]; has {
+		t.Errorf("finished run still exposes progress: %v", detail["progress"])
+	}
+	if detail["status"] != string(syncjob.RunSucceeded) {
+		t.Errorf("final status = %v, want succeeded", detail["status"])
+	}
+}

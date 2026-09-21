@@ -585,6 +585,17 @@ func (r *Runner) Cancel(runID string) error {
 	return ErrRunNotActive
 }
 
+// Progress 返回进行中 run 的实时进度快照；run 不在进行中（不存在、
+// 已终态或运行已结束但尚未移出 active）返回 false——调用方以持久化
+// 历史为准渲染终态。
+func (r *Runner) Progress(runID string) (RunProgressSnapshot, bool) {
+	run := r.findActive(runID)
+	if run == nil {
+		return RunProgressSnapshot{}, false
+	}
+	return run.progress.Snapshot(), true
+}
+
 // findActive 按 run ID 查找进行中的运行。
 func (r *Runner) findActive(runID string) *activeRun {
 	r.mu.Lock()

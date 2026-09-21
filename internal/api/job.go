@@ -515,6 +515,46 @@ const (
 	runsMaxLimit     = 200
 )
 
+// runProgressFileDTO 是一个在途文件的实时进度（字节计数由前端换算
+// 百分比与显示文本，后端只输出原始计数）。
+type runProgressFileDTO struct {
+	Path       string `json:"path"`
+	Action     string `json:"action"`
+	BytesDone  int64  `json:"bytes_done"`
+	BytesTotal int64  `json:"bytes_total"`
+}
+
+// runProgressDTO 是运行中 run 的实时进度：phase 为生命周期阶段
+// （connecting / scanning / planning / transferring / finalizing），
+// work_done / work_total 为计划工作项计数（transferring 起可用），
+// active_files 为在途传输。瞬态内存快照：终态 run 与进程重启后省略。
+type runProgressDTO struct {
+	Phase       string               `json:"phase"`
+	WorkDone    int64                `json:"work_done"`
+	WorkTotal   int64                `json:"work_total"`
+	ActiveFiles []runProgressFileDTO `json:"active_files"`
+}
+
+func toRunProgressDTO(snap syncjob.RunProgressSnapshot) *runProgressDTO {
+	dto := &runProgressDTO{
+		Phase:     string(snap.Phase),
+		WorkDone:  snap.WorkDone,
+		WorkTotal: snap.WorkTotal,
+	}
+	if len(snap.ActiveFiles) > 0 {
+		dto.ActiveFiles = make([]runProgressFileDTO, 0, len(snap.ActiveFiles))
+		for _, f := range snap.ActiveFiles {
+			dto.ActiveFiles = append(dto.ActiveFiles, runProgressFileDTO{
+				Path:       f.Path,
+				Action:     f.Action,
+				BytesDone:  f.BytesDone,
+				BytesTotal: f.BytesTotal,
+			})
+		}
+	}
+	return dto
+}
+
 // runDTO 是一轮运行的 API 表示；job_name 冗余输出便于全局历史渲染。
 type runDTO struct {
 	ID           string      `json:"id"`
@@ -527,6 +567,9 @@ type runDTO struct {
 	FinishedAt   string      `json:"finished_at,omitempty"`
 	Stats        runStatsDTO `json:"stats"`
 	Error        string      `json:"error,omitempty"`
+	// Progress 仅运行中的 run 输出：内存瞬态快照，终态省略——
+	// SQLite 历史始终是运行事实的唯一来源。
+	Progress *runProgressDTO `json:"progress,omitempty"`
 }
 
 // toRunDTO 转换运行记录，时间输出 RFC3339。
@@ -649,7 +692,11 @@ func (h *jobHandlers) listRuns(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"runs": dtos, "total": total})
 }
 
-// getRun GET /api/v1/runs/:id。运行摘要；不存在返回 404。
+// getRun GET /api/v1/runs/:id。运行摘要；不存在返回 404。运行中的
+// run 合并内存实时进度（progress 字段）：phase / 工作量计数 / 在途
+// 文件字节。终态 run（或进程重启后遗留 running 已被启动恢复收敛）
+// 不输出 progress——SQLite 历史是运行事实的唯一来源。前端以
+// 500ms～1s 轮询本端点消费进度。
 func (h *jobHandlers) getRun(c *gin.Context) {
 	if h.runner == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
@@ -661,7 +708,13 @@ func (h *jobHandlers) getRun(c *gin.Context) {
 		return
 	}
 	names := h.jobNames(c.Request.Context())
-	c.JSON(http.StatusOK, toRunDTO(run, names[run.JobID]))
+	dto := toRunDTO(run, names[run.JobID])
+	if run.State == syncjob.RunRunning {
+		if snap, ok := h.runner.Progress(run.ID); ok {
+			dto.Progress = toRunProgressDTO(snap)
+		}
+	}
+	c.JSON(http.StatusOK, dto)
 }
 
 // cancelRun POST /api/v1/runs/:id/cancel。手动停止进行中的运行：取消
