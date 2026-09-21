@@ -32,6 +32,10 @@ type RunOptions struct {
 	// TransferTimeout 是单文件单次 attempt 的传输超时；0 表示不启用
 	//（由运行配置注入，默认保持既有行为）。
 	TransferTimeout time.Duration
+	// Progress 接收运行期进度事件（阶段边界、工作量收敛、在途文件）。
+	// Runner 注入 activeRun 的内存进度；nil（独立调用）为 no-op，不
+	// 影响引擎行为。进度是 transient 状态，与 RunStats 历史审计无关。
+	Progress ProgressReporter
 }
 
 // ItemRecorder 接收文件级变更明细。返回错误视为本轮失败：历史明细缺失
@@ -75,13 +79,19 @@ type transferOutcome struct {
 func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 	var stats RunStats
 	job := opts.Job
+	progress := engineProgress(opts.Progress)
 
 	// 1. 完整远端扫描：失败即中止，不做任何本地变更。
+	progress.SetPhase(RunPhaseScanning)
 	remoteFiles, err := ScanRemote(ctx, opts.Remote, job.RemoteRoot)
 	if err != nil {
 		return stats, fmt.Errorf("remote scan failed; no local changes were made: %w", err)
 	}
 	stats.FilesTotal = len(remoteFiles)
+
+	// 2-4. Selector 与计划构造（managed 读取、BuildPlan、preflight）：
+	// 阶段推进到 planning，工作量分母尚未确定。
+	progress.SetPhase(RunPhasePlanning)
 
 	// 2. Selector：产出相对路径命中集合。
 	sel, err := NewSelector(job.Include, job.Exclude)
@@ -200,6 +210,7 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 			stats.FilesUpdated++
 		}
 		stats.BytesTransferred += size
+		progress.AddWorkDone(1)
 		return nil
 	}
 
@@ -217,12 +228,14 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 			}
 		}
 		stats.FilesSkipped++
+		progress.AddWorkDone(1)
 	}
 
 	// 6b. downloads：冲突条目记 skipped 明细（永不覆盖），其余入队。
 	for _, e := range plan.Downloads {
 		if reason, conflicted := conflicts[e.relPath]; conflicted {
 			stats.FilesSkipped++
+			progress.AddWorkDone(1)
 			if err := recordItem(RunItem{
 				Path:   e.relPath,
 				Action: ItemCreate,
@@ -246,6 +259,13 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 	// 调用退化为本地串行）。首次失败后停止派发、取消在途工作并排空
 	// 结果——失败后完成的下载不推进 synced（保留 pending 供下一轮
 	// 重传），relinquish 与 Mirror delete 一律不执行。
+	//
+	// 进度分母在此确定：计划（含 preflight 冲突收敛）已完整，跳过已
+	// 即时收敛，剩余工作 = 待传文件 + 释放 + 删除。0 <= work_done <=
+	// work_total 且单调递增。
+	progress.SetWorkTotal(int64(stats.FilesSkipped) + int64(len(jobs)) + int64(len(plan.Relinquish)) + int64(len(plan.Deletes)))
+	progress.SetPhase(RunPhaseTransferring)
+
 	limiter := opts.Transfers
 	if limiter == nil {
 		limiter = NewTransferLimiter(1)
@@ -291,7 +311,11 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 			go func(j transferJob) {
 				defer wg.Done()
 				defer limiter.Release()
+				// 在途文件登记：bytes_total 取下载前快照的指纹 size，
+				// 字节计数由 Downloader 回调经返回句柄累加。
+				progress.BeginFile(j.entry.relPath, j.action, j.entry.remote.Fingerprint.Size)
 				err := downloader.Download(transferCtx, j.entry.remote.Path, job.LocalRoot, j.entry.relPath, j.entry.remote.Fingerprint)
+				progress.EndFile(j.entry.relPath)
 				results <- transferOutcome{job: j, err: err}
 			}(j)
 		}
@@ -339,6 +363,7 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 
 	// 7. relinquish：仅清理 metadata，本地文件保留。取消后不再推进，
 	//    与传输阶段同语义（未发生的动作不留明细，下一轮重新计划）。
+	progress.SetPhase(RunPhaseFinalizing)
 	if len(plan.Relinquish) > 0 {
 		if err := ctx.Err(); err != nil {
 			return stats, transferFailure(err)
@@ -354,6 +379,7 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 			if err := recordItem(RunItem{Path: rel, Action: ItemRelinquish, Status: ItemSucceeded}); err != nil {
 				return stats, err
 			}
+			progress.AddWorkDone(1)
 		}
 	}
 
@@ -397,6 +423,7 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 			if err := recordItem(RunItem{Path: rel, Action: ItemDelete, Status: ItemSucceeded}); err != nil {
 				return stats, err
 			}
+			progress.AddWorkDone(1)
 		}
 		if err := opts.Managed.Delete(ctx, job.ID, plan.Deletes); err != nil {
 			return stats, err

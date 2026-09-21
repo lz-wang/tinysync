@@ -87,7 +87,10 @@ type activeRun struct {
 	// （cancel(ErrRunCanceled)）与「服务 Shutdown」（cancel(nil)，cause
 	// 退化为 context.Canceled）在 finalize 中可区分。
 	cancel context.CancelCauseFunc
-	done   chan struct{}
+	// progress 是本轮的进程内实时进度（transient）：拨号起登记阶段，
+	// 引擎经 ProgressReporter 回报；运行结束随 activeRun 一起销毁。
+	progress *RunProgress
+	done     chan struct{}
 	// transfers 是本轮使用的进程级传输 limiter（Runner 单例的快照）。
 	transfers *TransferLimiter
 	// startedAt 在 goroutine 结束时用于填充最终状态。
@@ -265,6 +268,7 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 		trigger:      trigger,
 		scheduledFor: scheduledFor,
 		cancel:       cancel,
+		progress:     NewRunProgress(),
 		done:         make(chan struct{}),
 		transfers:    r.transferLimiter(),
 		startedAt:    now,
@@ -357,6 +361,9 @@ func (r *Runner) transferLimiter() *TransferLimiter {
 // 历史中可查，而不是只在启动接口同步报错），创建阶段与传输阶段共用
 // runCtx 一条取消链，Shutdown 取消运行即可打断拨号与阻塞中的读取。
 func (r *Runner) runOne(ctx context.Context, job Job, run *activeRun) {
+	// connecting 阶段覆盖拨号（含 SFTP 会话建立）；引擎接管后推进到
+	// scanning 及之后。
+	run.progress.SetPhase(RunPhaseConnecting)
 	_, remote, err := r.sources.OpenRemote(ctx, job.SourceID)
 	if err != nil {
 		r.finalize(ctx, run, job.SourceID, RunStats{}, fmt.Errorf("create remote for source %s: %w", job.SourceID, err))
@@ -373,6 +380,7 @@ func (r *Runner) runOne(ctx context.Context, job Job, run *activeRun) {
 		RunID:           run.runID,
 		Transfers:       run.transfers,
 		TransferTimeout: r.TransferTimeout,
+		Progress:        run.progress,
 	})
 	r.finalize(ctx, run, job.SourceID, stats, runErr)
 }
