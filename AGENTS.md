@@ -34,5 +34,6 @@ TinySync 面向 HomeLab，目标是将异构远端文件单向同步到本地，
 - 不提交密钥、令牌、个人环境配置、构建产物或覆盖率文件；测试使用临时数据目录，不覆盖真实同步文件。
 - 遵循附近代码风格，不顺带全库格式化。代码、测试或脚本变更后执行全量 lint、typecheck 和 test；命令与失败处理见[开发与验证](docs/guides/development.md)。
 - 用户可见变化同步写入 `CHANGELOG.md` 的 `[Unreleased]`，仅使用 `新增` / `修复` / `移除`；纯内部重构、测试、构建及文档维护按该文件规则处理。
+- Web UI 操作反馈统一走全局 toast（`useToast`：右下角 Snackbar 承载 filled Alert、按 severity 分色、5 秒自动消失、新通知替换旧通知）；对话框内表单错误、空态提示与公开浏览页保留内联 Alert，不得新设自建 Snackbar。背景与取舍见 `docs/adr/0003-unified-web-toast.md`。
 - 文档与交付优先中文；未要求时不提交或推送。提交信息遵循 Conventional Commits，type 为英文，正文用中文补充说明，仅暂存本次相关文件。
 - 交付说明修改内容、实际验证结果、未覆盖项及 Git 状态；本地通过不能替代远端 CI、发行资产或镜像验收。
