@@ -312,9 +312,9 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 				defer wg.Done()
 				defer limiter.Release()
 				// 在途文件登记：bytes_total 取下载前快照的指纹 size，
-				// 字节计数由 Downloader 回调经返回句柄累加。
-				progress.BeginFile(j.entry.relPath, j.action, j.entry.remote.Fingerprint.Size)
-				err := downloader.Download(transferCtx, j.entry.remote.Path, job.LocalRoot, j.entry.relPath, j.entry.remote.Fingerprint)
+				// 字节计数由 Downloader 拷贝路径经 listener 累加。
+				fp := progress.BeginFile(j.entry.relPath, j.action, j.entry.remote.Fingerprint.Size)
+				err := downloader.download(transferCtx, j.entry.remote.Path, job.LocalRoot, j.entry.relPath, j.entry.remote.Fingerprint, fileProgressListener{fp: fp})
 				progress.EndFile(j.entry.relPath)
 				results <- transferOutcome{job: j, err: err}
 			}(j)

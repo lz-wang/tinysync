@@ -176,8 +176,22 @@ func (nullProgress) BeginFile(path string, action RunItemAction, totalBytes int6
 	return &FileProgress{Path: path, Action: action, BytesTotal: totalBytes}
 }
 
+// fileProgressListener 把 FileProgress 适配为 Downloader 的
+// TransferListener：attempt 重启归零计数，成功写入累加。值类型即可
+// （句柄语义，fp 指针共享）。
+type fileProgressListener struct {
+	fp *FileProgress
+}
+
+// AttemptStart 实现 TransferListener：重试从头发送，计数归零。
+func (l fileProgressListener) AttemptStart() { l.fp.reset() }
+
+// Write 实现 TransferListener：累加本次写入字节数。
+func (l fileProgressListener) Write(n int64) { l.fp.add(n) }
+
 // 编译期接口断言。
 var (
 	_ ProgressReporter = (*RunProgress)(nil)
 	_ ProgressReporter = nullProgress{}
+	_ TransferListener = fileProgressListener{}
 )

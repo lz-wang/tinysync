@@ -65,6 +65,17 @@ type Downloader struct {
 	hooks *fileHooks
 }
 
+// TransferListener 是单文件传输的字节级进度回调（协议无关）：挂在
+// Downloader 的拷贝路径上，传输路径只做 atomic 累加，无锁、无 I/O。
+type TransferListener interface {
+	// AttemptStart 在每次 attempt 开始时调用（含首次与重试）：实现应
+	// 把当前 attempt 的计数归零——重试从头发送，跨 attempt 累加会把
+	// bytes_done 抬过 bytes_total。
+	AttemptStart()
+	// Write 在每次成功写入后调用，n 为本次写入字节数。
+	Write(n int64)
+}
+
 // NewDownloader 构造默认参数的下载器。
 func NewDownloader(remote source.Remote) *Downloader {
 	return &Downloader{
@@ -81,6 +92,12 @@ func NewDownloader(remote source.Remote) *Downloader {
 // relPath 是相对 LocalRoot 的本地路径（/ 分隔），expected 为下载前
 // 快照的指纹，落地字节数必须与其 Size 严格一致（含零字节文件）。
 func (d *Downloader) Download(ctx context.Context, logicalPath, localRoot, relPath string, expected source.Fingerprint) error {
+	return d.download(ctx, logicalPath, localRoot, relPath, expected, nil)
+}
+
+// download 是 Download 的进度感知实现：listener 非 nil 时回报字节级
+// 进度（每次 attempt 开始归零，成功写入后累加）。
+func (d *Downloader) download(ctx context.Context, logicalPath, localRoot, relPath string, expected source.Fingerprint, listener TransferListener) error {
 	target, err := resolveLocalTarget(localRoot, relPath)
 	if err != nil {
 		return err
@@ -105,7 +122,10 @@ func (d *Downloader) Download(ctx context.Context, logicalPath, localRoot, relPa
 			attemptCtx, cancel = context.WithTimeout(ctx, d.timeout)
 			defer cancel()
 		}
-		lastErr = d.downloadOnce(attemptCtx, logicalPath, target, expected)
+		if listener != nil {
+			listener.AttemptStart()
+		}
+		lastErr = d.downloadOnce(attemptCtx, logicalPath, target, expected, listener)
 		if lastErr == nil {
 			return nil
 		}
@@ -145,7 +165,7 @@ func defaultJitter() time.Duration {
 }
 
 // downloadOnce 执行单次下载：临时文件写入、校验、原子替换。
-func (d *Downloader) downloadOnce(ctx context.Context, logicalPath, target string, expected source.Fingerprint) error {
+func (d *Downloader) downloadOnce(ctx context.Context, logicalPath, target string, expected source.Fingerprint, listener TransferListener) error {
 	tempPath, err := newTempPath(target)
 	if err != nil {
 		return err
@@ -156,7 +176,7 @@ func (d *Downloader) downloadOnce(ctx context.Context, logicalPath, target strin
 	}
 	defer rc.Close()
 
-	if err := d.copyAndVerify(tempPath, rc, expected); err != nil {
+	if err := d.copyAndVerify(tempPath, rc, expected, listener); err != nil {
 		_ = os.Remove(tempPath)
 		return err
 	}
@@ -178,8 +198,10 @@ func (d *Downloader) renameFile(old, new string) error {
 
 // copyAndVerify 把远端内容写入临时文件并校验字节数；取消传播依赖
 // 远端 reader（response body 绑定 request context）。每一步失败都
-// 由调用方负责清理临时文件。
-func (d *Downloader) copyAndVerify(tempPath string, rc io.Reader, expected source.Fingerprint) error {
+// 由调用方负责清理临时文件。listener 非 nil 时走显式拷贝循环回报
+// 进度——io.Copy 的 ReaderFrom / WriterTo 快速路径会绕过包装，
+// 计数路径不能依赖 writer 包装。
+func (d *Downloader) copyAndVerify(tempPath string, rc io.Reader, expected source.Fingerprint, listener TransferListener) error {
 	var out *os.File
 	var err error
 	if d.hooks != nil && d.hooks.createTemp != nil {
@@ -194,7 +216,13 @@ func (d *Downloader) copyAndVerify(tempPath string, rc io.Reader, expected sourc
 	if d.hooks != nil && d.hooks.wrapWriter != nil {
 		w = d.hooks.wrapWriter(out)
 	}
-	written, copyErr := io.Copy(w, rc)
+	var written int64
+	var copyErr error
+	if listener != nil {
+		written, copyErr = copyCounting(w, rc, listener)
+	} else {
+		written, copyErr = io.Copy(w, rc)
+	}
 	if copyErr == nil {
 		if d.hooks != nil && d.hooks.syncFile != nil {
 			copyErr = d.hooks.syncFile(out)
@@ -216,6 +244,34 @@ func (d *Downloader) copyAndVerify(tempPath string, rc io.Reader, expected sourc
 		return source.MarkPermanent(fmt.Errorf("size mismatch for %s: got %d bytes, want %d", tempPath, written, expected.Size))
 	}
 	return nil
+}
+
+// copyCounting 是带进度回调的显式拷贝循环：写入成功即回报字节数。
+// 语义与 io.Copy 的通用路径一致（短写报 ErrShortWrite，EOF 正常结束）。
+func copyCounting(w io.Writer, rc io.Reader, listener TransferListener) (int64, error) {
+	buf := make([]byte, 32*1024)
+	var written int64
+	for {
+		n, rerr := rc.Read(buf)
+		if n > 0 {
+			listener.Write(int64(n))
+			wn, werr := w.Write(buf[:n])
+			written += int64(wn)
+			if werr != nil {
+				return written, werr
+			}
+			if n != wn {
+				return written, io.ErrShortWrite
+			}
+		}
+		if rerr != nil {
+			if rerr == io.EOF {
+				break
+			}
+			return written, rerr
+		}
+	}
+	return written, nil
 }
 
 // newTempPath 在目标同目录生成唯一临时文件路径。
