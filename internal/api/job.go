@@ -41,6 +41,7 @@ func registerJobRoutes(group *gin.RouterGroup, svc *syncjob.Service, runner *syn
 		group.GET("/runs", requireScope(auth.ScopeRead), h.listRuns)
 		group.GET("/runs/:id", requireScope(auth.ScopeRead), h.getRun)
 		group.GET("/runs/:id/items", requireScope(auth.ScopeRead), h.listRunItems)
+		group.POST("/runs/:id/cancel", requireScope(auth.ScopeRun), h.cancelRun)
 	}
 }
 
@@ -607,7 +608,7 @@ func (h *jobHandlers) listRuns(c *gin.Context) {
 	}
 	if status := c.Query("status"); status != "" {
 		switch syncjob.RunState(status) {
-		case syncjob.RunRunning, syncjob.RunSucceeded, syncjob.RunFailed, syncjob.RunSkipped:
+		case syncjob.RunRunning, syncjob.RunSucceeded, syncjob.RunFailed, syncjob.RunSkipped, syncjob.RunCanceled:
 			filter.Status = syncjob.RunState(status)
 		default:
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status filter"})
@@ -661,6 +662,39 @@ func (h *jobHandlers) getRun(c *gin.Context) {
 	}
 	names := h.jobNames(c.Request.Context())
 	c.JSON(http.StatusOK, toRunDTO(run, names[run.JobID]))
+}
+
+// cancelRun POST /api/v1/runs/:id/cancel。手动停止进行中的运行：取消
+// 异步生效（取消链中断拨号 / 扫描 / 传输），立即返回 202；仍 active 的
+// 重复取消幂等 202（cancel 本身幂等，前端竞态无需特殊处理）。run 已
+// 终态返回 409 并附当前状态；不存在返回 404。scope 为 run（与触发运行
+// 同级），不要求 admin。
+func (h *jobHandlers) cancelRun(c *gin.Context) {
+	if h.runner == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	runID := c.Param("id")
+	err := h.runner.Cancel(runID)
+	if err == nil {
+		c.JSON(http.StatusAccepted, gin.H{"run_id": runID, "state": string(syncjob.RunRunning)})
+		return
+	}
+	if !errors.Is(err, syncjob.ErrRunNotActive) {
+		handleRunError(c, err)
+		return
+	}
+	// 不在进行中：结合持久化历史区分 404（不存在）与 409（已终态）。
+	rec, getErr := h.runner.GetRun(c.Request.Context(), runID)
+	if getErr != nil {
+		handleRunError(c, getErr)
+		return
+	}
+	c.JSON(http.StatusConflict, gin.H{
+		"error":  "run already finished",
+		"run_id": runID,
+		"state":  string(rec.State),
+	})
 }
 
 // listRunItems GET /api/v1/runs/:id/items。文件级变更明细，分页参数与

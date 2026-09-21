@@ -883,3 +883,77 @@ func TestSourceDeleteBlockedByJobAPI(t *testing.T) {
 		t.Errorf("delete unreferenced source = %d, want 204", rec.Code)
 	}
 }
+
+// 手动停止端点的稳定语义：未知 run 404、已终态 409（附当前状态）、
+// 运行中 202（重复取消幂等 202）、read scope 403；取消后 run 历史
+// 记 canceled，status=canceled 过滤可查询。
+func TestCancelRunAPI(t *testing.T) {
+	gate := make(chan struct{})
+	router := newJobRouter(t, &gateRemote{gate: gate})
+	sourceID := createSourceViaAPI(t, router, "NAS", true)
+	payload, _ := jobPayload(t, "Stoppable", sourceID, "copy", true)
+	jobID, _ := decodeJSON(t, doJSON(t, router, "POST", "/api/v1/jobs", payload))["id"].(string)
+
+	// 未知 run：404。
+	if rec := doJSON(t, router, "POST", "/api/v1/runs/run_missing/cancel", ""); rec.Code != http.StatusNotFound {
+		t.Errorf("cancel unknown run = %d, want 404", rec.Code)
+	}
+
+	// 启动并卡在扫描阶段（gate 未放行）。
+	rec := doJSON(t, router, "POST", "/api/v1/jobs/"+jobID+"/run", "")
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("run status = %d, want 202", rec.Code)
+	}
+	runID, _ := decodeJSON(t, rec)["run_id"].(string)
+	waitForRunState(t, router, jobID, syncjob.RunRunning)
+
+	// read scope token：403（取消与触发同级，要求 run scope）。
+	readRaw, _ := createTokenViaAPI(t, router, `{"name": "reader", "scopes": ["read"]}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs/"+runID+"/cancel", nil)
+	req.Header.Set("Authorization", "Bearer "+readRaw)
+	rec2 := httptest.NewRecorder()
+	router.Engine.ServeHTTP(rec2, req)
+	if rec2.Code != http.StatusForbidden {
+		t.Errorf("read token cancel = %d, want 403", rec2.Code)
+	}
+
+	// 取消：202，重复取消幂等 202。
+	for range 2 {
+		rec = doJSON(t, router, "POST", "/api/v1/runs/"+runID+"/cancel", "")
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("cancel active run = %d %s, want 202", rec.Code, rec.Body.String())
+		}
+	}
+
+	close(gate)
+	status := waitForRunState(t, router, jobID, syncjob.RunCanceled)
+	if status["run_id"] != runID {
+		t.Errorf("canceled status run_id = %v, want %s", status["run_id"], runID)
+	}
+
+	// 已终态：409 附当前状态。
+	rec = doJSON(t, router, "POST", "/api/v1/runs/"+runID+"/cancel", "")
+	if rec.Code != http.StatusConflict {
+		t.Errorf("cancel finished run = %d %s, want 409", rec.Code, rec.Body.String())
+	}
+	if body := decodeJSON(t, rec); body["state"] != string(syncjob.RunCanceled) {
+		t.Errorf("conflict body state = %v, want canceled", body["state"])
+	}
+
+	// 历史查询：run 记 canceled；status=canceled 过滤命中。
+	detail := decodeJSON(t, doJSON(t, router, "GET", "/api/v1/runs/"+runID, ""))
+	if detail["status"] != string(syncjob.RunCanceled) {
+		t.Errorf("run detail status = %v, want canceled", detail["status"])
+	}
+	list := decodeJSON(t, doJSON(t, router, "GET", "/api/v1/runs?job_id="+jobID+"&status=canceled", ""))
+	if total, _ := list["total"].(float64); total != 1 {
+		t.Errorf("canceled filter total = %v, want 1", list["total"])
+	}
+
+	// 取消不破坏 Job 协调位：下一轮正常运行。
+	rec = doJSON(t, router, "POST", "/api/v1/jobs/"+jobID+"/run", "")
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("rerun after cancel = %d, want 202", rec.Code)
+	}
+	waitForRunState(t, router, jobID, syncjob.RunSucceeded, syncjob.RunFailed)
+}

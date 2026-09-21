@@ -464,6 +464,7 @@ func TestAuthE2EProtectedScopeMatrix(t *testing.T) {
 		{http.MethodGet, "/api/v1/runs", auth.ScopeRead, ""},
 		{http.MethodGet, "/api/v1/runs/:id", auth.ScopeRead, ""},
 		{http.MethodGet, "/api/v1/runs/:id/items", auth.ScopeRead, ""},
+		{http.MethodPost, "/api/v1/runs/:id/cancel", auth.ScopeRun, ""},
 		{http.MethodGet, "/api/v1/jobs/:id/files", auth.ScopeRead, ""},
 		{http.MethodGet, "/api/v1/jobs/:id/files/stat", auth.ScopeRead, ""},
 		{http.MethodGet, "/api/v1/jobs/:id/files/download", auth.ScopeRead, ""},

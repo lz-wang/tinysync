@@ -56,7 +56,7 @@ func registerRunTools(server *mcp.Server, deps Deps) {
 		Name: "run_sync",
 		Description: "Start an already-configured TinySync sync job and return its run_id immediately. " +
 			"Side-effect / destructive-capable: mirror jobs may delete local files that this job manages and that no longer exist on the remote. " +
-			"Poll get_sync_run with the returned run_id until it reaches succeeded or failed.",
+			"Poll get_sync_run with the returned run_id until it reaches succeeded, failed or canceled.",
 		Annotations: destructiveAnnotations(),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input runSyncInput) (*mcp.CallToolResult, runSyncResult, error) {
 		if input.JobID == "" {
@@ -74,7 +74,7 @@ func registerRunTools(server *mcp.Server, deps Deps) {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_sync_run",
-		Description: "Get the state, stats and failure reason of one sync run by run_id (states: running / succeeded / failed / skipped).",
+		Description: "Get the state, stats and failure reason of one sync run by run_id (states: running / succeeded / failed / skipped / canceled).",
 		Annotations: readOnlyAnnotations(),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input RunIDInput) (*mcp.CallToolResult, runDetail, error) {
 		if input.RunID == "" {
