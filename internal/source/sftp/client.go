@@ -153,7 +153,7 @@ func dial(ctx context.Context, addr string, config *ssh.ClientConfig) (*ssh.Clie
 	d := net.Dialer{Timeout: dialTimeout}
 	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		return nil, err
+		return nil, normalizeCtxErr(ctx, err)
 	}
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(deadline)
@@ -174,7 +174,7 @@ func dial(ctx context.Context, addr string, config *ssh.ClientConfig) (*ssh.Clie
 	sshConn, chans, reqs, err := ssh.NewClientConn(conn, addr, config)
 	if err != nil {
 		_ = conn.Close()
-		return nil, err
+		return nil, normalizeCtxErr(ctx, err)
 	}
 	// 握手完成后恢复：SFTP 会话与数据传输不受握手期限约束。
 	_ = conn.SetDeadline(time.Time{})
@@ -204,19 +204,19 @@ var _ source.Remote = (*remote)(nil)
 func (r *remote) connect(ctx context.Context) error {
 	client, err := dial(ctx, r.addr, r.sshCfg)
 	if err != nil {
-		return fmt.Errorf("sftp dial %s: %w", r.addr, err)
+		return normalizeCtxErr(ctx, fmt.Errorf("sftp dial %s: %w", r.addr, err))
 	}
 	sftpClient, err := sftp.NewClient(client)
 	if err != nil {
 		_ = client.Close()
-		return fmt.Errorf("sftp open session on %s: %w", r.addr, err)
+		return normalizeCtxErr(ctx, fmt.Errorf("sftp open session on %s: %w", r.addr, err))
 	}
 	// RealPath 解析服务器侧真实 root：配置路径可能经 symlink / 挂载
 	// 呈现，root confinement 以解析后的真实路径为基准。
 	root, err := sftpClient.RealPath(r.rootCfg)
 	if err != nil {
 		_ = client.Close()
-		return fmt.Errorf("resolve sftp remote root %s: %w", r.rootCfg, err)
+		return normalizeCtxErr(ctx, fmt.Errorf("resolve sftp remote root %s: %w", r.rootCfg, err))
 	}
 	if !path.IsAbs(root) {
 		_ = client.Close()
@@ -349,7 +349,7 @@ func (r *remote) Stat(ctx context.Context, logicalPath string) (source.FileInfo,
 	}
 	info, err := c.Lstat(abs)
 	if err != nil {
-		return source.FileInfo{}, wrapOp("stat", logicalPath, err)
+		return source.FileInfo{}, normalizeCtxErr(ctx, wrapOp("stat", logicalPath, err))
 	}
 	return toFileInfo(logicalPath, info)
 }
@@ -376,7 +376,7 @@ func (r *remote) List(ctx context.Context, logicalDir string, opts source.ListOp
 	}
 	entries, err := c.ReadDir(abs)
 	if err != nil {
-		return source.FilePage{}, wrapOp("list", logicalDir, err)
+		return source.FilePage{}, normalizeCtxErr(ctx, wrapOp("list", logicalDir, err))
 	}
 	all := make([]source.FileInfo, 0, len(entries))
 	for _, entry := range entries {
@@ -413,7 +413,7 @@ func (r *remote) Mkdir(ctx context.Context, logicalPath string) error {
 		return err
 	}
 	if err := c.Mkdir(abs); err != nil {
-		return wrapOp("mkdir", logicalPath, err)
+		return normalizeCtxErr(ctx, wrapOp("mkdir", logicalPath, err))
 	}
 	return nil
 }
@@ -454,7 +454,7 @@ func (r *remote) Open(ctx context.Context, logicalPath string) (io.ReadCloser, e
 	}
 	f, err := c.Open(abs)
 	if err != nil {
-		return nil, wrapOp("open", logicalPath, err)
+		return nil, normalizeCtxErr(ctx, wrapOp("open", logicalPath, err))
 	}
 	// 超时回调与连接代际绑定：该文件的 ctx 超时只拆除它打开时所用
 	// 的会话快照，重连后的新代际不受 stale 回调影响（闭包持有的旧
@@ -490,6 +490,9 @@ func (r *remote) Close() error {
 type ctxFile struct {
 	f        *sftp.File
 	teardown func()
+	// ctx 是文件打开时的调用上下文：取消路径拆除连接后，阻塞中的
+	// Read 返回拆除回声错误，经 normalizeCtxErr 归一为 ctx 错误。
+	ctx context.Context
 
 	// mu 守护 closed / timedOut：Close 与 ctx 取消可能几乎同时就绪，
 	// 而 select 对多个就绪 case 的选择是随机的——显式状态保证「Close
@@ -510,7 +513,7 @@ var _ io.ReadCloser = (*ctxFile)(nil)
 // newCtxFile 包装已打开的文件；ctx 无 Done（background）时不启动
 // 守护 goroutine，行为与裸 *sftp.File 一致。
 func newCtxFile(ctx context.Context, f *sftp.File, teardown func()) *ctxFile {
-	c := &ctxFile{f: f, teardown: teardown, stop: make(chan struct{})}
+	c := &ctxFile{f: f, teardown: teardown, ctx: ctx, stop: make(chan struct{})}
 	if ctx.Done() == nil {
 		return c
 	}
@@ -538,7 +541,11 @@ func (c *ctxFile) onCtxDone() {
 }
 
 func (c *ctxFile) Read(p []byte) (int, error) {
-	return c.f.Read(p)
+	n, err := c.f.Read(p)
+	if err != nil {
+		return n, normalizeCtxErr(c.ctx, err)
+	}
+	return n, nil
 }
 
 // Close 停止守护并关闭文件。先置 closed 再关闭 stop：迟到的 ctx
@@ -558,6 +565,22 @@ func (c *ctxFile) markClosed() {
 	c.closed = true
 	c.mu.Unlock()
 	c.stopOnce.Do(func() { close(c.stop) })
+}
+
+// normalizeCtxErr 在阻塞操作返回错误时归一取消语义：ctx 取消路径
+// 会拆除底层连接，此刻阻塞中的 SFTP 操作（握手 / RealPath / Lstat /
+// ReadDir / Open）返回的是 connection lost / EOF / use of closed
+// network connection 等拆除回声，而非 context 错误。若调用返回时
+// ctx 已取消，必须以 ctx.Err() 优先——上层 Runner 据此把「用户停止」
+// 收敛为 canceled 而非误判为 failed。
+func normalizeCtxErr(ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	return err
 }
 
 // wrapOp 为底层错误补充操作与路径上下文；ctx 超时/取消经 %w 保持
@@ -593,7 +616,7 @@ func (r *remote) ScanTree(ctx context.Context, root string, visit func(source.Fi
 		}
 		entries, err := c.ReadDir(abs)
 		if err != nil {
-			return nil, wrapOp("scan", logical, err)
+			return nil, normalizeCtxErr(ctx, wrapOp("scan", logical, err))
 		}
 		return entries, nil
 	}

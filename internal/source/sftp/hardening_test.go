@@ -644,3 +644,182 @@ func TestSFTPConcurrentOpsWithTeardown(t *testing.T) {
 		t.Fatalf("post-hammer read = %q, want content-X", got)
 	}
 }
+
+// —— 取消归一化（真实 SFTP 阻塞边界）——
+//
+// Runner 以 errors.Is(runErr, context.Canceled) 把用户停止收敛为
+// canceled。ctx 取消路径拆除 SSH 连接后，阻塞中的真实 SFTP 操作
+// 返回的是拆除回声（connection lost / EOF / use of closed network
+// connection），不是 context 错误——以下测试锁死「调用返回时 ctx
+// 已取消 ⇒ 返回 context.Canceled」的边界契约，覆盖握手、扫描与
+// 传输体三个阻塞点。
+
+// startStalledServer 返回已置位 stall 的服务：接受 TCP 与 SSH 握手
+// 请求，但服务端 → 客户端的数据被吞掉。
+func startStalledServer(tb testing.TB) *testServer {
+	tb.Helper()
+	ts := startTestServer(tb)
+	ts.stall.Store(true)
+	return ts
+}
+
+// waitCond 轮询等待条件成立（最长 2s）：阻塞测试的进入时序对齐，
+// 不依赖 sleep 猜测。
+func waitCond(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("condition not met in time: %s", what)
+}
+
+// stalled handshake：握手响应被吞 → Create 阻塞在 NewClientConn →
+// cancel 后必须返回 context.Canceled（而非 handshake EOF）。
+func TestSFTPStalledHandshakeCancelReturnsContextError(t *testing.T) {
+	ts := startStalledServer(t)
+	cfg := sftpSourceConfig(ts, "/", source.SFTPAuthPassword)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type createResult struct {
+		remote source.Remote
+		err    error
+	}
+	done := make(chan createResult, 1)
+	go func() {
+		r, err := NewFactory().Create(ctx, source.Source{
+			Name:   "test",
+			Type:   source.TypeSFTP,
+			Config: source.Config{SFTP: &cfg},
+		}, source.Credentials{SFTP: &source.SFTPCredentials{Password: testPassword}})
+		done <- createResult{remote: r, err: err}
+	}()
+	// Create 阻塞在握手（服务器日志确认请求已受理），取消触发
+	// dial 的连接拆除，握手错误归一为 ctx 错误。
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	select {
+	case res := <-done:
+		if !errors.Is(res.err, context.Canceled) {
+			t.Fatalf("Create after cancel = %v, want context.Canceled", res.err)
+		}
+		if res.remote != nil {
+			_ = res.remote.Close()
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Create still blocked after cancel")
+	}
+}
+
+// stalled scan：ReadDir 响应被吞 → ScanTree 阻塞 → cancel 后必须
+// 返回 context.Canceled（而非 wrapOp 包裹的连接丢失错误）。连接以
+// 可取消 ctx 创建（生产形态：Factory.Create 的取消守护负责拆除
+// 连接，中断阻塞中的 ReadDir）。
+func TestSFTPStalledScanCancelReturnsContextError(t *testing.T) {
+	root := t.TempDir()
+	seedFile(t, root, "docs/a.txt", "data")
+	ts := startTestServer(t)
+	cfg := sftpSourceConfig(ts, root, source.SFTPAuthPassword)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r, err := NewFactory().Create(ctx, source.Source{
+		Name:   "test",
+		Type:   source.TypeSFTP,
+		Config: source.Config{SFTP: &cfg},
+	}, source.Credentials{SFTP: &source.SFTPCredentials{Password: testPassword}})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	scanner, ok := r.(source.TreeScanner)
+	if !ok {
+		t.Fatal("remote does not implement TreeScanner")
+	}
+
+	// 预热：会话已建立，stall 只吞 ReadDir 响应。
+	if _, err := r.Stat(context.Background(), "/docs"); err != nil {
+		t.Fatalf("warmup Stat: %v", err)
+	}
+	ts.stall.Store(true)
+
+	scanDone := make(chan error, 1)
+	go func() {
+		scanDone <- scanner.ScanTree(ctx, "/", func(source.FileInfo) error { return nil })
+	}()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-scanDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("ScanTree after cancel = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ScanTree still blocked after cancel")
+	}
+}
+
+// stalled body：读取响应被吞 → Read 阻塞 → cancel 后必须返回
+// context.Canceled，且 Downloader 层把该轮传输的最终错误归一为
+// ctx 错误（Runner 据此记 canceled 而非 failed）。
+func TestSFTPStalledBodyReadCancelReturnsContextError(t *testing.T) {
+	root := t.TempDir()
+	content := strings.Repeat("cancel-body-", 400)
+	seedFile(t, root, "big.txt", content)
+	ts := startTestServer(t)
+	cfg := sftpSourceConfig(ts, root, source.SFTPAuthPassword)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	factory := NewFactory()
+	r, err := factory.Create(ctx, source.Source{
+		Name:   "test",
+		Type:   source.TypeSFTP,
+		Config: source.Config{SFTP: &cfg},
+	}, source.Credentials{SFTP: &source.SFTPCredentials{Password: testPassword}})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	rc, err := r.Open(ctx, "/big.txt")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	ts.stall.Store(true)
+
+	readDone := make(chan error, 1)
+	go func() {
+		_, readErr := io.ReadAll(rc)
+		_ = rc.Close()
+		readDone <- readErr
+	}()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-readDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("stalled read after cancel = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("stalled read still blocked after cancel")
+	}
+
+	// Downloader 视角：整个下载在取消后必须以 ctx 错误终止——
+	// Runner.finalize 的 canceled 判定直接依赖这一点。
+	d := syncjob.NewDownloader(r)
+	dlDone := make(chan error, 1)
+	go func() {
+		dlDone <- d.Download(ctx, "/big.txt", t.TempDir(), "big.txt", source.Fingerprint{Size: int64(len(content))})
+	}()
+	select {
+	case err := <-dlDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Download after cancel = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Download still blocked after cancel")
+	}
+}
