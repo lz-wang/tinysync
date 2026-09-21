@@ -249,7 +249,7 @@ func (d *Downloader) copyAndVerify(tempPath string, rc io.Reader, expected sourc
 // copyCounting 是带进度回调的显式拷贝循环：bytes_done 只计已成功
 // 写入的字节（wn），不按远端读出字节数虚增——本地磁盘故障（ENOSPC /
 // 短写）时进度不得越过真实落地量。语义与 io.Copy 的通用路径一致
-//（短写报 ErrShortWrite，EOF 正常结束）。
+// （短写报 ErrShortWrite，EOF 正常结束）。
 func copyCounting(w io.Writer, rc io.Reader, listener TransferListener) (int64, error) {
 	buf := make([]byte, 32*1024)
 	var written int64

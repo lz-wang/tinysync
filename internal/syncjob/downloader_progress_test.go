@@ -240,7 +240,7 @@ func (w *halfWriter) Write(p []byte) (int, error) {
 }
 
 // partialFailWriter 首次写入全部成功，之后每次返回部分写入加错误
-//（模拟 ENOSPC：磁盘满时零散落地后写入失败）。
+// （模拟 ENOSPC：磁盘满时零散落地后写入失败）。
 type partialFailWriter struct {
 	calls int
 	err   error
