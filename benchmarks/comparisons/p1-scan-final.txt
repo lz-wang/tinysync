@@ -1,0 +1,131 @@
+goos: darwin
+goarch: arm64
+pkg: tinysync/internal/browser
+cpu: Apple M1 Max
+                     │ benchmarks/results/p1-before-10.bench │ benchmarks/results/p1-final.bench  │
+                     │                sec/op                 │   sec/op     vs base               │
+ManagedSearch100K-10                             157.0m ± 2%   159.6m ± 4%  +1.61% (p=0.023 n=10)
+
+                     │ benchmarks/results/p1-before-10.bench │ benchmarks/results/p1-final.bench │
+                     │                 B/op                  │      B/op        vs base          │
+ManagedSearch100K-10                            163.4Mi ± 0%      163.4Mi ± 0%  ~ (p=0.247 n=10)
+
+                     │ benchmarks/results/p1-before-10.bench │ benchmarks/results/p1-final.bench │
+                     │               allocs/op               │    allocs/op     vs base          │
+ManagedSearch100K-10                             1.504M ± 0%       1.504M ± 0%  ~ (p=0.189 n=10)
+
+pkg: tinysync/internal/source/s3
+                        │ benchmarks/results/p1-before-10.bench │  benchmarks/results/p1-final.bench  │
+                        │                sec/op                 │   sec/op     vs base                │
+ScanRemoteS3_10KFlat-10                             5.063m ± 2%   4.569m ± 2%   -9.76% (p=0.000 n=10)
+ScanRemoteS3_10KDeep-10                             6.389m ± 1%   5.536m ± 4%  -13.36% (p=0.000 n=10)
+geomean                                             5.687m        5.029m       -11.58%
+
+                        │ benchmarks/results/p1-before-10.bench │  benchmarks/results/p1-final.bench   │
+                        │                 B/op                  │     B/op      vs base                │
+ScanRemoteS3_10KFlat-10                           12.457Mi ± 0%   9.437Mi ± 0%  -24.25% (p=0.000 n=10)
+ScanRemoteS3_10KDeep-10                           12.454Mi ± 0%   9.823Mi ± 0%  -21.12% (p=0.000 n=10)
+geomean                                            12.46Mi        9.628Mi       -22.70%
+
+                        │ benchmarks/results/p1-before-10.bench │  benchmarks/results/p1-final.bench  │
+                        │               allocs/op               │  allocs/op   vs base                │
+ScanRemoteS3_10KFlat-10                             23.83k ± 0%   40.34k ± 0%  +69.30% (p=0.000 n=10)
+ScanRemoteS3_10KDeep-10                             47.44k ± 0%   51.36k ± 0%   +8.26% (p=0.000 n=10)
+geomean                                             33.62k        45.52k       +35.38%
+
+                        │ benchmarks/results/p1-before-10.bench │   benchmarks/results/p1-final.bench    │
+                        │            listobjects/op             │ listobjects/op  vs base                │
+ScanRemoteS3_10KFlat-10                             101.00 ± 0%       10.00 ± 0%  -90.10% (p=0.000 n=10)
+ScanRemoteS3_10KDeep-10                            1011.00 ± 0%       10.00 ± 0%  -99.01% (p=0.000 n=10)
+geomean                                              319.5            10.00       -96.87%
+
+pkg: tinysync/internal/source/sftp
+                           │ benchmarks/results/p1-before-10.bench │  benchmarks/results/p1-final.bench  │
+                           │                sec/op                 │   sec/op     vs base                │
+ScanRemoteSFTP10KFlat-10                             5992.29m ± 3%   66.21m ± 9%  -98.90% (p=0.000 n=10)
+ScanRemoteSFTP10KNested-10                             105.7m ± 9%   109.6m ± 3%   +3.71% (p=0.029 n=10)
+geomean                                                795.9m        85.20m       -89.30%
+
+                           │ benchmarks/results/p1-before-10.bench │  benchmarks/results/p1-final.bench   │
+                           │                 B/op                  │     B/op      vs base                │
+ScanRemoteSFTP10KFlat-10                            6197.27Mi ± 0%   66.11Mi ± 0%  -98.93% (p=0.000 n=10)
+ScanRemoteSFTP10KNested-10                            67.53Mi ± 0%   66.67Mi ± 0%   -1.28% (p=0.000 n=10)
+geomean                                               646.9Mi        66.39Mi       -89.74%
+
+                           │ benchmarks/results/p1-before-10.bench │  benchmarks/results/p1-final.bench  │
+                           │               allocs/op               │  allocs/op   vs base                │
+ScanRemoteSFTP10KFlat-10                             32462.7k ± 0%   334.7k ± 0%  -98.97% (p=0.000 n=10)
+ScanRemoteSFTP10KNested-10                             348.2k ± 0%   347.3k ± 0%   -0.27% (p=0.000 n=10)
+geomean                                                3.362M        341.0k       -89.86%
+
+pkg: tinysync/internal/source/webdav
+                             │ benchmarks/results/p1-before-10.bench │  benchmarks/results/p1-final.bench  │
+                             │                sec/op                 │   sec/op     vs base                │
+RemotePagination10K-10                                    4.563 ± 1%    4.582 ± 1%        ~ (p=0.089 n=10)
+ScanRemoteWebDAV10KFlat-10                             22935.6m ± 0%   232.0m ± 1%  -98.99% (p=0.000 n=10)
+ScanRemoteWebDAV10KNested-10                             268.7m ± 4%   267.6m ± 4%        ~ (p=0.436 n=10)
+geomean                                                   3.041        657.7m       -78.37%
+
+                             │ benchmarks/results/p1-before-10.bench │  benchmarks/results/p1-final.bench   │
+                             │                 B/op                  │     B/op      vs base                │
+RemotePagination10K-10                                  3.166Gi ± 0%   3.166Gi ± 0%        ~ (p=0.247 n=10)
+ScanRemoteWebDAV10KFlat-10                            16216.5Mi ± 0%   166.5Mi ± 0%  -98.97% (p=0.000 n=10)
+ScanRemoteWebDAV10KNested-10                            172.9Mi ± 0%   171.9Mi ± 0%   -0.60% (p=0.000 n=10)
+geomean                                                 2.038Gi        452.7Mi       -78.31%
+
+                             │ benchmarks/results/p1-before-10.bench │  benchmarks/results/p1-final.bench  │
+                             │               allocs/op               │  allocs/op   vs base                │
+RemotePagination10K-10                                   47.65M ± 0%   47.65M ± 0%        ~ (p=0.971 n=10)
+ScanRemoteWebDAV10KFlat-10                             238.289M ± 0%   2.413M ± 0%  -98.99% (p=0.000 n=10)
+ScanRemoteWebDAV10KNested-10                             2.503M ± 0%   2.502M ± 0%   -0.06% (p=0.000 n=10)
+geomean                                                  30.52M        6.601M       -78.37%
+
+                             │ benchmarks/results/p1-before-10.bench │   benchmarks/results/p1-final.bench   │
+                             │              propfind/op              │ propfind/op  vs base                  │
+ScanRemoteWebDAV10KFlat-10                              100.000 ± 0%    1.000 ± 0%  -99.00% (p=0.000 n=10)
+ScanRemoteWebDAV10KNested-10                              101.0 ± 0%    101.0 ± 0%        ~ (p=1.000 n=10) ¹
+geomean                                                   100.5         10.05       -90.00%
+¹ all samples are equal
+
+pkg: tinysync/internal/syncjob
+                     │ benchmarks/results/p1-before-10.bench │  benchmarks/results/p1-final.bench   │
+                     │                sec/op                 │    sec/op     vs base                │
+Plan10K-10                                      4.137m ±  6%   4.114m ±  2%        ~ (p=0.315 n=10)
+SmallFileSync-10                                116.0µ ±  3%   121.6µ ±  3%   +4.76% (p=0.000 n=10)
+LargeFileTransfer-10                            27.52m ± 57%   29.44m ± 61%        ~ (p=0.529 n=10)
+ScanRemote10KFlat-10                            2.052m ±  5%   2.267m ±  3%  +10.49% (p=0.000 n=10)
+geomean                                         2.282m         2.404m         +5.35%
+
+                     │ benchmarks/results/p1-before-10.bench │  benchmarks/results/p1-final.bench  │
+                     │                 B/op                  │     B/op      vs base               │
+Plan10K-10                                      11.69Mi ± 0%   11.69Mi ± 0%       ~ (p=0.342 n=10)
+SmallFileSync-10                                2.343Ki ± 0%   2.433Ki ± 0%  +3.83% (p=0.000 n=10)
+LargeFileTransfer-10                            2.516Ki ± 0%   2.518Ki ± 0%       ~ (p=0.234 n=10)
+ScanRemote10KFlat-10                            5.165Mi ± 0%   5.166Mi ± 0%  +0.01% (p=0.000 n=10)
+geomean                                         139.0Ki        140.3Ki       +0.97%
+
+                     │ benchmarks/results/p1-before-10.bench │  benchmarks/results/p1-final.bench   │
+                     │               allocs/op               │  allocs/op   vs base                 │
+Plan10K-10                                       20.13k ± 0%   20.13k ± 0%       ~ (p=1.000 n=10) ¹
+SmallFileSync-10                                  26.00 ± 0%    28.00 ± 0%  +7.69% (p=0.000 n=10)
+LargeFileTransfer-10                              28.00 ± 0%    28.00 ± 0%       ~ (p=1.000 n=10) ¹
+ScanRemote10KFlat-10                             10.39k ± 0%   10.40k ± 0%  +0.03% (p=0.000 n=10)
+geomean                                           624.8         636.5       +1.88%
+¹ all samples are equal
+
+                     │ benchmarks/results/p1-before-10.bench │ benchmarks/results/p1-final.bench │
+                     │                  B/s                  │       B/s        vs base          │
+LargeFileTransfer-10                          1.151Gi ± 132%    1.064Gi ± 159%  ~ (p=0.529 n=10)
+
+pkg: tinysync/internal/syncjob/sqlite
+                     │ benchmarks/results/p1-before-10.bench │ benchmarks/results/p1-final.bench │
+                     │                sec/op                 │     sec/op       vs base          │
+SQLiteManaged100K-10                             148.2m ± 2%       149.4m ± 3%  ~ (p=0.247 n=10)
+
+                     │ benchmarks/results/p1-before-10.bench │ benchmarks/results/p1-final.bench │
+                     │                 B/op                  │      B/op        vs base          │
+SQLiteManaged100K-10                            159.2Mi ± 0%      159.2Mi ± 0%  ~ (p=0.381 n=10)
+
+                     │ benchmarks/results/p1-before-10.bench │ benchmarks/results/p1-final.bench │
+                     │               allocs/op               │    allocs/op     vs base          │
+SQLiteManaged100K-10                             1.600M ± 0%       1.600M ± 0%  ~ (p=0.237 n=10)
