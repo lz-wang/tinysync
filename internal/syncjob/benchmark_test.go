@@ -116,6 +116,7 @@ func BenchmarkLargeFileTransfer(b *testing.B) {
 type benchRemote struct {
 	files map[string]string
 }
+
 func (r *benchRemote) Stat(ctx context.Context, path string) (source.FileInfo, error) {
 	content, ok := r.files[path]
 	if !ok {

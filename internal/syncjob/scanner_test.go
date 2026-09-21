@@ -338,7 +338,8 @@ func TestScanRemoteRejectsCrossPageCollision(t *testing.T) {
 
 // 本地路径组件检查：既有路径中的 symlink 一律拒绝，普通树放行，
 // 尚不存在的目标放行（由下载时的创建策略负责）。
-func TestRejectSymlinkComponents(t *testing.T) {	root := t.TempDir()
+func TestRejectSymlinkComponents(t *testing.T) {
+	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}

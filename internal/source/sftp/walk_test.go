@@ -50,7 +50,9 @@ type fakeEntry struct {
 }
 
 func (e fakeEntry) Name() string { return e.name }
-func (e fakeEntry) Size() int64  { return int64(len(e.value)) }
+
+func (e fakeEntry) Size() int64 { return int64(len(e.value)) }
+
 func (e fakeEntry) Mode() fs.FileMode {
 	switch {
 	case e.link:
@@ -61,9 +63,12 @@ func (e fakeEntry) Mode() fs.FileMode {
 		return 0o644
 	}
 }
+
 func (e fakeEntry) ModTime() time.Time { return time.Unix(1757879400, 0).UTC() }
-func (e fakeEntry) IsDir() bool        { return e.dir }
-func (e fakeEntry) Sys() any           { return nil }
+
+func (e fakeEntry) IsDir() bool { return e.dir }
+
+func (e fakeEntry) Sys() any { return nil }
 
 // flat：10k 文件单目录 → ReadDir 恰好 1 次。
 func TestWalkDirectoryFlatSingleReadDir(t *testing.T) {
