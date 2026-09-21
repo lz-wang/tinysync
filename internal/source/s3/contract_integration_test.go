@@ -13,6 +13,7 @@ import (
 
 	"tinysync/internal/source"
 	"tinysync/internal/source/remotetest"
+	"tinysync/internal/syncjob"
 )
 
 // contract 环境变量与 internal/e2e 的 integration gate 保持一致：
@@ -190,6 +191,35 @@ func TestIntegrationScanTreeFlatPrefix(t *testing.T) {
 		} else if isDir {
 			t.Errorf("file %s visited as directory", file)
 		}
+	}
+}
+
+// TestIntegrationScanTreeRemoteRootMarker：Job RemoteRoot 自身存在
+// Mkdir 写入的 folder marker 时（flat 扫描会命中 root/ 占位对象），
+// ScanRemote 不失败且快照只含 root 子树内的文件。
+func TestIntegrationScanTreeRemoteRootMarker(t *testing.T) {
+	harness := &s3ContractHarness{}
+	r := harness.NewRemote(t)
+	endpoint := os.Getenv(contractS3Endpoint)
+	if endpoint == "" {
+		return // NewRemote 已 skip；防御直接调用。
+	}
+
+	harness.Mkdir(t, "/sub")
+	harness.Write(t, "/sub/a.txt", "a")
+	harness.Write(t, "/sub/deep/b.txt", "b")
+	harness.Write(t, "/other.txt", "o")
+
+	files, err := syncjob.ScanRemote(context.Background(), r, "/sub")
+	if err != nil {
+		t.Fatalf("ScanRemote with marker root: %v", err)
+	}
+	got := map[string]bool{}
+	for _, fi := range files {
+		got[fi.Path] = true
+	}
+	if len(files) != 2 || !got["/sub/a.txt"] || !got["/sub/deep/b.txt"] {
+		t.Fatalf("files = %v, want exactly /sub/a.txt + /sub/deep/b.txt", files)
 	}
 }
 

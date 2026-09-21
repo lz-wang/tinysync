@@ -165,6 +165,51 @@ func TestS3ScanTreeRemoteRootSubtree(t *testing.T) {
 	}
 }
 
+// RemoteRoot 自身的 folder marker（Mkdir 写入的 root/ 占位对象会
+// 落进 root prefix 的 flat 扫描结果）：ScanTree 跳过 root 自身，不
+// 把 marker 推导成 "/root/"（会被 ValidateLogicalPath 拒绝、令整个
+// Job 失败）；子树文件照常完整返回。
+func TestS3ScanTreeSkipsRemoteRootMarker(t *testing.T) {
+	mod := time.Unix(1757879400, 0).UTC()
+	fk := newFakeS3(0)
+	fk.put("base/sub/", nil, mod, "")
+	fk.put("base/sub/a.txt", []byte("x"), mod, "")
+	fk.put("base/sub/deep/b.txt", []byte("x"), mod, "")
+	fk.put("base/other.txt", []byte("x"), mod, "")
+	r := newTestRemote(fk, "base")
+
+	visited, err := collectTree(t, r, "/sub")
+	if err != nil {
+		t.Fatalf("ScanTree: %v", err)
+	}
+	if visited["/sub"] || visited["/sub/"] {
+		t.Error("root marker itself must not be visited")
+	}
+	for _, file := range []string{"/sub/a.txt", "/sub/deep/b.txt"} {
+		if isDir, ok := visited[file]; !ok {
+			t.Errorf("file %s missing, entries = %v", file, visited)
+		} else if isDir {
+			t.Errorf("file %s visited as directory", file)
+		}
+	}
+	if isDir, ok := visited["/sub/deep"]; !ok || !isDir {
+		t.Errorf("directory /sub/deep = %v,%v; want present dir", isDir, ok)
+	}
+	if _, leak := visited["/other.txt"]; leak {
+		t.Error("entry outside RemoteRoot leaked")
+	}
+
+	// ScanRemote（fast path 与 ScanTree 共用同一 collector）：
+	// marker root 不再令 Job 失败，快照恰好 2 个文件。
+	files, err := syncjob.ScanRemote(context.Background(), r, "/sub")
+	if err != nil {
+		t.Fatalf("ScanRemote: %v", err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("ScanRemote files = %v, want 2", files)
+	}
+}
+
 // folder marker：目录而非文件；空目录 marker 不产生文件条目。
 func TestS3ScanTreeFolderMarkers(t *testing.T) {
 	mod := time.Unix(1757879400, 0).UTC()

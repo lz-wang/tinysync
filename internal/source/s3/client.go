@@ -392,7 +392,11 @@ var _ source.TreeScanner = (*remote)(nil)
 // Delimiter 逐目录递归的请求量与目录数线性相关，深层树会被放大到
 // 每目录一次请求。flat 模式不返回 CommonPrefixes，目录从 key 推导：
 // 每个对象的祖先目录链全部 visit（seenDirs 去重），folder marker
-// 是目录不是文件，root 自身不 visit。同 path 既是文件又是目录的
+// 是目录不是文件，root 自身不 visit——包括 RemoteRoot 自身的
+// folder marker（Mkdir 写入的 root/ 占位对象会落进 root prefix 的
+// flat 扫描结果，若按 marker 推导会产出 "/root/" 这种被
+// ValidateLogicalPath 拒绝的路径，令整个 Job 失败）。同 path 既是
+// 文件又是目录的
 // collision（foo 与 foo/bar.txt 共存）经虚拟目录 visit 暴露给上层
 // collector，在任何本地 mutation 前 fail-fast——这是 ScanTree 必须
 // visit 目录的主要原因。visit 错误原样透传，任何一页失败即整体
@@ -437,8 +441,9 @@ func (r *remote) ScanTree(ctx context.Context, root string, visit func(source.Fi
 			if err != nil {
 				return wrapOp("scan", root, err)
 			}
-			if logical == "/" {
-				// prefix 自身对象或 root 的 folder marker：root 不 visit。
+			if logical == "/" || logical == cleaned {
+				// root 自身（prefix 自身对象或 root 的 folder
+				// marker）不 visit：TreeScanner 只枚举 descendants。
 				continue
 			}
 			// root 内相对分量：logical = <root>/<segs...>。Trim 去掉
