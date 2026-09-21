@@ -1,19 +1,20 @@
 import ShareOutlinedIcon from '@mui/icons-material/ShareOutlined'
 import SyncOutlinedIcon from '@mui/icons-material/SyncOutlined'
-import { Alert, Box, CircularProgress, IconButton, Tooltip } from '@mui/material'
+import { Alert, Box, CircularProgress, IconButton, Tooltip, Typography } from '@mui/material'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { type JobResponse, listJobs, listLocalFiles, localFileDownloadURL, runJob } from '../../api'
+import { useToast } from '../../app/toast'
 import ReadOnlyFileManager from './ReadOnlyFileManager'
 import ShareDialog from './ShareDialog'
 
 // LocalFileBrowser 使用 Job.LocalRoot 作为唯一命名空间。Job 和路径都
 // 来源于 URL，因此浏览位置可以被后退、刷新和分享链接准确恢复。
 export default function LocalFileBrowser({ onChanged }: { onChanged?: () => void }) {
+    const toast = useToast()
     const [jobs, setJobs] = useState<JobResponse[] | null>(null)
     const [loadError, setLoadError] = useState<string | null>(null)
     const [running, setRunning] = useState(false)
-    const [actionError, setActionError] = useState<string | null>(null)
     const [shareTargetPath, setShareTargetPath] = useState<string | null>(null)
     const [searchParams, setSearchParams] = useSearchParams()
     const jobId = searchParams.get('job') ?? ''
@@ -27,12 +28,16 @@ export default function LocalFileBrowser({ onChanged }: { onChanged?: () => void
                 if (!cancelled) setJobs(list)
             })
             .catch((error: unknown) => {
-                if (!cancelled) setLoadError(error instanceof Error ? error.message : String(error))
+                if (!cancelled) {
+                    const message = error instanceof Error ? error.message : String(error)
+                    setLoadError(message)
+                    toast.error(message)
+                }
             })
         return () => {
             cancelled = true
         }
-    }, [])
+    }, [toast])
 
     useEffect(() => {
         if (jobs === null || jobs.length === 0 || jobs.some(job => job.id === jobId)) return
@@ -63,11 +68,10 @@ export default function LocalFileBrowser({ onChanged }: { onChanged?: () => void
     )
     const triggerRun = async () => {
         setRunning(true)
-        setActionError(null)
         try {
             await runJob(jobId)
         } catch (error) {
-            setActionError(error instanceof Error ? error.message : String(error))
+            toast.error(error instanceof Error ? error.message : String(error))
         } finally {
             setRunning(false)
         }
@@ -80,17 +84,18 @@ export default function LocalFileBrowser({ onChanged }: { onChanged?: () => void
             </Box>
         )
     }
-    if (loadError !== null) return <Alert severity="error">加载同步任务失败：{loadError}</Alert>
+    // 初始加载失败：详情已在 toast 中展示，区域保留简短失败文案。
+    if (loadError !== null)
+        return (
+            <Typography variant="body2" color="text.secondary">
+                同步任务加载失败。
+            </Typography>
+        )
     if (jobs?.length === 0)
         return <Alert severity="info">尚未创建同步任务；请先在“同步任务”页面添加。</Alert>
 
     return (
         <>
-            {actionError !== null && (
-                <Alert severity="error" sx={{ mb: 1 }}>
-                    {actionError}
-                </Alert>
-            )}
             <ReadOnlyFileManager
                 downloadURL={entryPath => localFileDownloadURL(jobId, entryPath)}
                 load={load}

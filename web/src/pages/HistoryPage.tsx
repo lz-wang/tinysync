@@ -1,5 +1,4 @@
 import {
-    Alert,
     Box,
     Card,
     CardContent,
@@ -18,6 +17,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link as RouterLink } from 'react-router-dom'
 import type { RunRecordResponse } from '../api'
 import { listRuns } from '../api'
+import { useToast } from '../app/toast'
 import { usePageTitle } from '../app/usePageTitle'
 import {
     formatBytes,
@@ -33,6 +33,7 @@ const pageSize = 50
 // 一览，分页浏览，点击行进入运行详情。
 export default function HistoryPage() {
     usePageTitle('运行历史')
+    const toast = useToast()
     const [runs, setRuns] = useState<RunRecordResponse[] | null>(null)
     const [total, setTotal] = useState(0)
     const [page, setPage] = useState(1)
@@ -49,19 +50,20 @@ export default function HistoryPage() {
         setError(null)
         load(page).catch(e => {
             if (!cancelled) {
-                setError(e instanceof Error ? e.message : String(e))
+                const message = e instanceof Error ? e.message : String(e)
+                setError(message)
+                toast.error(message)
             }
         })
         return () => {
             cancelled = true
         }
-    }, [load, page])
+    }, [load, page, toast])
 
     return (
         <Card variant="outlined">
             <CardContent>
                 <Stack spacing={2}>
-                    {error !== null && <Alert severity="error">{error}</Alert>}
                     {runs === null && error === null ? (
                         <CircularProgress size={24} aria-label="加载中" />
                     ) : runs !== null && runs.length === 0 ? (
@@ -82,7 +84,12 @@ export default function HistoryPage() {
                                 </Box>
                             )}
                         </>
-                    ) : null}
+                    ) : (
+                        // 初始加载失败：详情已在 toast 中展示，区域保留简短失败文案。
+                        <Typography variant="body2" color="text.secondary">
+                            运行历史加载失败。
+                        </Typography>
+                    )}
                 </Stack>
             </CardContent>
         </Card>

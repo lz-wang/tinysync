@@ -2,7 +2,6 @@ import ContentCopyIcon from '@mui/icons-material/ContentCopy'
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutlined'
 import SearchOutlinedIcon from '@mui/icons-material/SearchOutlined'
 import {
-    Alert,
     Box,
     Button,
     Checkbox,
@@ -33,26 +32,31 @@ import {
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { deleteShare, listShares, type ShareResponse, shareEntryURL, updateShare } from '../../api'
 import { copyText } from '../../app/clipboard'
+import { useToast } from '../../app/toast'
 import { formatDateTime } from '../history/shared'
 
 type SortField = 'name' | 'target' | 'type' | 'enabled' | 'expiresAt'
 const nameOf = (s: ShareResponse) => s.name ?? s.local_path.split(/[\\/]/).pop() ?? s.local_path
 // SharePanel 复用同步任务页的工具栏、选择、筛选、排序、分页与固定表格容器。
 export default function SharePanel() {
+    const toast = useToast()
     const [shares, setShares] = useState<ShareResponse[] | null>(null)
-    const [error, setError] = useState<string | null>(null)
+    const [loadError, setLoadError] = useState<string | null>(null)
     const [deleting, setDeleting] = useState<ShareResponse[] | null>(null)
     const [copied, setCopied] = useState<string | null>(null)
     const reload = useCallback(async () => setShares(await listShares()), [])
     useEffect(() => {
-        void reload().catch(e => setError(e instanceof Error ? e.message : String(e)))
-    }, [reload])
+        void reload().catch(e => {
+            setLoadError(e instanceof Error ? e.message : String(e))
+            toast.error(e instanceof Error ? e.message : String(e))
+        })
+    }, [reload, toast])
     const saveEnabled = async (share: ShareResponse, enabled: boolean) => {
         try {
             const next = await updateShare(share.id, { enabled })
             setShares(old => old?.map(item => (item.id === next.id ? next : item)) ?? null)
         } catch (e) {
-            setError(e instanceof Error ? e.message : String(e))
+            toast.error(e instanceof Error ? e.message : String(e))
         }
     }
     const remove = async () => {
@@ -64,7 +68,7 @@ export default function SharePanel() {
             setShares(old => old?.filter(s => !deleting.some(x => x.id === s.id)) ?? null)
             setDeleting(null)
         } catch (e) {
-            setError(e instanceof Error ? e.message : String(e))
+            toast.error(e instanceof Error ? e.message : String(e))
         }
     }
     const copy = async (s: ShareResponse) => {
@@ -73,7 +77,7 @@ export default function SharePanel() {
             setCopied(s.id)
             window.setTimeout(() => setCopied(null), 1500)
         } catch (e) {
-            setError(e instanceof Error ? e.message : String(e))
+            toast.error(e instanceof Error ? e.message : String(e))
         }
     }
     return (
@@ -84,23 +88,21 @@ export default function SharePanel() {
                 minHeight: 420,
             }}
         >
-            {error && (
-                <Alert severity="error" onClose={() => setError(null)}>
-                    {error}
-                </Alert>
-            )}
-            {!shares && !error ? (
+            {shares === null && loadError === null ? (
                 <CircularProgress size={24} />
+            ) : shares !== null ? (
+                <ShareTable
+                    shares={shares}
+                    copied={copied}
+                    onEnabledChanged={saveEnabled}
+                    onCopy={copy}
+                    onDelete={setDeleting}
+                />
             ) : (
-                shares && (
-                    <ShareTable
-                        shares={shares}
-                        copied={copied}
-                        onEnabledChanged={saveEnabled}
-                        onCopy={copy}
-                        onDelete={setDeleting}
-                    />
-                )
+                // 初始加载失败：详情已在 toast 中展示，区域保留简短失败文案。
+                <Typography variant="body2" color="text.secondary">
+                    共享列表加载失败。
+                </Typography>
             )}
             <Dialog
                 open={deleting !== null}

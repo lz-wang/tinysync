@@ -6,7 +6,6 @@ import RefreshOutlinedIcon from '@mui/icons-material/RefreshOutlined'
 import VisibilityOffOutlinedIcon from '@mui/icons-material/VisibilityOffOutlined'
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined'
 import {
-    Alert,
     Box,
     Breadcrumbs,
     Button,
@@ -30,6 +29,7 @@ import {
 } from '@mui/material'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { FileEntry } from '../../api'
+import { useToast } from '../../app/toast'
 import { formatBytes, formatDateTime } from '../history/shared'
 
 export interface FileManagerResource {
@@ -71,10 +71,13 @@ export default function ReadOnlyFileManager({
     onShowHiddenChange?: (showHidden: boolean) => void
     showManaged?: boolean
 }) {
+    const toast = useToast()
     const [entries, setEntries] = useState<FileEntry[]>([])
     const [nextCursor, setNextCursor] = useState('')
     const [loading, setLoading] = useState(false)
-    const [error, setError] = useState<string | null>(null)
+    // loadFailed 区分「目录为空」与「加载失败」：失败时表格区域不显示
+    // 目录为空 文案，错误详情只经 toast 提示。
+    const [loadFailed, setLoadFailed] = useState(false)
     const [sort, setSort] = useState<{ field: FileSortField; direction: 'asc' | 'desc' }>({
         field: 'name',
         direction: 'asc',
@@ -84,7 +87,7 @@ export default function ReadOnlyFileManager({
         async (cursor?: string) => {
             if (resourceId === '') return
             setLoading(true)
-            setError(null)
+            setLoadFailed(false)
             try {
                 const page = await load(path, cursor)
                 setEntries(previous =>
@@ -92,12 +95,18 @@ export default function ReadOnlyFileManager({
                 )
                 setNextCursor(page.nextCursor)
             } catch (loadError) {
-                setError(loadError instanceof Error ? loadError.message : String(loadError))
+                // 目录加载失败不清空已展示的表格；错误详情经 toast 提示。
+                setLoadFailed(true)
+                toast.error(
+                    `加载目录失败：${
+                        loadError instanceof Error ? loadError.message : String(loadError)
+                    }`,
+                )
             } finally {
                 setLoading(false)
             }
         },
-        [load, path, resourceId],
+        [load, path, resourceId, toast],
     )
 
     useEffect(() => {
@@ -252,7 +261,6 @@ export default function ReadOnlyFileManager({
                     {toolbarActions}
                 </Stack>
             </Stack>
-            {error !== null && <Alert severity="error">加载目录失败：{error}</Alert>}
             <TableContainer sx={{ flex: 1, overflowY: 'auto' }}>
                 <Table size="small" aria-label="文件列表">
                     <TableHead>
@@ -362,7 +370,7 @@ export default function ReadOnlyFileManager({
                                 </TableRow>
                             )
                         })}
-                        {entries.length === 0 && !loading && error === null && (
+                        {entries.length === 0 && !loading && !loadFailed && (
                             <TableRow>
                                 <TableCell
                                     align="center"

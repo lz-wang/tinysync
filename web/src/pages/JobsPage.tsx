@@ -4,7 +4,6 @@ import DeleteOutlineIcon from '@mui/icons-material/DeleteOutlined'
 import EditOutlinedIcon from '@mui/icons-material/EditOutlined'
 import SearchOutlinedIcon from '@mui/icons-material/SearchOutlined'
 import {
-    Alert,
     Box,
     Button,
     Checkbox,
@@ -43,6 +42,7 @@ import {
     runJob,
     type SourceResponse,
 } from '../api'
+import { useToast } from '../app/toast'
 import { usePageTitle } from '../app/usePageTitle'
 import { formatDateTime } from '../features/history/shared'
 import DeleteJobDialog from '../features/jobs/DeleteJobDialog'
@@ -54,6 +54,7 @@ type SortField = 'name' | 'source' | 'mode' | 'enabled' | 'lastRun' | 'nextRun'
 // JobsPage 将任务配置、最近一次运行和常用操作收敛到一个可筛选的基础表格。
 export default function JobsPage() {
     usePageTitle('同步任务')
+    const toast = useToast()
     const [jobs, setJobs] = useState<JobResponse[] | null>(null)
     const [sources, setSources] = useState<SourceResponse[]>([])
     const [loadError, setLoadError] = useState<string | null>(null)
@@ -85,8 +86,11 @@ export default function JobsPage() {
         setJobs(nextJobs)
     }, [])
     useEffect(() => {
-        void reload().catch(e => setLoadError(e instanceof Error ? e.message : String(e)))
-    }, [reload])
+        void reload().catch(e => {
+            setLoadError(e instanceof Error ? e.message : String(e))
+            toast.error(e instanceof Error ? e.message : String(e))
+        })
+    }, [reload, toast])
     useEffect(() => {
         const timer = window.setInterval(() => {
             for (const [id, state] of Object.entries(runStatesRef.current))
@@ -102,7 +106,7 @@ export default function JobsPage() {
             await runJob(job.id)
             setRunStates(prev => ({ ...prev, [job.id]: { state: 'running', stats: emptyStats() } }))
         } catch (e) {
-            setLoadError(e instanceof Error ? e.message : String(e))
+            toast.error(e instanceof Error ? e.message : String(e))
         }
     }
     const handleBatchDelete = async () => {
@@ -117,7 +121,7 @@ export default function JobsPage() {
             )
             setBatchDeleting(null)
         } catch (e) {
-            setLoadError(e instanceof Error ? e.message : String(e))
+            toast.error(e instanceof Error ? e.message : String(e))
         }
     }
     return (
@@ -128,32 +132,30 @@ export default function JobsPage() {
                 minHeight: 420,
             }}
         >
-            {loadError !== null && (
-                <Alert severity="error" onClose={() => setLoadError(null)}>
-                    {loadError}
-                </Alert>
-            )}
             {jobs === null && loadError === null ? (
                 <CircularProgress size={24} />
+            ) : jobs !== null ? (
+                <JobTable
+                    jobs={jobs}
+                    sources={sources}
+                    runStates={runStates}
+                    onAdd={() => {
+                        setEditing(null)
+                        setDialogOpen(true)
+                    }}
+                    onRun={job => void handleRun(job)}
+                    onEdit={job => {
+                        setEditing(job)
+                        setDialogOpen(true)
+                    }}
+                    onDelete={setDeleting}
+                    onBatchDelete={setBatchDeleting}
+                />
             ) : (
-                jobs !== null && (
-                    <JobTable
-                        jobs={jobs}
-                        sources={sources}
-                        runStates={runStates}
-                        onAdd={() => {
-                            setEditing(null)
-                            setDialogOpen(true)
-                        }}
-                        onRun={job => void handleRun(job)}
-                        onEdit={job => {
-                            setEditing(job)
-                            setDialogOpen(true)
-                        }}
-                        onDelete={setDeleting}
-                        onBatchDelete={setBatchDeleting}
-                    />
-                )
+                // 初始加载失败：详情已在 toast 中展示，区域保留简短失败文案。
+                <Typography variant="body2" color="text.secondary">
+                    同步任务加载失败。
+                </Typography>
             )}
             <JobDialog
                 open={dialogOpen}

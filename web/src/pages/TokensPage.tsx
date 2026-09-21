@@ -1,4 +1,4 @@
-import { Alert, Button, Card, CardContent, Chip, Stack, Typography } from '@mui/material'
+import { Button, Card, CardContent, Chip, Stack, Typography } from '@mui/material'
 import { useCallback, useEffect, useState } from 'react'
 import {
     type APITokenResponse,
@@ -7,6 +7,7 @@ import {
     listAPITokens,
     revokeAPIToken,
 } from '../api'
+import { useToast } from '../app/toast'
 import CreateTokenDialog from '../features/tokens/CreateTokenDialog'
 import RawTokenDialog from '../features/tokens/RawTokenDialog'
 import RevokeTokenDialog from '../features/tokens/RevokeTokenDialog'
@@ -32,6 +33,7 @@ function formatTime(value: string): string {
 // TokensPage 是 API Token 管理页：列表 / 创建（raw 一次性展示）/
 // 撤销。scope 与 expiration 创建后不可变，需要变更时 revoke + 新建。
 export default function TokensPage() {
+    const toast = useToast()
     const [tokens, setTokens] = useState<APITokenResponse[] | null>(null)
     const [loadError, setLoadError] = useState<string | null>(null)
     const [createOpen, setCreateOpen] = useState(false)
@@ -44,8 +46,9 @@ export default function TokensPage() {
             setTokens(await listAPITokens())
         } catch (error) {
             setLoadError(error instanceof Error ? error.message : String(error))
+            toast.error(error instanceof Error ? error.message : String(error))
         }
-    }, [])
+    }, [toast])
 
     useEffect(() => {
         void refresh()
@@ -77,7 +80,12 @@ export default function TokensPage() {
                             创建 API Token
                         </Button>
                     </Stack>
-                    {loadError !== null && <Alert severity="error">{loadError}</Alert>}
+                    {loadError !== null && (
+                        // 初始加载失败：详情已在 toast 中展示，区域保留简短失败文案。
+                        <Typography variant="body2" color="text.secondary">
+                            API Token 加载失败。
+                        </Typography>
+                    )}
                     {tokens !== null && tokens.length === 0 && (
                         <Typography variant="body2" color="text.secondary">
                             尚无 API Token，点击“创建 API Token”为自动化脚本创建一个。

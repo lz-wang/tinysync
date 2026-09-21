@@ -21,6 +21,10 @@ GitHub Release 摘要一致。
 
 ## [Unreleased]
 
+### 修复
+
+- Web UI 操作反馈统一为全局右下角 toast 通知：使用 MUI Snackbar 承载 filled Alert，按严重等级（success/error/warning/info）分色，5 秒自动消失，新通知替换旧通知；原先散落各页面的自建 Snackbar 与内联可关闭 Alert 一并迁移，页面加载失败时区域保留简短失败文案、详情经 toast 提示。
+
 ## [0.10.0] - 2026-09-21
 
 ### 新增

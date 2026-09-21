@@ -12,6 +12,7 @@ import {
 import { useEffect, useState } from 'react'
 import { Link as RouterLink, useParams } from 'react-router-dom'
 import { getRun, listRunItems, type RunItemResponse, type RunRecordResponse } from '../api'
+import { useToast } from '../app/toast'
 import { usePageTitle } from '../app/usePageTitle'
 import {
     formatBytes,
@@ -25,6 +26,7 @@ import {
 //（时间线式历史视图，行内圆点颜色区分 succeeded / failed / skipped）。
 export default function RunDetailPage() {
     const { runId } = useParams<{ runId: string }>()
+    const toast = useToast()
     const [run, setRun] = useState<RunRecordResponse | null>(null)
     usePageTitle(run && run.id === runId ? `${run.job_name} · 运行详情` : '运行详情')
     const [items, setItems] = useState<RunItemResponse[]>([])
@@ -50,13 +52,15 @@ export default function RunDetailPage() {
         setRun(null)
         load().catch(e => {
             if (!cancelled) {
-                setError(e instanceof Error ? e.message : String(e))
+                const message = e instanceof Error ? e.message : String(e)
+                setError(message)
+                toast.error(message)
             }
         })
         return () => {
             cancelled = true
         }
-    }, [runId])
+    }, [runId, toast])
 
     return (
         <Stack spacing={2}>
@@ -68,7 +72,6 @@ export default function RunDetailPage() {
             >
                 ← 返回运行历史
             </Button>
-            {error !== null && <Alert severity="error">{error}</Alert>}
             {run === null && error === null ? (
                 <CircularProgress size={24} aria-label="加载中" />
             ) : run !== null ? (
@@ -138,7 +141,12 @@ export default function RunDetailPage() {
                         </CardContent>
                     </Card>
                 </>
-            ) : null}
+            ) : (
+                // 初始加载失败：详情已在 toast 中展示，区域保留简短失败文案。
+                <Typography variant="body2" color="text.secondary">
+                    运行详情加载失败。
+                </Typography>
+            )}
         </Stack>
     )
 }

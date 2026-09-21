@@ -4,7 +4,6 @@ import EditOutlinedIcon from '@mui/icons-material/EditOutlined'
 import NetworkCheckOutlinedIcon from '@mui/icons-material/NetworkCheckOutlined'
 import SearchOutlinedIcon from '@mui/icons-material/SearchOutlined'
 import {
-    Alert,
     Box,
     Button,
     Checkbox,
@@ -18,7 +17,6 @@ import {
     InputAdornment,
     MenuItem,
     Paper,
-    Snackbar,
     Stack,
     Table,
     TableBody,
@@ -43,16 +41,17 @@ import {
     updateSource,
     type WebDAVConfig,
 } from '../api'
+import { useToast } from '../app/toast'
 import { usePageTitle } from '../app/usePageTitle'
 import DeleteSourceDialog from '../features/sources/DeleteSourceDialog'
 import SourceDialog from '../features/sources/SourceDialog'
 
 type SortField = 'name' | 'type' | 'location' | 'enabled'
-type Toast = { message: string; severity: 'success' | 'error' } | null
 
-// SourcesPage 使用原生 MUI Table 管理同步源；连接测试结果以 toast 呈现。
+// SourcesPage 使用原生 MUI Table 管理同步源；操作反馈统一走全局 toast。
 export default function SourcesPage() {
     usePageTitle('同步源')
+    const toast = useToast()
     const [sources, setSources] = useState<SourceResponse[] | null>(null)
     const [loadError, setLoadError] = useState<string | null>(null)
     const [dialogOpen, setDialogOpen] = useState(false)
@@ -60,23 +59,21 @@ export default function SourcesPage() {
     const [deleting, setDeleting] = useState<SourceResponse | null>(null)
     const [batchDeleting, setBatchDeleting] = useState<SourceResponse[] | null>(null)
     const [testing, setTesting] = useState<string | null>(null)
-    const [toast, setToast] = useState<Toast>(null)
     const reload = useCallback(async () => setSources(await listSources()), [])
     useEffect(() => {
-        void reload().catch(e => setLoadError(e instanceof Error ? e.message : String(e)))
-    }, [reload])
+        void reload().catch(e => {
+            setLoadError(e instanceof Error ? e.message : String(e))
+            toast.error(e instanceof Error ? e.message : String(e))
+        })
+    }, [reload, toast])
     async function handleTest(source: SourceResponse) {
         setTesting(source.id)
         try {
             const result = await testSource(source.id)
-            setToast({
-                severity: result.ok ? 'success' : 'error',
-                message: result.ok
-                    ? `“${source.name}”连接成功，耗时 ${result.latency_ms} ms`
-                    : `“${source.name}”连接失败：${result.error ?? '未知错误'}`,
-            })
+            if (result.ok) toast.success(`“${source.name}”连接成功，耗时 ${result.latency_ms} ms`)
+            else toast.error(`“${source.name}”连接失败：${result.error ?? '未知错误'}`)
         } catch (e) {
-            setToast({ severity: 'error', message: e instanceof Error ? e.message : String(e) })
+            toast.error(e instanceof Error ? e.message : String(e))
         } finally {
             setTesting(null)
         }
@@ -90,10 +87,10 @@ export default function SourcesPage() {
                     prev?.filter(source => !batchDeleting.some(item => item.id === source.id)) ??
                     null,
             )
-            setToast({ severity: 'success', message: `已删除 ${batchDeleting.length} 个同步源` })
+            toast.success(`已删除 ${batchDeleting.length} 个同步源`)
             setBatchDeleting(null)
         } catch (e) {
-            setToast({ severity: 'error', message: e instanceof Error ? e.message : String(e) })
+            toast.error(e instanceof Error ? e.message : String(e))
         }
     }
     return (
@@ -104,42 +101,41 @@ export default function SourcesPage() {
                 minHeight: 420,
             }}
         >
-            {loadError !== null && <Alert severity="error">{loadError}</Alert>}
             {sources === null && loadError === null ? (
                 <CircularProgress size={24} />
+            ) : sources !== null ? (
+                <SourceTable
+                    sources={sources}
+                    testing={testing}
+                    onAdd={() => {
+                        setEditing(null)
+                        setDialogOpen(true)
+                    }}
+                    onTest={source => void handleTest(source)}
+                    onEdit={source => {
+                        setEditing(source)
+                        setDialogOpen(true)
+                    }}
+                    onDelete={setDeleting}
+                    onBatchDelete={setBatchDeleting}
+                    onEnabledChanged={async (source, enabled) => {
+                        try {
+                            const saved = await updateSource(source.id, { enabled })
+                            setSources(
+                                prev =>
+                                    prev?.map(item => (item.id === saved.id ? saved : item)) ??
+                                    null,
+                            )
+                        } catch (e) {
+                            toast.error(e instanceof Error ? e.message : String(e))
+                        }
+                    }}
+                />
             ) : (
-                sources !== null && (
-                    <SourceTable
-                        sources={sources}
-                        testing={testing}
-                        onAdd={() => {
-                            setEditing(null)
-                            setDialogOpen(true)
-                        }}
-                        onTest={source => void handleTest(source)}
-                        onEdit={source => {
-                            setEditing(source)
-                            setDialogOpen(true)
-                        }}
-                        onDelete={setDeleting}
-                        onBatchDelete={setBatchDeleting}
-                        onEnabledChanged={async (source, enabled) => {
-                            try {
-                                const saved = await updateSource(source.id, { enabled })
-                                setSources(
-                                    prev =>
-                                        prev?.map(item => (item.id === saved.id ? saved : item)) ??
-                                        null,
-                                )
-                            } catch (e) {
-                                setToast({
-                                    severity: 'error',
-                                    message: e instanceof Error ? e.message : String(e),
-                                })
-                            }
-                        }}
-                    />
-                )
+                // 初始加载失败：详情已在 toast 中展示，区域保留简短失败文案。
+                <Typography variant="body2" color="text.secondary">
+                    同步源加载失败。
+                </Typography>
             )}
             <SourceDialog
                 open={dialogOpen}
@@ -185,16 +181,6 @@ export default function SourcesPage() {
                     </Button>
                 </DialogActions>
             </Dialog>
-            <Snackbar
-                open={toast !== null}
-                autoHideDuration={5000}
-                onClose={() => setToast(null)}
-                anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
-            >
-                <Alert severity={toast?.severity} variant="filled" onClose={() => setToast(null)}>
-                    {toast?.message}
-                </Alert>
-            </Snackbar>
         </Stack>
     )
 }

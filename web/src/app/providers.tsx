@@ -8,6 +8,7 @@ import {
     useMemo,
     useState,
 } from 'react'
+import { ToastProvider } from './toast'
 
 export type ThemePreference = 'light' | 'dark' | 'system'
 interface ColorMode {
@@ -53,7 +54,14 @@ export function Providers({ children }: { children: ReactNode }) {
                     fontFamily:
                         'ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
                 },
-                components: { MuiButton: { defaultProps: { disableElevation: true } } },
+                components: {
+                    MuiButton: { defaultProps: { disableElevation: true } },
+                    // MUI Snackbar 出厂默认在左下角；产品约定 toast 默认右下角，
+                    // 在这里单点声明，个别场景可在调用点覆盖。
+                    MuiSnackbar: {
+                        defaultProps: { anchorOrigin: { vertical: 'bottom', horizontal: 'right' } },
+                    },
+                },
             }),
         [mode],
     )
@@ -61,7 +69,7 @@ export function Providers({ children }: { children: ReactNode }) {
         <ColorModeContext.Provider value={value}>
             <ThemeProvider theme={theme}>
                 <CssBaseline />
-                {children}
+                <ToastProvider>{children}</ToastProvider>
             </ThemeProvider>
         </ColorModeContext.Provider>
     )

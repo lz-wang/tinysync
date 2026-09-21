@@ -3,7 +3,6 @@ import KeyOutlinedIcon from '@mui/icons-material/KeyOutlined'
 import ManageAccountsOutlinedIcon from '@mui/icons-material/ManageAccountsOutlined'
 import TokenOutlinedIcon from '@mui/icons-material/TokenOutlined'
 import {
-    Alert,
     Avatar,
     Box,
     Button,
@@ -23,6 +22,7 @@ import {
 import { type ChangeEvent, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { updateProfile } from '../api'
+import { useToast } from '../app/toast'
 import { usePageTitle } from '../app/usePageTitle'
 import { useAuth } from '../features/auth/AuthProvider'
 import TokensPage from './TokensPage'
@@ -66,7 +66,7 @@ export default function SettingsPage() {
     const navigate = useNavigate()
     const tab = location.pathname === '/settings/tokens' ? 'developer' : 'account'
     usePageTitle(tab === 'developer' ? '开发者 · 设置' : '帐号设置 · 设置')
-    const [error, setError] = useState<string | null>(null)
+    const toast = useToast()
     const [saving, setSaving] = useState(false)
     const [passwordOpen, setPasswordOpen] = useState(false)
     const [current, setCurrent] = useState('')
@@ -77,12 +77,11 @@ export default function SettingsPage() {
         event.target.value = ''
         if (!file?.type.startsWith('image/')) return
         setSaving(true)
-        setError(null)
         try {
             await updateProfile({ avatar: await cropAvatar(file) })
             await auth.refreshProfile()
         } catch (reason) {
-            setError(reason instanceof Error ? reason.message : '头像保存失败')
+            toast.error(reason instanceof Error ? reason.message : '头像保存失败')
         } finally {
             setSaving(false)
         }
@@ -90,13 +89,12 @@ export default function SettingsPage() {
     const changePassword = async () => {
         if (!current || !next || next !== confirm) return
         setSaving(true)
-        setError(null)
         try {
             await updateProfile({ current_password: current, new_password: next })
             setPasswordOpen(false)
             await auth.logout()
         } catch {
-            setError('密码修改失败，请检查当前密码和新密码。')
+            toast.error('密码修改失败，请检查当前密码和新密码。')
         } finally {
             setSaving(false)
         }
@@ -128,11 +126,6 @@ export default function SettingsPage() {
                 <TokensPage />
             ) : (
                 <>
-                    {error && (
-                        <Alert severity="error" onClose={() => setError(null)}>
-                            {error}
-                        </Alert>
-                    )}
                     <Card variant="outlined">
                         <CardContent>
                             <Stack spacing={2.5}>
@@ -172,7 +165,7 @@ export default function SettingsPage() {
                                                 onClick={() =>
                                                     void updateProfile({ avatar: '' })
                                                         .then(auth.refreshProfile)
-                                                        .catch(() => setError('头像移除失败'))
+                                                        .catch(() => toast.error('头像移除失败'))
                                                 }
                                                 sx={{ ml: 1 }}
                                             >
