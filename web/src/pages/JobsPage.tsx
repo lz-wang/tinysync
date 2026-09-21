@@ -75,6 +75,12 @@ export default function JobsPage() {
     useEffect(() => {
         runStatesRef.current = runStates
     }, [runStates])
+    // jobsRef 供轮询定时器读取当前任务全集：轮询必须覆盖所有任务，
+    // 自动调度在页面打开后才启动的 run 才能被发现。
+    const jobsRef = useRef(jobs)
+    useEffect(() => {
+        jobsRef.current = jobs
+    }, [jobs])
     const reload = useCallback(async () => {
         const results = await Promise.allSettled([listJobs(), listSources()])
         const nextJobs = results[0].status === 'fulfilled' ? results[0].value : null
@@ -101,55 +107,60 @@ export default function JobsPage() {
     }, [reload, toast])
     useEffect(() => {
         const timer = window.setInterval(() => {
-            const finished: string[] = []
-            for (const [id, state] of Object.entries(runStatesRef.current)) {
-                if (state.state !== 'running') {
-                    finished.push(id)
-                    continue
-                }
+            // 轮询覆盖全部任务而非仅已知 running 的任务：自动调度在页面
+            // 打开后启动的 run，只有轮询全部任务才能被发现（进入运行中
+            // 状态、显示进度与停止按钮）。
+            for (const id of (jobsRef.current ?? []).map(job => job.id)) {
                 void fetchJobStatus(id)
-                    .then(status => setRunStates(prev => ({ ...prev, [id]: status })))
-                    .catch(() => undefined)
-                // 运行中的任务顺带轮询运行详情：总进度摘要是运行详情
-                // progress 字段的投影；详情页仍是进度的唯一完整视图。
-                if (state.run_id !== undefined) {
-                    void getRun(state.run_id)
-                        .then(record =>
+                    .then(status => {
+                        setRunStates(prev => ({ ...prev, [id]: status }))
+                        if (status.state === 'running' && status.run_id !== undefined) {
+                            // 运行中的任务顺带轮询运行详情：总进度摘要是运行详情
+                            // progress 字段的投影；详情页仍是进度的唯一完整视图。
+                            void getRun(status.run_id)
+                                .then(record =>
+                                    setRunProgress(prev => {
+                                        if (
+                                            record.status === 'running' &&
+                                            record.progress !== undefined
+                                        ) {
+                                            return { ...prev, [id]: record.progress }
+                                        }
+                                        if (!(id in prev)) {
+                                            return prev
+                                        }
+                                        const next = { ...prev }
+                                        delete next[id]
+                                        return next
+                                    }),
+                                )
+                                .catch(() => undefined)
+                        } else {
+                            // 落终态即清理残留进度；对未运行任务是无操作。
                             setRunProgress(prev => {
-                                if (record.status === 'running' && record.progress !== undefined) {
-                                    return { ...prev, [id]: record.progress }
-                                }
                                 if (!(id in prev)) {
                                     return prev
                                 }
                                 const next = { ...prev }
                                 delete next[id]
                                 return next
-                            }),
-                        )
-                        .catch(() => undefined)
-                }
-            }
-            if (finished.length > 0) {
-                setRunProgress(prev => {
-                    const stale = finished.filter(id => id in prev)
-                    if (stale.length === 0) {
-                        return prev
-                    }
-                    const next = { ...prev }
-                    for (const id of stale) {
-                        delete next[id]
-                    }
-                    return next
-                })
+                            })
+                        }
+                    })
+                    .catch(() => undefined)
             }
         }, pollIntervalMs)
         return () => window.clearInterval(timer)
     }, [])
     const handleRun = async (job: JobResponse) => {
         try {
-            await runJob(job.id)
-            setRunStates(prev => ({ ...prev, [job.id]: { state: 'running', stats: emptyStats() } }))
+            const started = await runJob(job.id)
+            // 保留启动响应的 run_id：停止按钮立即可用（不必等下一轮
+            // status 轮询补全），下一轮轮询也能直接取运行详情进度。
+            setRunStates(prev => ({
+                ...prev,
+                [job.id]: { run_id: started.run_id, state: started.state, stats: emptyStats() },
+            }))
         } catch (e) {
             toast.error(e instanceof Error ? e.message : String(e))
         }
@@ -669,11 +680,15 @@ function emptyStats() {
 }
 
 // RunningProgress 是运行中任务行内的总进度摘要：进度条 + 百分比。
-// 分母未定（扫描 / 计划阶段）时 indeterminate；原始计数在运行详情页。
+// 分母是否已知由 phase 决定：scanning / planning 尚未定，indeterminate；
+// transferring / finalizing 已定，work_total=0 表示无需同步（0/0）。
+// 原始计数在运行详情页。
 function RunningProgress({ progress }: { progress: RunProgressResponse }) {
-    const known = progress.work_total > 0
+    const known = progress.phase === 'transferring' || progress.phase === 'finalizing'
     const percent = known
-        ? Math.min(100, (progress.work_done / progress.work_total) * 100)
+        ? progress.work_total === 0
+            ? 100
+            : Math.min(100, (progress.work_done / progress.work_total) * 100)
         : undefined
     return (
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 0.5 }}>
