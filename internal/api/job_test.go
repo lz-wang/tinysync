@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -917,12 +918,28 @@ func TestCancelRunAPI(t *testing.T) {
 		t.Errorf("read token cancel = %d, want 403", rec2.Code)
 	}
 
-	// 取消：202，重复取消幂等 202。
-	for range 2 {
-		rec = doJSON(t, router, "POST", "/api/v1/runs/"+runID+"/cancel", "")
-		if rec.Code != http.StatusAccepted {
-			t.Fatalf("cancel active run = %d %s, want 202", rec.Code, rec.Body.String())
+	// 取消：202；立即重复取消仍 active 时幂等 202。取消异步收敛，
+	// 第二次请求可能晚于 finalize，此时 409 附 state=canceled 同为
+	// 合法契约（下方已终态分支专门锁定该响应形态）。
+	rec = doJSON(t, router, "POST", "/api/v1/runs/"+runID+"/cancel", "")
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("cancel active run = %d %s, want 202", rec.Code, rec.Body.String())
+	}
+	rec = doJSON(t, router, "POST", "/api/v1/runs/"+runID+"/cancel", "")
+	switch rec.Code {
+	case http.StatusAccepted:
+	case http.StatusConflict:
+		var conflict struct {
+			State string `json:"state"`
 		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &conflict); err != nil {
+			t.Fatalf("decode 409 body %q: %v", rec.Body.String(), err)
+		}
+		if conflict.State != string(syncjob.RunCanceled) {
+			t.Errorf("late cancel 409 state = %q, want %q", conflict.State, syncjob.RunCanceled)
+		}
+	default:
+		t.Fatalf("repeat cancel = %d %s, want 202 or 409", rec.Code, rec.Body.String())
 	}
 
 	close(gate)
