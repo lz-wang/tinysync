@@ -7,6 +7,7 @@
 .PHONY: \
 	build build-all build-os package-os dist \
 	test coverage check format setup clean version help ci integration hardening benchmark \
+	benchmark-record benchmark-compare _install-benchstat \
 	web-install web-ci-install web-lint web-typecheck web-build web-format \
 	_build-platform _package-platform _check-platform \
 	_install-go-tools _check-go-format _check-go-mod
@@ -29,6 +30,22 @@ TAR := tar
 ZIP := zip
 GOIMPORTS_REVISER := goimports-reviser
 GOIMPORTS_REVISER_VERSION := v3.12.6
+# benchstat 固定版本（golang.org/x/perf 伪版本），与 goimports-reviser
+# 同一策略：不 @latest，保证对比结果可复现。
+BENCHSTAT_VERSION := v0.0.0-20260908200009-22c9c6c9d4da
+
+# benchmark 参数与覆盖包：同步扫描改造（TreeScanner）的 before/after
+# 记录覆盖全部协议 adapter 与同步引擎、planner、managed 存储。
+BENCH_COUNT ?= 5
+BENCH_TIME ?= 1s
+BENCH_DIR := benchmarks
+BENCH_PACKAGES := \
+	./internal/browser/ \
+	./internal/source/webdav/ \
+	./internal/source/sftp/ \
+	./internal/source/s3/ \
+	./internal/syncjob/ \
+	./internal/syncjob/sqlite/
 
 PLATFORMS := \
 	linux/amd64 \
@@ -237,7 +254,61 @@ hardening:
 benchmark:
 	@echo "[tinysync] benchmark"
 	@$(GOENV) $(GO) test -run '^$$' -bench . -benchmem -timeout 900s \
-		./internal/browser/ ./internal/source/webdav/ ./internal/syncjob/ ./internal/syncjob/sqlite/
+		$(BENCH_PACKAGES)
+
+## Record reproducible benchmark results: make benchmark-record NAME=p1-before
+## 要求 tracked 工作树干净（未跟踪文件不影响），保证 .bench 与 commit
+## SHA 一一对应。产出标准 go test benchmark 输出（benchstat 可直接消
+## 费），metadata 单独存 .meta（只记 commit / 工具链 / 采样参数 /
+## CPU 型号，不记 hostname、用户名、路径等机器标识）。
+benchmark-record:
+	@if [ -z "$(NAME)" ]; then \
+		echo "Usage: make benchmark-record NAME=p1-before [BENCH_COUNT=5] [BENCH_TIME=1s]"; \
+		exit 2; \
+	fi
+	@if [ -n "$$(git status --porcelain --untracked-files=no)" ]; then \
+		echo "Error: tracked working tree is dirty; commit or stash first:"; \
+		git status --porcelain --untracked-files=no; \
+		exit 2; \
+	fi
+	@mkdir -p "$(BENCH_DIR)/results"
+	@echo "[tinysync] benchmark record $(NAME) (count=$(BENCH_COUNT) benchtime=$(BENCH_TIME))"
+	@$(GOENV) $(GO) test -run '^$$' -bench . -benchmem \
+		-count $(BENCH_COUNT) -benchtime $(BENCH_TIME) -timeout 3600s \
+		$(BENCH_PACKAGES) > "$(BENCH_DIR)/results/$(NAME).bench"
+	@cpu=""; \
+	if [ "$$(uname -s)" = "Darwin" ]; then \
+		cpu=$$(sysctl -n machdep.cpu.brand_string 2>/dev/null || true); \
+	elif [ -r /proc/cpuinfo ]; then \
+		cpu=$$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | sed 's/^ //' || true); \
+	fi; \
+	printf 'commit=%s\ndirty=false\ndate=%s\ngo_version=%s\ngoos=%s\ngoarch=%s\ncpu=%s\ncount=%s\nbenchtime=%s\n' \
+		"$$(git rev-parse HEAD)" \
+		"$$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+		"$$($(GO) env GOVERSION)" \
+		"$$($(GO) env GOOS)" "$$($(GO) env GOARCH)" \
+		"$$cpu" "$(BENCH_COUNT)" "$(BENCH_TIME)" \
+		> "$(BENCH_DIR)/results/$(NAME).meta"
+	@echo "[tinysync] recorded -> $(BENCH_DIR)/results/$(NAME).bench|.meta"
+
+## Compare two recorded results with pinned benchstat:
+##   make benchmark-compare BASE=benchmarks/results/a.bench NEW=benchmarks/results/b.bench
+## 输出默认写入 benchmarks/comparisons/<base>-vs-<new>.txt，可用 OUT= 覆盖。
+benchmark-compare: _install-benchstat
+	@if [ -z "$(BASE)" ] || [ -z "$(NEW)" ]; then \
+		echo "Usage: make benchmark-compare BASE=benchmarks/results/a.bench NEW=benchmarks/results/b.bench [OUT=path]"; \
+		exit 2; \
+	fi
+	@mkdir -p "$(BENCH_DIR)/comparisons"
+	@out="$(OUT)"; \
+	if [ -z "$$out" ]; then \
+		out="$(BENCH_DIR)/comparisons/$$(basename $(BASE) .bench)-vs-$$(basename $(NEW) .bench).txt"; \
+	fi; \
+	$$($(GO) env GOPATH)/bin/benchstat "$(BASE)" "$(NEW)" | tee "$$out"
+	@echo "[tinysync] comparison -> $$out"
+
+_install-benchstat:
+	@$(GO) install golang.org/x/perf/cmd/benchstat@$(BENCHSTAT_VERSION)
 
 ## Run read-only static checks and tests.
 check: _check-go-format _check-go-mod
@@ -337,6 +408,11 @@ help:
 	@echo "  make test           Run Go tests"
 	@echo "  make coverage       Generate coverage (coverage/backend.*)"
 	@echo "  make ci             Deterministic install + all checks"
+	@echo "  make hardening      Hardening quality gate + short fuzz"
+	@echo "  make integration    Protocol integration (real S3, env-gated)"
+	@echo "  make benchmark      Run performance benchmarks"
+	@echo "  make benchmark-record NAME=x  Record results + metadata"
+	@echo "  make benchmark-compare BASE= NEW=  benchstat comparison"
 	@echo ""
 	@echo "Web:"
 	@echo "  make web-install    Install Web dependencies"
