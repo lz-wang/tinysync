@@ -1,0 +1,101 @@
+goos: darwin
+goarch: arm64
+pkg: tinysync/internal/browser
+cpu: Apple M1 Max
+BenchmarkManagedSearch100K-10    	       7	 151229024 ns/op	171380357 B/op	 1504397 allocs/op
+BenchmarkManagedSearch100K-10    	       7	 151190667 ns/op	171381108 B/op	 1504395 allocs/op
+BenchmarkManagedSearch100K-10    	       7	 150782363 ns/op	171379517 B/op	 1504395 allocs/op
+BenchmarkManagedSearch100K-10    	       7	 152661399 ns/op	171379542 B/op	 1504395 allocs/op
+BenchmarkManagedSearch100K-10    	       7	 152093577 ns/op	171381209 B/op	 1504396 allocs/op
+PASS
+ok  	tinysync/internal/browser	12.797s
+goos: darwin
+goarch: arm64
+pkg: tinysync/internal/source/webdav
+cpu: Apple M1 Max
+BenchmarkRemotePagination10K-10          	       1	4528557959 ns/op	3400758216 B/op	47670750 allocs/op
+BenchmarkRemotePagination10K-10          	       1	4488533291 ns/op	3399719696 B/op	47651971 allocs/op
+BenchmarkRemotePagination10K-10          	       1	4493583208 ns/op	3399697376 B/op	47652020 allocs/op
+BenchmarkRemotePagination10K-10          	       1	4486540583 ns/op	3399286904 B/op	47651911 allocs/op
+BenchmarkRemotePagination10K-10          	       1	4475141000 ns/op	3399464792 B/op	47651858 allocs/op
+BenchmarkScanRemoteWebDAV10KFlat-10      	       1	22478824583 ns/op	       100.0 propfind/op	17002625816 B/op	238289319 allocs/op
+BenchmarkScanRemoteWebDAV10KFlat-10      	       1	22499142792 ns/op	       100.0 propfind/op	17003543696 B/op	238289011 allocs/op
+BenchmarkScanRemoteWebDAV10KFlat-10      	       1	22402872041 ns/op	       100.0 propfind/op	17002547104 B/op	238288751 allocs/op
+BenchmarkScanRemoteWebDAV10KFlat-10      	       1	22496838167 ns/op	       100.0 propfind/op	17003247024 B/op	238289134 allocs/op
+BenchmarkScanRemoteWebDAV10KFlat-10      	       1	22403851750 ns/op	       100.0 propfind/op	17002562680 B/op	238289227 allocs/op
+BenchmarkScanRemoteWebDAV10KNested-10    	       4	 277193219 ns/op	       101.0 propfind/op	182493042 B/op	 2503822 allocs/op
+BenchmarkScanRemoteWebDAV10KNested-10    	       4	 259097677 ns/op	       101.0 propfind/op	181611708 B/op	 2503112 allocs/op
+BenchmarkScanRemoteWebDAV10KNested-10    	       4	 259672083 ns/op	       101.0 propfind/op	181435746 B/op	 2503124 allocs/op
+BenchmarkScanRemoteWebDAV10KNested-10    	       4	 259913833 ns/op	       101.0 propfind/op	181356446 B/op	 2503040 allocs/op
+BenchmarkScanRemoteWebDAV10KNested-10    	       4	 261379708 ns/op	       101.0 propfind/op	181643400 B/op	 2503261 allocs/op
+PASS
+ok  	tinysync/internal/source/webdav	145.822s
+goos: darwin
+goarch: arm64
+pkg: tinysync/internal/source/sftp
+cpu: Apple M1 Max
+BenchmarkScanRemoteSFTP10KFlat-10      	       1	5409211750 ns/op	6498553104 B/op	32464627 allocs/op
+BenchmarkScanRemoteSFTP10KFlat-10      	       1	5528720458 ns/op	6498541632 B/op	32464674 allocs/op
+BenchmarkScanRemoteSFTP10KFlat-10      	       1	5551537917 ns/op	6498507672 B/op	32464440 allocs/op
+BenchmarkScanRemoteSFTP10KFlat-10      	       1	5503482334 ns/op	6498492704 B/op	32464188 allocs/op
+BenchmarkScanRemoteSFTP10KFlat-10      	       1	5468477959 ns/op	6498448360 B/op	32463702 allocs/op
+BenchmarkScanRemoteSFTP10KNested-10    	      12	  94449285 ns/op	70812318 B/op	  348218 allocs/op
+BenchmarkScanRemoteSFTP10KNested-10    	      12	  94532722 ns/op	70809361 B/op	  348192 allocs/op
+BenchmarkScanRemoteSFTP10KNested-10    	      12	  94771042 ns/op	70810637 B/op	  348194 allocs/op
+BenchmarkScanRemoteSFTP10KNested-10    	      12	  94549066 ns/op	70812910 B/op	  348220 allocs/op
+BenchmarkScanRemoteSFTP10KNested-10    	      13	  94438987 ns/op	70810911 B/op	  348205 allocs/op
+PASS
+ok  	tinysync/internal/source/sftp	58.413s
+goos: darwin
+goarch: arm64
+pkg: tinysync/internal/source/s3
+cpu: Apple M1 Max
+BenchmarkScanRemoteS3_10KFlat-10    	     242	   4751799 ns/op	       101.0 listobjects/op	13062283 B/op	   23827 allocs/op
+BenchmarkScanRemoteS3_10KFlat-10    	     252	   4745484 ns/op	       101.0 listobjects/op	13062334 B/op	   23827 allocs/op
+BenchmarkScanRemoteS3_10KFlat-10    	     252	   4739662 ns/op	       101.0 listobjects/op	13062324 B/op	   23827 allocs/op
+BenchmarkScanRemoteS3_10KFlat-10    	     252	   4760049 ns/op	       101.0 listobjects/op	13062344 B/op	   23828 allocs/op
+BenchmarkScanRemoteS3_10KFlat-10    	     252	   4788176 ns/op	       101.0 listobjects/op	13062258 B/op	   23827 allocs/op
+BenchmarkScanRemoteS3_10KDeep-10    	     202	   5927745 ns/op	      1011 listobjects/op	13058524 B/op	   47441 allocs/op
+BenchmarkScanRemoteS3_10KDeep-10    	     202	   5820625 ns/op	      1011 listobjects/op	13058569 B/op	   47441 allocs/op
+BenchmarkScanRemoteS3_10KDeep-10    	     208	   5678982 ns/op	      1011 listobjects/op	13058211 B/op	   47439 allocs/op
+BenchmarkScanRemoteS3_10KDeep-10    	     201	   5940225 ns/op	      1011 listobjects/op	13058529 B/op	   47441 allocs/op
+BenchmarkScanRemoteS3_10KDeep-10    	     200	   5925348 ns/op	      1011 listobjects/op	13058455 B/op	   47440 allocs/op
+PASS
+ok  	tinysync/internal/source/s3	17.882s
+goos: darwin
+goarch: arm64
+pkg: tinysync/internal/syncjob
+cpu: Apple M1 Max
+BenchmarkPlan10K-10              	     306	   3838346 ns/op	12257118 B/op	   20134 allocs/op
+BenchmarkPlan10K-10              	     309	   3854250 ns/op	12257116 B/op	   20134 allocs/op
+BenchmarkPlan10K-10              	     312	   3906935 ns/op	12257099 B/op	   20134 allocs/op
+BenchmarkPlan10K-10              	     308	   3997964 ns/op	12257099 B/op	   20134 allocs/op
+BenchmarkPlan10K-10              	     298	   3858967 ns/op	12257097 B/op	   20134 allocs/op
+BenchmarkSmallFileSync-10        	   10000	    106716 ns/op	    2399 B/op	      26 allocs/op
+BenchmarkSmallFileSync-10        	   10000	    107744 ns/op	    2399 B/op	      26 allocs/op
+BenchmarkSmallFileSync-10        	   10000	    107179 ns/op	    2399 B/op	      26 allocs/op
+BenchmarkSmallFileSync-10        	   10000	    111753 ns/op	    2399 B/op	      26 allocs/op
+BenchmarkSmallFileSync-10        	   10000	    113775 ns/op	    2399 B/op	      26 allocs/op
+BenchmarkLargeFileTransfer-10    	      52	  20169004 ns/op	1663.66 MB/s	    2580 B/op	      28 allocs/op
+BenchmarkLargeFileTransfer-10    	      57	  20371610 ns/op	1647.12 MB/s	    2579 B/op	      28 allocs/op
+BenchmarkLargeFileTransfer-10    	      57	  19983700 ns/op	1679.09 MB/s	    2576 B/op	      28 allocs/op
+BenchmarkLargeFileTransfer-10    	      51	  20256307 ns/op	1656.49 MB/s	    2580 B/op	      28 allocs/op
+BenchmarkLargeFileTransfer-10    	      60	  19871278 ns/op	1688.59 MB/s	    2576 B/op	      28 allocs/op
+BenchmarkScanRemote10KFlat-10    	     580	   2030347 ns/op	 5416159 B/op	   10395 allocs/op
+BenchmarkScanRemote10KFlat-10    	     586	   2061456 ns/op	 5416160 B/op	   10395 allocs/op
+BenchmarkScanRemote10KFlat-10    	     589	   2033753 ns/op	 5416160 B/op	   10395 allocs/op
+BenchmarkScanRemote10KFlat-10    	     580	   2044848 ns/op	 5416158 B/op	   10395 allocs/op
+BenchmarkScanRemote10KFlat-10    	     584	   2028181 ns/op	 5416160 B/op	   10395 allocs/op
+PASS
+ok  	tinysync/internal/syncjob	29.092s
+goos: darwin
+goarch: arm64
+pkg: tinysync/internal/syncjob/sqlite
+cpu: Apple M1 Max
+BenchmarkSQLiteManaged100K-10    	       7	 147682482 ns/op	166899451 B/op	 1600070 allocs/op
+BenchmarkSQLiteManaged100K-10    	       7	 148817976 ns/op	166898625 B/op	 1600068 allocs/op
+BenchmarkSQLiteManaged100K-10    	       7	 148392756 ns/op	166898652 B/op	 1600069 allocs/op
+BenchmarkSQLiteManaged100K-10    	       7	 150496333 ns/op	166898709 B/op	 1600069 allocs/op
+BenchmarkSQLiteManaged100K-10    	       7	 150786649 ns/op	166898666 B/op	 1600069 allocs/op
+PASS
+ok  	tinysync/internal/syncjob/sqlite	11.732s

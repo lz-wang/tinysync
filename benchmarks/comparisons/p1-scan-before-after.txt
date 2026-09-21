@@ -1,0 +1,84 @@
+goos: darwin
+goarch: arm64
+pkg: tinysync/internal/browser
+cpu: Apple M1 Max
+                     │ benchmarks/results/p1-before.bench │ benchmarks/results/p1-after.bench  │
+                     │               sec/op               │    sec/op     vs base              │
+ManagedSearch100K-10                         151.2m ± ∞ ¹   154.6m ± ∞ ¹  +2.23% (p=0.016 n=5)
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                     │ benchmarks/results/p1-before.bench │ benchmarks/results/p1-after.bench │
+                     │                B/op                │       B/op        vs base         │
+ManagedSearch100K-10                        163.4Mi ± ∞ ¹      163.4Mi ± ∞ ¹  ~ (p=0.056 n=5)
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                     │ benchmarks/results/p1-before.bench │ benchmarks/results/p1-after.bench │
+                     │             allocs/op              │    allocs/op      vs base         │
+ManagedSearch100K-10                         1.504M ± ∞ ¹       1.504M ± ∞ ¹  ~ (p=0.159 n=5)
+¹ need >= 6 samples for confidence interval at level 0.95
+
+pkg: tinysync/internal/source/s3
+                        │ benchmarks/results/p1-before.bench │ benchmarks/results/p1-after.bench  │
+                        │               sec/op               │    sec/op     vs base              │
+ScanRemoteS3_10KFlat-10                         4.752m ± ∞ ¹   4.529m ± ∞ ¹  -4.68% (p=0.008 n=5)
+ScanRemoteS3_10KDeep-10                         5.925m ± ∞ ¹   5.452m ± ∞ ¹  -7.98% (p=0.008 n=5)
+geomean                                         5.306m         4.969m        -6.35%
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                        │ benchmarks/results/p1-before.bench │  benchmarks/results/p1-after.bench   │
+                        │                B/op                │     B/op       vs base               │
+ScanRemoteS3_10KFlat-10                       12.457Mi ± ∞ ¹   9.437Mi ± ∞ ¹  -24.25% (p=0.008 n=5)
+ScanRemoteS3_10KDeep-10                       12.454Mi ± ∞ ¹   9.823Mi ± ∞ ¹  -21.12% (p=0.008 n=5)
+geomean                                        12.46Mi         9.628Mi        -22.70%
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                        │ benchmarks/results/p1-before.bench │  benchmarks/results/p1-after.bench  │
+                        │             allocs/op              │  allocs/op    vs base               │
+ScanRemoteS3_10KFlat-10                         23.83k ± ∞ ¹   40.34k ± ∞ ¹  +69.30% (p=0.008 n=5)
+ScanRemoteS3_10KDeep-10                         47.44k ± ∞ ¹   51.36k ± ∞ ¹   +8.26% (p=0.008 n=5)
+geomean                                         33.62k         45.52k        +35.39%
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                        │ benchmarks/results/p1-before.bench │   benchmarks/results/p1-after.bench   │
+                        │           listobjects/op           │ listobjects/op  vs base               │
+ScanRemoteS3_10KFlat-10                         101.00 ± ∞ ¹      10.00 ± ∞ ¹  -90.10% (p=0.008 n=5)
+ScanRemoteS3_10KDeep-10                        1011.00 ± ∞ ¹      10.00 ± ∞ ¹  -99.01% (p=0.008 n=5)
+geomean                                          319.5            10.00        -96.87%
+¹ need >= 6 samples for confidence interval at level 0.95
+
+pkg: tinysync/internal/source/sftp
+                           │ benchmarks/results/p1-before.bench │  benchmarks/results/p1-after.bench   │
+                           │               sec/op               │    sec/op      vs base               │
+ScanRemoteSFTP10KFlat-10                         5503.48m ± ∞ ¹    63.89m ± ∞ ¹  -98.84% (p=0.008 n=5)
+ScanRemoteSFTP10KNested-10                         94.53m ± ∞ ¹   103.94m ± ∞ ¹   +9.95% (p=0.008 n=5)
+geomean                                            721.3m          81.49m        -88.70%
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                           │ benchmarks/results/p1-before.bench │  benchmarks/results/p1-after.bench   │
+                           │                B/op                │     B/op       vs base               │
+ScanRemoteSFTP10KFlat-10                        6197.46Mi ± ∞ ¹   66.11Mi ± ∞ ¹  -98.93% (p=0.008 n=5)
+ScanRemoteSFTP10KNested-10                        67.53Mi ± ∞ ¹   66.67Mi ± ∞ ¹   -1.28% (p=0.008 n=5)
+geomean                                           646.9Mi         66.39Mi        -89.74%
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                           │ benchmarks/results/p1-before.bench │  benchmarks/results/p1-after.bench  │
+                           │             allocs/op              │  allocs/op    vs base               │
+ScanRemoteSFTP10KFlat-10                         32464.4k ± ∞ ¹   334.7k ± ∞ ¹  -98.97% (p=0.008 n=5)
+ScanRemoteSFTP10KNested-10                         348.2k ± ∞ ¹   347.3k ± ∞ ¹   -0.27% (p=0.008 n=5)
+geomean                                            3.362M         341.0k        -89.86%
+¹ need >= 6 samples for confidence interval at level 0.95
+
+pkg: tinysync/internal/source/webdav
+                             │ benchmarks/results/p1-before.bench │  benchmarks/results/p1-after.bench  │
+                             │               sec/op               │    sec/op     vs base               │
+RemotePagination10K-10                                4.489 ± ∞ ¹    4.572 ± ∞ ¹   +1.85% (p=0.016 n=5)
+ScanRemoteWebDAV10KFlat-10                         22478.8m ± ∞ ¹   231.4m ± ∞ ¹  -98.97% (p=0.008 n=5)
+ScanRemoteWebDAV10KNested-10                         259.9m ± ∞ ¹   274.7m ± ∞ ¹        ~ (p=0.056 n=5)
+geomean                                               2.971         662.4m        -77.70%
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                             │ benchmarks/results/p1-before.bench │  benchmarks/results/p1-after.bench   │
+                             │                B/op                │     B/op       vs base               │
+RemotePagination10K-10                              3.166Gi ± ∞ ¹   3.166Gi ± ∞ ¹        ~ (p=0.690 n=5)
+ScanRemoteWebDAV10KFlat-10                        16215.0Mi ± ∞ ¹   166.5Mi ± ∞ ¹  -98.97% (p=0.008 n=5)
+ScanRemoteWebDAV10KNested-10   

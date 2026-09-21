@@ -1,0 +1,9 @@
+commit=258d562a04b26ddf95878557f59036b5b3d5833d
+dirty=false
+date=2026-09-21T14:01:35Z
+go_version=go1.27.1
+goos=darwin
+goarch=arm64
+cpu=Apple M1 Max
+count=5
+benchtime=1s
