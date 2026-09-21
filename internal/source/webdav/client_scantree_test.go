@@ -186,6 +186,29 @@ func TestScanTreeContracts(t *testing.T) {
 		}
 	})
 
+	// visit 中途取消：Depth:1 响应一次带回整层条目，entry loop 逐条
+	// 检查 ctx，同层剩余条目不再处理（契约「及时响应 ctx 取消」）。
+	t.Run("CancelDuringVisit", func(t *testing.T) {
+		handler := newBulkWebDAVHandler(t, 1, 100)
+		remote := newBenchWebDAVRemote(t, context.Background(), handler)
+		ctx, cancel := context.WithCancel(context.Background())
+		visits := 0
+		err := remote.(source.TreeScanner).ScanTree(ctx, "/bulk", func(fi source.FileInfo) error {
+			if fi.IsDir {
+				return nil
+			}
+			visits++
+			cancel()
+			return nil
+		})
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("ScanTree cancel-during-visit = %v, want context.Canceled", err)
+		}
+		if visits >= 100 {
+			t.Errorf("visit called %d times, want < 100 (stop within the entry loop)", visits)
+		}
+	})
+
 	t.Run("RemoteRootMapping", func(t *testing.T) {
 		// RemoteRoot=/bulk：逻辑根映射到 /bulk，ScanTree("/") 只返回
 		// 子树内容，logical path 以 / 开头且不携带 root 前缀。

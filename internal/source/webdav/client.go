@@ -258,13 +258,18 @@ func (r *remote) ScanTree(ctx context.Context, root string, visit func(source.Fi
 }
 
 // scanDir 递归枚举一个目录：一次 ReadDir（协议层一次 Depth:1
-// PROPFIND）取回整层条目，文件与目录 visit 后对子目录递归。
+// PROPFIND）取回整层条目，文件与目录 visit 后对子目录递归。条目
+// 循环内逐条检查 ctx：Depth:1 响应可能一次带回数万条目，取消不能
+// 等到下一个目录的 PROPFIND 边界才生效。
 func (r *remote) scanDir(ctx context.Context, dir string, visit func(source.FileInfo) error) error {
 	entries, err := r.client.ReadDir(ctx, r.resolveRelative(dir), false)
 	if err != nil {
 		return wrapOp("scan", dir, err)
 	}
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		fi, err := r.toFileInfo(entry)
 		if err != nil {
 			return wrapOp("scan", dir, err)

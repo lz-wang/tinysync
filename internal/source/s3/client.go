@@ -433,6 +433,11 @@ func (r *remote) ScanTree(ctx context.Context, root string, visit func(source.Fi
 			return wrapOp("scan", root, err)
 		}
 		for _, obj := range out.Contents {
+			// 条目循环内逐条检查 ctx：单页可能带回 1000 个对象，取消
+			// 不能等到下一页的请求边界才生效。
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			key := derefStr(obj.Key)
 			if key == "" {
 				continue

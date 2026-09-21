@@ -36,7 +36,9 @@ BENCHSTAT_VERSION := v0.0.0-20260908200009-22c9c6c9d4da
 
 # benchmark 参数与覆盖包：同步扫描改造（TreeScanner）的 before/after
 # 记录覆盖全部协议 adapter 与同步引擎、planner、managed 存储。
-BENCH_COUNT ?= 5
+# BENCH_COUNT ≥ 10：benchstat 的 95% 置信区间需要 ≥ 6 个样本，
+# 10 个样本给 wall-clock 对比留出剔除离群点的余地。
+BENCH_COUNT ?= 10
 BENCH_TIME ?= 1s
 BENCH_DIR := benchmarks
 BENCH_PACKAGES := \
@@ -263,7 +265,7 @@ benchmark:
 ## CPU 型号，不记 hostname、用户名、路径等机器标识）。
 benchmark-record:
 	@if [ -z "$(NAME)" ]; then \
-		echo "Usage: make benchmark-record NAME=p1-before [BENCH_COUNT=5] [BENCH_TIME=1s]"; \
+		echo "Usage: make benchmark-record NAME=p1-before [BENCH_COUNT=10] [BENCH_TIME=1s]"; \
 		exit 2; \
 	fi
 	@if [ -n "$$(git status --porcelain --untracked-files=no)" ]; then \

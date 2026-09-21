@@ -187,6 +187,32 @@ func TestWalkDirectoryContextCanceled(t *testing.T) {
 	}
 }
 
+// visit 中途取消：单层 ReadDir 一次返回全部条目，entry loop 逐条
+// 检查 ctx，同层剩余条目不再处理（契约「及时响应 ctx 取消」）。
+func TestWalkDirectoryCancelDuringVisit(t *testing.T) {
+	rd := newCountingReadDir()
+	const total = 100
+	entries := make([]fs.FileInfo, 0, total)
+	for i := 0; i < total; i++ {
+		entries = append(entries, fakeEntry{name: fmt.Sprintf("f%03d.txt", i), value: "x"})
+	}
+	rd.dirs["/bulk"] = entries
+
+	ctx, cancel := context.WithCancel(context.Background())
+	visits := 0
+	err := walkDirectory(ctx, "/bulk", rd.ReadDir, func(fi source.FileInfo) error {
+		visits++
+		cancel()
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("walkDirectory cancel-during-visit = %v, want context.Canceled", err)
+	}
+	if visits >= total {
+		t.Errorf("visit called %d times, want < %d (stop within the entry loop)", visits, total)
+	}
+}
+
 // readDir 错误透传。
 func TestWalkDirectoryReadDirError(t *testing.T) {
 	rd := newCountingReadDir()

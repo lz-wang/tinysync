@@ -602,8 +602,10 @@ func (r *remote) ScanTree(ctx context.Context, root string, visit func(source.Fi
 
 // walkDirectory 递归枚举一个目录树：每层一次 readDir（生产路径即
 // 一次 ReadDir / 一个协议请求），条目逐个转换并 visit 后对子目录
-// 递归。readDir 以参数注入：测试传带计数器的 fake，把「每个目录
-// 恰好一次 ReadDir」变成确定性的单元断言（不靠 wall-clock）。
+// 递归。条目循环内逐条检查 ctx：单层枚举可能一次带回数万条目，
+// 取消不能等到下一层的 ReadDir 边界才生效。readDir 以参数注入：
+// 测试传带计数器的 fake，把「每个目录恰好一次 ReadDir」变成确定
+// 性的单元断言（不靠 wall-clock）。
 func walkDirectory(
 	ctx context.Context,
 	logical string,
@@ -618,6 +620,9 @@ func walkDirectory(
 		return err
 	}
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		child, err := toLogical(logical, entry.Name())
 		if err != nil {
 			return err

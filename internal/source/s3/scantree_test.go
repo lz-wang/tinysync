@@ -369,4 +369,30 @@ func TestS3ScanTreeAbortSemantics(t *testing.T) {
 			t.Errorf("visit called %d times, want 1 (abort immediately)", calls)
 		}
 	})
+
+	// visit 中途取消：条目循环逐条检查 ctx，同页剩余对象不再处理，
+	// 取消不等下一页请求边界。
+	t.Run("CancelDuringVisit", func(t *testing.T) {
+		mod := time.Unix(1757879400, 0).UTC()
+		fk := newFakeS3(0)
+		const total = 100
+		for i := 0; i < total; i++ {
+			fk.put(fmt.Sprintf("base/f%03d", i), []byte("x"), mod, "")
+		}
+		r := newTestRemote(fk, "base")
+
+		ctx, cancel := context.WithCancel(context.Background())
+		visits := 0
+		err := r.(source.TreeScanner).ScanTree(ctx, "/", func(fi source.FileInfo) error {
+			visits++
+			cancel()
+			return nil
+		})
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("ScanTree cancel-during-visit = %v, want context.Canceled", err)
+		}
+		if visits >= total {
+			t.Errorf("visit called %d times, want < %d (stop within the entry loop)", visits, total)
+		}
+	})
 }

@@ -55,9 +55,17 @@ make benchmark-compare \
 # 输出 -> benchmarks/comparisons/p1-before-vs-p1-after.txt
 ```
 
-参数默认 `BENCH_COUNT=5`、`BENCH_TIME=1s`（每个 benchmark 至少 5 个
-样本供 benchstat 做统计检验）；benchstat 版本固定于 `Makefile` 的
-`BENCHSTAT_VERSION`。
+参数默认 `BENCH_COUNT=10`、`BENCH_TIME=1s`（benchstat 的 95% 置信
+区间需要 ≥ 6 个样本，10 个样本保证对比输出带区间而非 `± ∞`）；
+benchstat 版本固定于 `Makefile` 的 `BENCHSTAT_VERSION`。
+
+## 跨 Go 版本可比性
+
+`.meta` 记录的 `go_version` 是可比性前提：**不同 Go 版本录制的
+`.bench` 不直接做 benchstat 对比**——compiler、runtime、GC 与
+scheduler 的变化会混入 trend，无法与代码变更的影响区分。建立长期
+性能历史（v0.10 → v0.11 → …）时先确认两端的 `go_version` 一致；
+工具链升级后的第一份录制作为新基线。
 
 ## 指标解读
 
