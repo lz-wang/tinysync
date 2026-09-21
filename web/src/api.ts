@@ -191,9 +191,17 @@ export function fetchSession(): Promise<SessionResponse> {
     return apiFetch<SessionResponse>('GET', '/api/v1/auth/session')
 }
 
-// logout 登出并清除会话 cookie。
+// logout 登出并清除会话 cookie。401 视为已登出（幂等成功）：改密
+// 成功后服务端同事务废弃全部会话，随后的登出请求必然 401——那是
+// 改密成功的佐证而非失败，不能让调用方（如改密流程）误报错误。
 export async function logout(): Promise<void> {
-    await apiFetch<void>('POST', '/api/v1/auth/logout')
+    try {
+        await apiFetch<void>('POST', '/api/v1/auth/logout')
+    } catch (reason) {
+        if (!(reason instanceof UnauthorizedError)) {
+            throw reason
+        }
+    }
 }
 
 export interface ProfileResponse {

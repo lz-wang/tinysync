@@ -87,11 +87,12 @@ export default function SettingsPage() {
         }
     }
     const changePassword = async () => {
-        if (!current || !next || next !== confirm) return
+        if (!current || !next || next !== confirm || [...next].length < 12) return
         setSaving(true)
         try {
             await updateProfile({ current_password: current, new_password: next })
             setPasswordOpen(false)
+            toast.success('密码已修改，请使用新密码重新登录。')
             await auth.logout()
         } catch {
             toast.error('密码修改失败，请检查当前密码和新密码。')
@@ -229,6 +230,12 @@ export default function SettingsPage() {
                                     type="password"
                                     autoComplete="new-password"
                                     value={next}
+                                    error={next !== '' && [...next].length < 12}
+                                    helperText={
+                                        next !== '' && [...next].length < 12
+                                            ? '新密码至少需要 12 个字符'
+                                            : '至少 12 个字符'
+                                    }
                                     onChange={event => setNext(event.target.value)}
                                 />
                                 <TextField
@@ -250,7 +257,13 @@ export default function SettingsPage() {
                             </Button>
                             <Button
                                 variant="contained"
-                                disabled={saving || !current || !next || next !== confirm}
+                                disabled={
+                                    saving ||
+                                    !current ||
+                                    !next ||
+                                    next !== confirm ||
+                                    [...next].length < 12
+                                }
                                 onClick={() => void changePassword()}
                             >
                                 确认修改
