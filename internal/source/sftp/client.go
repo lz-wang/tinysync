@@ -317,8 +317,9 @@ func remoteAbs(root, logicalPath string) (string, error) {
 }
 
 // toLogical 把远端条目名转为 Source-relative logical path 并统一过
-// ValidateLogicalPath。
-func (r *remote) toLogical(dirLogical, name string) (string, error) {
+// ValidateLogicalPath。不依赖 receiver 状态：walkDirectory 的测试
+// 注入 counter readDir 时复用同一转换规则。
+func toLogical(dirLogical, name string) (string, error) {
 	if dirLogical == "/" {
 		dirLogical = ""
 	}
@@ -350,7 +351,7 @@ func (r *remote) Stat(ctx context.Context, logicalPath string) (source.FileInfo,
 	if err != nil {
 		return source.FileInfo{}, wrapOp("stat", logicalPath, err)
 	}
-	return r.toFileInfo(logicalPath, info)
+	return toFileInfo(logicalPath, info)
 }
 
 // List 实现 source.Remote：ReadDir 列一层；发现 symlink 整体失败——
@@ -379,11 +380,11 @@ func (r *remote) List(ctx context.Context, logicalDir string, opts source.ListOp
 	}
 	all := make([]source.FileInfo, 0, len(entries))
 	for _, entry := range entries {
-		logical, err := r.toLogical(logicalDir, entry.Name())
+		logical, err := toLogical(logicalDir, entry.Name())
 		if err != nil {
 			return source.FilePage{}, wrapOp("list", logicalDir, err)
 		}
-		fi, err := r.toFileInfo(logical, entry)
+		fi, err := toFileInfo(logical, entry)
 		if err != nil {
 			return source.FilePage{}, err
 		}
@@ -418,8 +419,9 @@ func (r *remote) Mkdir(ctx context.Context, logicalPath string) error {
 }
 
 // toFileInfo 转换协议无关 FileInfo：symlink 拒绝；SFTP 不提供 ETag，
-// Fingerprint 走 Size + ModifiedAt（planner 既有降级路径）。
-func (r *remote) toFileInfo(logical string, info fs.FileInfo) (source.FileInfo, error) {
+// Fingerprint 走 Size + ModifiedAt（planner 既有降级路径）。不依赖
+// receiver 状态：walkDirectory 注入 counter readDir 时复用同一规则。
+func toFileInfo(logical string, info fs.FileInfo) (source.FileInfo, error) {
 	if info.Mode()&fs.ModeSymlink != 0 {
 		return source.FileInfo{}, fmt.Errorf("%w: %s is a symlink; sftp sources do not follow or skip symlinks", source.ErrInvalid, logical)
 	}
@@ -565,4 +567,73 @@ func wrapOp(op, logicalPath string, err error) error {
 		return err
 	}
 	return fmt.Errorf("sftp %s %s: %w", op, logicalPath, err)
+}
+
+// 编译期断言：ScanTree 可选能力。
+var _ source.TreeScanner = (*remote)(nil)
+
+// ScanTree 实现 source.TreeScanner：全树扫描 root 子树，文件与目录
+// 都 visit（root 自身除外）。每个目录恰好一次 ReadDir——同步扫描
+// 不再经 List 的切片分页对同一目录重复 ReadDir；分页契约仍由 List
+// 独立承担。递归仍显式使用 client.ReadDir（不引入语义不明的通用
+// walker）；symlink 拒绝策略由 toFileInfo 保持不变。visit 错误原样
+// 透传，任何一层失败即整体失败（契约见 source.TreeScanner）。
+func (r *remote) ScanTree(ctx context.Context, root string, visit func(source.FileInfo) error) error {
+	if err := source.ValidateLogicalPath(root); err != nil {
+		return err
+	}
+	c, rroot, err := r.session(ctx)
+	if err != nil {
+		return err
+	}
+	readDir := func(ctx context.Context, logical string) ([]fs.FileInfo, error) {
+		abs, err := remoteAbs(rroot, logical)
+		if err != nil {
+			return nil, err
+		}
+		entries, err := c.ReadDir(abs)
+		if err != nil {
+			return nil, wrapOp("scan", logical, err)
+		}
+		return entries, nil
+	}
+	return walkDirectory(ctx, root, readDir, visit)
+}
+
+// walkDirectory 递归枚举一个目录树：每层一次 readDir（生产路径即
+// 一次 ReadDir / 一个协议请求），条目逐个转换并 visit 后对子目录
+// 递归。readDir 以参数注入：测试传带计数器的 fake，把「每个目录
+// 恰好一次 ReadDir」变成确定性的单元断言（不靠 wall-clock）。
+func walkDirectory(
+	ctx context.Context,
+	logical string,
+	readDir func(context.Context, string) ([]fs.FileInfo, error),
+	visit func(source.FileInfo) error,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	entries, err := readDir(ctx, logical)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		child, err := toLogical(logical, entry.Name())
+		if err != nil {
+			return err
+		}
+		fi, err := toFileInfo(child, entry)
+		if err != nil {
+			return err
+		}
+		if err := visit(fi); err != nil {
+			return err
+		}
+		if fi.IsDir {
+			if err := walkDirectory(ctx, child, readDir, visit); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
