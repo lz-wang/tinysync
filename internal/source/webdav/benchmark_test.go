@@ -109,10 +109,10 @@ func BenchmarkScanRemoteWebDAV10KNested(b *testing.B) {
 
 // newBulkWebDAVHandler 构造 MemFS（/bulk 下 dirs×perDir 个文件）并包上
 // PROPFIND 计数 handler 的 httptest 服务。
-func newBulkWebDAVHandler(b *testing.B, dirs, perDir int) *countingHandler {
-	b.Helper()
+func newBulkWebDAVHandler(tb testing.TB, dirs, perDir int) *countingHandler {
+	tb.Helper()
 	fs := xnetdav.NewMemFS()
-	seedBulkMemFS(b, fs, dirs, perDir)
+	seedBulkMemFS(tb, fs, dirs, perDir)
 	return &countingHandler{
 		next: &xnetdav.Handler{FileSystem: fs, LockSystem: xnetdav.NewMemLS()},
 	}
@@ -120,31 +120,31 @@ func newBulkWebDAVHandler(b *testing.B, dirs, perDir int) *countingHandler {
 
 // seedBulkMemFS 在 MemFS 的 /bulk 下创建 flat（dirs=1）或 nested
 // （dirs 个子目录，各 perDir 个文件）数据集。
-func seedBulkMemFS(b *testing.B, fs xnetdav.FileSystem, dirs, perDir int) {
-	b.Helper()
+func seedBulkMemFS(tb testing.TB, fs xnetdav.FileSystem, dirs, perDir int) {
+	tb.Helper()
 	ctx := context.Background()
 	if err := fs.Mkdir(ctx, "/bulk", 0o755); err != nil {
-		b.Fatalf("mkdir: %v", err)
+		tb.Fatalf("mkdir: %v", err)
 	}
 	for d := 0; d < dirs; d++ {
 		dir := "/bulk"
 		if dirs > 1 {
 			dir = fmt.Sprintf("/bulk/d%03d", d)
 			if err := fs.Mkdir(ctx, dir, 0o755); err != nil {
-				b.Fatalf("mkdir %s: %v", dir, err)
+				tb.Fatalf("mkdir %s: %v", dir, err)
 			}
 		}
 		for i := 0; i < perDir; i++ {
 			logical := fmt.Sprintf("%s/f%06d.txt", dir, i)
 			f, err := fs.OpenFile(ctx, logical, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644)
 			if err != nil {
-				b.Fatalf("create %s: %v", logical, err)
+				tb.Fatalf("create %s: %v", logical, err)
 			}
 			if _, err := f.Write([]byte("x")); err != nil {
-				b.Fatalf("write %s: %v", logical, err)
+				tb.Fatalf("write %s: %v", logical, err)
 			}
 			if err := f.Close(); err != nil {
-				b.Fatalf("close %s: %v", logical, err)
+				tb.Fatalf("close %s: %v", logical, err)
 			}
 		}
 	}
@@ -152,10 +152,10 @@ func seedBulkMemFS(b *testing.B, fs xnetdav.FileSystem, dirs, perDir int) {
 
 // newBenchWebDAVRemote 经生产 Factory 把计数 handler 后面的服务接成
 // Remote；生命周期挂到 b.Cleanup。
-func newBenchWebDAVRemote(b *testing.B, ctx context.Context, handler *countingHandler) source.Remote {
-	b.Helper()
+func newBenchWebDAVRemote(tb testing.TB, ctx context.Context, handler *countingHandler) source.Remote {
+	tb.Helper()
 	srv := httptest.NewServer(handler)
-	b.Cleanup(srv.Close)
+	tb.Cleanup(srv.Close)
 	factory := NewFactory()
 	remote, err := factory.Create(ctx, source.Source{
 		Type: source.TypeWebDAV,
@@ -164,8 +164,8 @@ func newBenchWebDAVRemote(b *testing.B, ctx context.Context, handler *countingHa
 		},
 	}, source.Credentials{})
 	if err != nil {
-		b.Fatalf("create remote: %v", err)
+		tb.Fatalf("create remote: %v", err)
 	}
-	b.Cleanup(func() { _ = remote.Close() })
+	tb.Cleanup(func() { _ = remote.Close() })
 	return remote
 }

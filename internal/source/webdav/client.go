@@ -239,6 +239,52 @@ func (r *remote) Close() error {
 	return nil
 }
 
+// 编译期断言：ScanTree 可选能力。
+var _ source.TreeScanner = (*remote)(nil)
+
+// ScanTree 实现 source.TreeScanner：全树扫描 root 子树，文件与目录
+// 都 visit（root 自身除外）。每个目录恰好一次 Depth:1 PROPFIND——
+// 同步扫描不再经 List 的切片分页把同一目录重复枚举上百次；分页
+// 契约仍由 List 独立承担（Files / API 路径不受影响）。visit 错误
+// 原样透传，任何一层失败即整体失败（契约见 source.TreeScanner）。
+func (r *remote) ScanTree(ctx context.Context, root string, visit func(source.FileInfo) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := source.ValidateLogicalPath(root); err != nil {
+		return err
+	}
+	return r.scanDir(ctx, logicalPath(root), visit)
+}
+
+// scanDir 递归枚举一个目录：一次 ReadDir（协议层一次 Depth:1
+// PROPFIND）取回整层条目，文件与目录 visit 后对子目录递归。
+func (r *remote) scanDir(ctx context.Context, dir string, visit func(source.FileInfo) error) error {
+	entries, err := r.client.ReadDir(ctx, r.resolveRelative(dir), false)
+	if err != nil {
+		return wrapOp("scan", dir, err)
+	}
+	for _, entry := range entries {
+		fi, err := r.toFileInfo(entry)
+		if err != nil {
+			return wrapOp("scan", dir, err)
+		}
+		// Depth:1 PROPFIND 的响应包含目录自身，对调用方不可见。
+		if fi.Path == dir {
+			continue
+		}
+		if err := visit(fi); err != nil {
+			return err
+		}
+		if fi.IsDir {
+			if err := r.scanDir(ctx, fi.Path, visit); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // hrefToLogical 把服务器 href 的 decoded path 转换为 Source-relative
 // logical path。href 必须落在 endpoint 前缀之内（按 path segment 对齐，
 // 拒绝 /dav/users 之类的前缀歧义），目录尾斜杠被归一去除。
