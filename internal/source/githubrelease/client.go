@@ -85,9 +85,15 @@ type client struct {
 
 // newClient 构造默认配置的 GitHub API 客户端。
 func newClient(token, owner, repo string) *client {
+	return newClientAtDefault(defaultAPIBaseURL, token, owner, repo)
+}
+
+// newClientAt 构造指向指定 API base 的客户端：生产 base 固定
+// api.github.com，测试经 Factory.newClientAt 注入 httptest 假服务器。
+func newClientAtDefault(baseURL, token, owner, repo string) *client {
 	return &client{
-		httpClient: newHTTPClient(defaultAPIHost(defaultAPIBaseURL)),
-		baseURL:    defaultAPIBaseURL,
+		httpClient: newHTTPClient(defaultAPIHost(baseURL)),
+		baseURL:    baseURL,
 		token:      token,
 		owner:      owner,
 		repo:       repo,
