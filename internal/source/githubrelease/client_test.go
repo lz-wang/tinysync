@@ -280,7 +280,7 @@ func TestTokenSentOnlyToAPIHost(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"full_name": "gitea/gitea"}`))
 	})
-	if err := f.c.verifyRepo(t.Context()); err != nil {
+	if _, err := f.c.verifyRepo(t.Context()); err != nil {
 		t.Fatalf("verifyRepo: %v", err)
 	}
 }
@@ -294,7 +294,7 @@ func TestAnonymousNoAuthHeader(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"full_name": "gitea/gitea"}`))
 	})
-	if err := f.c.verifyRepo(t.Context()); err != nil {
+	if _, err := f.c.verifyRepo(t.Context()); err != nil {
 		t.Fatalf("verifyRepo: %v", err)
 	}
 }
@@ -305,7 +305,7 @@ func TestVerifyRepoErrorClass(t *testing.T) {
 	f := newFakeGitHub(t, "", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"message": "Not Found"}`, http.StatusNotFound)
 	})
-	if err := f.c.verifyRepo(t.Context()); err == nil {
+	if _, err := f.c.verifyRepo(t.Context()); err == nil {
 		t.Fatal("verifyRepo succeeded, want error")
 	} else if source.IsRetryable(err) {
 		t.Errorf("404 should be permanent, got retryable: %v", err)

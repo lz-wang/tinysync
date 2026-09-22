@@ -38,7 +38,7 @@ func registerSourceRoutes(group *gin.RouterGroup, svc *source.Service, jobs *syn
 			return nil
 		}
 	}
-	// 权限矩阵：查询 read；创建 / 更新 / 删除 / test（会以已有
+	// 权限矩阵：查询 read；创建 / 更新 / 删除 / test / inspect（会以
 	// secret 主动访问远端）admin。
 	group.GET("/sources", requireScope(auth.ScopeRead), h.list)
 	group.POST("/sources", requireScope(auth.ScopeAdmin), h.create)
@@ -46,6 +46,9 @@ func registerSourceRoutes(group *gin.RouterGroup, svc *source.Service, jobs *syn
 	group.PATCH("/sources/:id", requireScope(auth.ScopeAdmin), h.update)
 	group.DELETE("/sources/:id", requireScope(auth.ScopeAdmin), h.delete)
 	group.POST("/sources/:id/test", requireScope(auth.ScopeAdmin), h.test)
+	// inspect 必须先于 :id 路由注册意图上无冲突（gin 的静态段优先），
+	// 显式声明不持久化的创建前预览端点。
+	group.POST("/sources/inspect", requireScope(auth.ScopeAdmin), h.inspect)
 }
 
 // sourceHandlers 是 Source 端点的 handler 集合。
@@ -497,6 +500,113 @@ func (h *sourceHandlers) test(c *gin.Context) {
 		LatencyMS: result.LatencyMS,
 		Error:     result.Error,
 	})
+}
+
+// inspectRequest 是创建前预览的请求体：source_id 形态预览已保存
+// Source（服务端读取已存凭据，前端无需重新索取 Token）；config +
+// credentials 形态直接使用表单值（不持久化）。两种形态互斥。
+type inspectRequest struct {
+	SourceID    string          `json:"source_id,omitempty"`
+	Type        string          `json:"type,omitempty"`
+	Config      json.RawMessage `json:"config,omitempty"`
+	Credentials json.RawMessage `json:"credentials,omitempty"`
+}
+
+// inspectedAssetDTO 是预览结果的单个 Asset 概览。
+type inspectedAssetDTO struct {
+	Name            string `json:"name"`
+	Size            int64  `json:"size"`
+	DigestAvailable bool   `json:"digest_available"`
+}
+
+// inspectedReleaseDTO 是预览结果的版本概览。
+type inspectedReleaseDTO struct {
+	Tag         string              `json:"tag"`
+	Name        string              `json:"name,omitempty"`
+	Prerelease  bool                `json:"prerelease"`
+	PublishedAt string              `json:"published_at"`
+	Assets      []inspectedAssetDTO `json:"assets,omitempty"`
+}
+
+// inspectResultDTO 是预览的响应：发现失败也是成功完成的预览操作，
+// 以 ok=false 表达。Token 明文与任何 secret 绝不出现在响应中。
+type inspectResultDTO struct {
+	OK         bool                  `json:"ok"`
+	LatencyMS  int64                 `json:"latency_ms"`
+	Error      string                `json:"error,omitempty"`
+	Repository string                `json:"repository,omitempty"`
+	Releases   []inspectedReleaseDTO `json:"releases,omitempty"`
+}
+
+// inspect POST /api/v1/sources/inspect。创建前测试并预览：不持久化
+// 任何配置；仅 github_release 类型支持。
+func (h *sourceHandlers) inspect(c *gin.Context) {
+	var req inspectRequest
+	if !strictBind(c, &req) {
+		return
+	}
+	input := source.InspectInput{SourceID: req.SourceID}
+	if req.SourceID == "" {
+		if req.Type != "github_release" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "inspect requires source_id or type github_release"})
+			return
+		}
+		if req.Config == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "inspect config is required"})
+			return
+		}
+		config, err := decodeConfigPayload(source.TypeGitHubRelease, req.Config)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if config.GitHubRelease == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid github_release config"})
+			return
+		}
+		input.GitHubConfig = config.GitHubRelease
+		if req.Credentials != nil {
+			creds, err := decodeCredentialsPayload(source.TypeGitHubRelease, req.Credentials)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			if creds.GitHubRelease != nil {
+				input.Token = creds.GitHubRelease.Token
+			}
+		}
+	}
+	result, err := h.svc.Inspect(c.Request.Context(), input)
+	if err != nil {
+		handleSourceError(c, err)
+		return
+	}
+	resp := inspectResultDTO{
+		OK:        result.OK,
+		LatencyMS: result.LatencyMS,
+		Error:     result.Error,
+	}
+	if result.Inspection != nil {
+		resp.Repository = result.Inspection.Repository
+		resp.Releases = make([]inspectedReleaseDTO, 0, len(result.Inspection.Releases))
+		for _, rel := range result.Inspection.Releases {
+			dto := inspectedReleaseDTO{
+				Tag:         rel.Tag,
+				Name:        rel.Name,
+				Prerelease:  rel.Prerelease,
+				PublishedAt: rel.PublishedAt.UTC().Format(time.RFC3339),
+			}
+			for _, a := range rel.Assets {
+				dto.Assets = append(dto.Assets, inspectedAssetDTO{
+					Name:            a.Name,
+					Size:            a.Size,
+					DigestAvailable: a.DigestAvailable,
+				})
+			}
+			resp.Releases = append(resp.Releases, dto)
+		}
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 // handleSourceError 把领域错误映射为 REST 状态码。

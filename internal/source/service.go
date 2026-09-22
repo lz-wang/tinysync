@@ -2,6 +2,7 @@ package source
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -174,4 +175,71 @@ func (s *Service) TestConnection(ctx context.Context, id string) (TestResult, er
 		return TestResult{OK: false, LatencyMS: latency, Error: statErr.Error()}, nil
 	}
 	return TestResult{OK: true, LatencyMS: latency}, nil
+}
+
+// InspectInput 是预览请求的输入：SourceID 非 nil 时预览已保存 Source
+// （配置与凭据都取已保存值，供编辑表单「测试并预览」）；否则用
+// GitHubConfig 与 Token 构造临时客户端（创建表单，不持久化）。
+type InspectInput struct {
+	SourceID     string
+	GitHubConfig *GitHubReleaseConfig
+	Token        string
+}
+
+// InspectResult 是预览的结果。发现失败也是一次成功完成的预览操作：
+// 以 OK=false 与 Error 描述返回；只有请求本身异常才作为错误传播。
+type InspectResult struct {
+	OK         bool
+	LatencyMS  int64
+	Error      string
+	Inspection *GitHubInspection
+}
+
+// Inspect 执行「创建前测试并预览」：经协议 factory 构造临时客户端
+// 并断言 ReleaseInspector 能力（当前仅 github_release 支持）。凭据
+// 明文只在 Service 内部流转（与 OpenRemote 同一边界）；Remote 在
+// 预览窗口结束後始终释放。
+func (s *Service) Inspect(ctx context.Context, input InspectInput) (InspectResult, error) {
+	start := s.Now()
+	inspectCtx, cancel := context.WithTimeout(ctx, testTimeout)
+	defer cancel()
+
+	var src Source
+	var creds Credentials
+	if input.SourceID != "" {
+		var err error
+		src, err = s.repo.Get(ctx, input.SourceID)
+		if err != nil {
+			return InspectResult{}, err
+		}
+		creds, err = s.repo.GetCredentials(ctx, input.SourceID)
+		if err != nil {
+			return InspectResult{}, err
+		}
+	} else {
+		if input.GitHubConfig == nil {
+			return InspectResult{}, fmt.Errorf("%w: inspect requires source_id or github_release config", ErrInvalid)
+		}
+		if err := ValidateConfig(TypeGitHubRelease, Config{GitHubRelease: input.GitHubConfig}); err != nil {
+			return InspectResult{}, err
+		}
+		normalized := Config{GitHubRelease: input.GitHubConfig}.Normalized(TypeGitHubRelease)
+		src = Source{Type: TypeGitHubRelease, Config: normalized}
+		creds = Credentials{GitHubRelease: &GitHubReleaseCredentials{Token: input.Token}}
+	}
+
+	remote, err := s.factory.Create(inspectCtx, src, creds)
+	if err != nil {
+		return InspectResult{OK: false, LatencyMS: s.Now().Sub(start).Milliseconds(), Error: err.Error()}, nil
+	}
+	defer func() { _ = remote.Close() }()
+	inspector, ok := remote.(ReleaseInspector)
+	if !ok {
+		return InspectResult{}, fmt.Errorf("%w: %q does not support inspect", ErrInvalid, src.Type)
+	}
+	inspection, err := inspector.Inspect(inspectCtx, InspectAssetDetailLimit)
+	if err != nil {
+		return InspectResult{OK: false, LatencyMS: s.Now().Sub(start).Milliseconds(), Error: err.Error()}, nil
+	}
+	return InspectResult{OK: true, LatencyMS: s.Now().Sub(start).Milliseconds(), Inspection: inspection}, nil
 }

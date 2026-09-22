@@ -161,7 +161,7 @@ func (r *remote) Stat(ctx context.Context, p string) (source.FileInfo, error) {
 	}
 	if dir == "" {
 		// root：验证仓库可达（一次请求，经 ETag 条件缓存）。
-		if err := r.client.verifyRepo(ctx); err != nil {
+		if _, err := r.client.verifyRepo(ctx); err != nil {
 			return source.FileInfo{}, fmt.Errorf("github: stat %s: %w", p, err)
 		}
 		return source.FileInfo{Path: "/", IsDir: true}, nil

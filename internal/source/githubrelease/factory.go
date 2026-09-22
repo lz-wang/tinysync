@@ -48,7 +48,7 @@ func (f *Factory) Create(ctx context.Context, s source.Source, credentials sourc
 		newClientAt = newClientAtDefault
 	}
 	c := newClientAt(defaultAPIBaseURL, token, owner, repo)
-	if err := c.verifyRepo(ctx); err != nil {
+	if _, err := c.verifyRepo(ctx); err != nil {
 		return nil, fmt.Errorf("verify github repository %s/%s: %w", owner, repo, err)
 	}
 	return &remote{client: c, cfg: cfg}, nil

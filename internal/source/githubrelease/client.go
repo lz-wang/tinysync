@@ -370,12 +370,19 @@ func (c *client) apiPath(suffix string) string {
 }
 
 // verifyRepo 验证仓库可访问（工厂创建阶段的权限预检）：GET
-// /repos/{owner}/{repo}。仓库不存在与无权限 GitHub 都返回 404（不
-// 泄露私有仓库存在性），经分类为 permanent 由上层透出。
-func (c *client) verifyRepo(ctx context.Context) error {
+// /repos/{owner}/{repo}，返回 GitHub 侧全名（owner/repo）。仓库不
+// 存在与无权限 GitHub 都返回 404（不泄露私有仓库存在性），经分类为
+// permanent 由上层透出。
+func (c *client) verifyRepo(ctx context.Context) (string, error) {
 	var repo struct {
 		FullName string `json:"full_name"`
 	}
-	_, err := c.getJSON(ctx, c.apiPath(""), &repo)
-	return err
+	if _, err := c.getJSON(ctx, c.apiPath(""), &repo); err != nil {
+		return "", err
+	}
+	if repo.FullName == "" {
+		// 防御异常响应：full_name 缺失时退回本地解析值。
+		return c.owner + "/" + c.repo, nil
+	}
+	return repo.FullName, nil
 }
