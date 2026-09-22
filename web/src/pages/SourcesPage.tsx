@@ -33,6 +33,7 @@ import {
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
     deleteSource,
+    type GitHubReleaseConfig,
     listSources,
     type S3Config,
     type SFTPConfig,
@@ -524,6 +525,19 @@ function locationSummary(source: SourceResponse): string {
         case 'sftp': {
             const cfg = config as SFTPConfig
             return `${cfg.host}:${cfg.port ?? 22}${cfg.remote_root}`
+        }
+        case 'github_release': {
+            const cfg = config as GitHubReleaseConfig
+            switch (cfg.release_policy) {
+                case 'tag':
+                    return `${cfg.repository} · ${cfg.tag ?? ''}`
+                case 'recent':
+                    return `${cfg.repository} · 最近 ${cfg.recent_count ?? 0} 个版本`
+                case 'all':
+                    return `${cfg.repository} · 全部版本`
+                default:
+                    return `${cfg.repository} · 最新稳定版`
+            }
         }
     }
 }

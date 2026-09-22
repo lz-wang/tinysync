@@ -21,6 +21,7 @@ import {
 import { useEffect, useState } from 'react'
 import {
     createSource,
+    type GitHubReleaseConfig,
     type S3Config,
     type SFTPConfig,
     type SFTPCredentials,
@@ -33,6 +34,8 @@ import {
     type WebDAVConfig,
 } from '../../api'
 import RemotePathPicker from '../files/RemotePathPicker'
+import GitHubReleaseFields from './GitHubReleaseFields'
+import SecretField from './SecretField'
 
 interface SourceDialogProps {
     open: boolean
@@ -49,6 +52,7 @@ type SecretKey =
     | 'sftp.password'
     | 'sftp.private_key'
     | 'sftp.passphrase'
+    | 'github.token'
 
 // SourceDialog 创建 / 编辑 Source。创建时选择协议类型并按类型动态
 // 表单；编辑时 Type readonly（协议不支持原地转换）。secret 绝不回填：
@@ -83,6 +87,14 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
         auth_method: 'password',
         host_key_fingerprint: '',
     })
+    const [github, setGithub] = useState<GitHubReleaseConfig>({
+        repository: '',
+        release_policy: 'latest',
+        tag: '',
+        recent_count: 0,
+        include_prereleases: false,
+        verify_sha256: 'if_available',
+    })
 
     // secret 输入与三态标记：dirty 表示实际编辑，cleared 表示显式清除。
     const [secrets, setSecrets] = useState<Record<SecretKey, string>>({
@@ -91,6 +103,7 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
         'sftp.password': '',
         'sftp.private_key': '',
         'sftp.passphrase': '',
+        'github.token': '',
     })
     const [secretsDirty, setSecretsDirty] = useState<Set<SecretKey>>(new Set())
     const [secretsCleared, setSecretsCleared] = useState<Set<SecretKey>>(new Set())
@@ -156,12 +169,35 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                       host_key_fingerprint: '',
                   },
         )
+        setGithub(
+            source?.type === 'github_release'
+                ? (() => {
+                      const cfg = source.config as GitHubReleaseConfig
+                      return {
+                          repository: cfg.repository ?? '',
+                          release_policy: cfg.release_policy ?? 'latest',
+                          tag: cfg.tag ?? '',
+                          recent_count: cfg.recent_count ?? 0,
+                          include_prereleases: cfg.include_prereleases ?? false,
+                          verify_sha256: cfg.verify_sha256 ?? 'if_available',
+                      }
+                  })()
+                : {
+                      repository: '',
+                      release_policy: 'latest',
+                      tag: '',
+                      recent_count: 0,
+                      include_prereleases: false,
+                      verify_sha256: 'if_available',
+                  },
+        )
         setSecrets({
             'webdav.password': '',
             's3.secret_key': '',
             'sftp.password': '',
             'sftp.private_key': '',
             'sftp.passphrase': '',
+            'github.token': '',
         })
         setSecretsDirty(new Set())
         setSecretsCleared(new Set())
@@ -203,6 +239,9 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
         if (type === 's3') {
             return { ...s3 }
         }
+        if (type === 'github_release') {
+            return { ...github }
+        }
         return { ...sftp }
     }
 
@@ -216,6 +255,12 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
         if (type === 's3') {
             if (secretsDirty.has('s3.secret_key')) {
                 return { secret_key: secrets['s3.secret_key'] }
+            }
+            return undefined
+        }
+        if (type === 'github_release') {
+            if (secretsDirty.has('github.token')) {
+                return { token: secrets['github.token'] }
             }
             return undefined
         }
@@ -297,6 +342,21 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                       s3.access_key.trim() !== '' &&
                       secrets['s3.secret_key'].trim() !== ''
         }
+        if (type === 'github_release') {
+            if (github.repository.trim() === '') {
+                return false
+            }
+            if (github.release_policy === 'tag' && (github.tag ?? '').trim() === '') {
+                return false
+            }
+            if (github.release_policy === 'recent') {
+                const count = github.recent_count ?? 0
+                if (!Number.isInteger(count) || count < 1 || count > 1000) {
+                    return false
+                }
+            }
+            return true
+        }
         return sftp.host.trim() !== '' && sftp.username.trim() !== ''
     }
 
@@ -353,6 +413,7 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                             <MenuItem value="webdav">WebDAV</MenuItem>
                             <MenuItem value="s3">S3</MenuItem>
                             <MenuItem value="sftp">SFTP</MenuItem>
+                            <MenuItem value="github_release">GitHub Release</MenuItem>
                         </Select>
                     </FormControl>
                     {source !== null && (
@@ -492,6 +553,20 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                                 />
                             </Box>
                         </>
+                    )}
+
+                    {type === 'github_release' && (
+                        <GitHubReleaseFields
+                            config={github}
+                            onChange={setGithub}
+                            token={secrets['github.token']}
+                            tokenDirty={secretsDirty.has('github.token')}
+                            tokenCleared={secretsCleared.has('github.token')}
+                            tokenChip={secretChip('github.token', 'Token')}
+                            onTokenChange={v => setSecret('github.token', v)}
+                            onTokenClear={() => clearSecret('github.token')}
+                            source={source}
+                        />
                     )}
 
                     {type === 'sftp' && (
@@ -692,59 +767,6 @@ function RootField({
     )
 }
 
-// SecretField 是带状态 Chip 与 Clear 按钮的 secret 输入：编辑时保持
-// 空白即保留现有值；有 chip 说明当前 Source 已配置该 secret。
-function SecretField({
-    label,
-    value,
-    dirty,
-    cleared,
-    chip,
-    onChange,
-    onClear,
-    multiline,
-}: {
-    label: string
-    value: string
-    dirty: boolean
-    cleared: boolean
-    chip: React.ReactNode
-    onChange: (value: string) => void
-    onClear: () => void
-    multiline?: boolean
-}) {
-    return (
-        <Box>
-            <TextField
-                label={label}
-                type={multiline ? undefined : 'password'}
-                value={value}
-                onChange={e => onChange(e.target.value)}
-                fullWidth
-                multiline={multiline}
-                rows={multiline ? 4 : undefined}
-                placeholder={!dirty ? '留空以保留当前值' : undefined}
-                sx={multiline ? { '& textarea': { fontFamily: 'monospace' } } : undefined}
-            />
-            <Box
-                sx={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    mt: 1,
-                }}
-            >
-                {chip ?? <Box />}
-                {dirty && !cleared && (
-                    <Button size="small" onClick={onClear}>
-                        清除
-                    </Button>
-                )}
-            </Box>
-        </Box>
-    )
-}
-
 // isSecretConfigured 从响应 credential_state 读取 secret 是否已设置。
 function isSecretConfigured(source: SourceResponse, key: SecretKey): boolean {
     const state = source.credential_state
@@ -759,5 +781,7 @@ function isSecretConfigured(source: SourceResponse, key: SecretKey): boolean {
             return state.sftp?.private_key_set ?? false
         case 'sftp.passphrase':
             return state.sftp?.private_key_passphrase_set ?? false
+        case 'github.token':
+            return state.github_release?.token_set ?? false
     }
 }

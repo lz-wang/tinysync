@@ -24,7 +24,7 @@ export interface VersionResponse {
 }
 
 // SourceType 是 Source 支持的协议类型；创建后不可变。
-export type SourceType = 'webdav' | 's3' | 'sftp'
+export type SourceType = 'webdav' | 's3' | 'sftp' | 'github_release'
 
 // WebDAVConfig 是 WebDAV 的非敏感配置。
 export interface WebDAVConfig {
@@ -56,8 +56,26 @@ export interface SFTPConfig {
     host_key_fingerprint: string
 }
 
+// GitHubReleasePolicy 是 GitHub Release 的版本选择策略。
+export type GitHubReleasePolicy = 'latest' | 'tag' | 'recent' | 'all'
+
+// GitHubSHA256Mode 是 Asset 的 SHA-256 校验策略：if_available 在
+// GitHub 提供 digest 时强制校验（默认），required 要求全部 Asset
+// 均带有效 digest。
+export type GitHubSHA256Mode = 'if_available' | 'required'
+
+// GitHubReleaseConfig 是 GitHub Release 的非敏感配置。
+export interface GitHubReleaseConfig {
+    repository: string
+    release_policy: GitHubReleasePolicy
+    tag?: string
+    recent_count?: number
+    include_prereleases?: boolean
+    verify_sha256: GitHubSHA256Mode
+}
+
 // SourceConfig 是按 type 判别的协议配置（请求与响应均为扁平单选对象）。
-export type SourceConfig = WebDAVConfig | S3Config | SFTPConfig
+export type SourceConfig = WebDAVConfig | S3Config | SFTPConfig | GitHubReleaseConfig
 
 // CredentialState 回显各 secret 是否设置；任何 secret 不回显明文。
 export interface CredentialState {
@@ -68,6 +86,7 @@ export interface CredentialState {
         private_key_set: boolean
         private_key_passphrase_set: boolean
     }
+    github_release?: { token_set: boolean }
 }
 
 // SourceResponse 是 Source 的 API 表示；绝不包含 secret 明文，
@@ -112,8 +131,16 @@ export interface SFTPCredentials {
     private_key_passphrase?: string
 }
 
+export interface GitHubReleaseCredentials {
+    token?: string
+}
+
 // SourceCredentials 按 type 单选的 secret 组。
-export type SourceCredentials = WebDAVCredentials | S3Credentials | SFTPCredentials
+export type SourceCredentials =
+    | WebDAVCredentials
+    | S3Credentials
+    | SFTPCredentials
+    | GitHubReleaseCredentials
 
 // CreateSourceInput 对应 POST /api/v1/sources 请求体。
 export interface CreateSourceInput {
@@ -265,6 +292,47 @@ export async function deleteSource(id: string): Promise<void> {
 
 export function testSource(id: string): Promise<TestSourceResponse> {
     return requestJSON<TestSourceResponse>('POST', `/api/v1/sources/${id}/test`)
+}
+
+// InspectSourceInput 对应 POST /api/v1/sources/inspect：source_id
+// 形态预览已保存 Source（服务端读取已存凭据），config + credentials
+// 形态直接使用表单值（不持久化）。两种形态互斥。
+export interface InspectSourceInput {
+    source_id?: string
+    type?: SourceType
+    config?: SourceConfig
+    credentials?: SourceCredentials
+}
+
+// InspectedAsset 是预览结果的单个 Asset 概览。
+export interface InspectedAsset {
+    name: string
+    size: number
+    digest_available: boolean
+}
+
+// InspectedRelease 是预览结果的版本概览。
+export interface InspectedRelease {
+    tag: string
+    name?: string
+    prerelease: boolean
+    published_at: string
+    assets?: InspectedAsset[]
+}
+
+// InspectSourceResponse 对应 POST /api/v1/sources/inspect：
+// 发现失败也是成功完成的预览操作，以 ok=false 表达。
+export interface InspectSourceResponse {
+    ok: boolean
+    latency_ms: number
+    error?: string
+    repository?: string
+    releases?: InspectedRelease[]
+}
+
+// inspectSource 创建前测试并预览 GitHub Release 发现结果。
+export function inspectSource(input: InspectSourceInput): Promise<InspectSourceResponse> {
+    return requestJSON<InspectSourceResponse>('POST', '/api/v1/sources/inspect', input)
 }
 
 // JobMode 是同步模式：Copy 只增不改删本地既有文件；
