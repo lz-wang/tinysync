@@ -5,16 +5,20 @@
 TinySync 是一个面向 HomeLab 的文件同步服务：单一 Go 二进制，内嵌 React Web UI，
 通过 REST API 管理同步源（Sources）与同步任务（Jobs）。
 
-> 当前开发版提供：持久化的多协议 Source 管理（WebDAV / S3 / SFTP，
-> 创建、编辑、删除与连接测试），以及远端 → 本地单向同步 Job——
-> Copy / Mirror 模式、include / exclude 过滤、原子下载与本地文件
-> 归属保护（Mirror 只删除本 Job 管理的文件）。三种协议共用同一个
-> 同步引擎。Job 支持自动调度（once / interval / cron，重叠自动
+> 当前开发版提供：持久化的多协议 Source 管理（WebDAV / S3 / SFTP /
+> GitHub Release，创建、编辑、删除与连接测试），以及远端 → 本地单向
+> 同步 Job——Copy / Mirror 模式、include / exclude 过滤、原子下载
+> 与本地文件归属保护（Mirror 只删除本 Job 管理的文件）。四种协议
+> 共用同一个同步引擎。Job 支持自动调度（once / interval / cron，重叠自动
 > 跳过）、受控并发（`--max-concurrent-jobs` /
 > `--max-concurrent-transfers`）与持久化运行历史（每轮运行与
 > 文件级变更明细经 Web UI 与 REST 可查，重启不丢）。文件访问与
 > 共享：远端与本地文件浏览、文件下载与把本地文件或目录（含任务
-> 本地根）显式共享为受控 HTTP URL 与公开浏览页。
+> 本地根）显式共享为受控 HTTP URL 与公开浏览页。GitHub Release
+> Source 把一个仓库的 Releases 转换为版本目录树（latest / 指定
+> Tag / 最近 N 个 / 全部四种选择策略，完整 Link 分页、ETag 条件
+> 请求缓存、302 重定向剥离 Token、Asset 摘要可用的 SHA-256 流式
+> 校验）。
 >
 > **认证**：REST API 与 Web UI 全面 default-deny——除 health /
 > version / 登录与带唯一 slug 的 `/shared/<slug>` 公开共享外，所有端点都需要认证。
@@ -295,11 +299,42 @@ curl -X POST http://127.0.0.1:9466/api/v1/sources \
   }'
 ```
 
+GitHub Release（把一个仓库的 Releases 转换为版本目录树；`repository`
+接受 owner/repo 或完整 GitHub 仓库 URL；Token 可选，公开仓库匿名）：
+
+```bash
+curl -X POST http://127.0.0.1:9466/api/v1/sources \
+  -H "Authorization: Bearer $TINYSYNC_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "gitea-releases",
+    "type": "github_release",
+    "config": {
+      "repository": "gitea/gitea",
+      "release_policy": "recent",
+      "recent_count": 3,
+      "include_prereleases": false,
+      "verify_sha256": "if_available"
+    },
+    "credentials": {"token": "..."}
+  }'
+```
+
+版本目录名为 `encode(tag)__<release_id>`（如 `/v1.2.0__123456789/`，
+tag 中 `/` 等字符 percent-encode），Job 的远端根目录在动态版本策略
+下固定为 `/`。`release_policy` 支持 `latest` / `tag` / `recent` /
+`all`；`verify_sha256` 支持 `if_available`（默认，GitHub 提供 digest
+时强制校验）与 `required`（全部 Asset 必须带有效摘要）。创建前可用
+`POST /api/v1/sources/inspect` 以表单配置（或已保存 Source 的 ID）
+预览版本发现结果，不持久化任何配置。
+
 被 Sync Job 引用的 Source 拒绝修改 remote identity（WebDAV 的
 endpoint + username、S3 的 endpoint / region / bucket / prefix /
 path-style、SFTP 的 host / port / username / remote_root / host key
-fingerprint），防止 Mirror 把既有本地文件误判为远端消失而删除；
-secret 轮换始终允许。更换远端的正确路径是新建 Source 后切换 Job 的
+fingerprint、GitHub Release 的 repository / release_policy / tag /
+recent_count / include_prereleases），防止 Mirror 把既有本地文件误判
+为远端消失而删除；secret 轮换与 GitHub Release 的 verify_sha256
+调整始终允许。更换远端的正确路径是新建 Source 后切换 Job 的
 source_id。
 
 ## Files：文件浏览与共享

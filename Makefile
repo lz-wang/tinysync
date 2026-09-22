@@ -46,6 +46,7 @@ BENCH_PACKAGES := \
 	./internal/source/webdav/ \
 	./internal/source/sftp/ \
 	./internal/source/s3/ \
+	./internal/source/githubrelease/ \
 	./internal/syncjob/ \
 	./internal/syncjob/sqlite/
 
@@ -211,10 +212,12 @@ test:
 	@echo "[tinysync] test Go"
 	@$(GOENV) $(GO) test -timeout 30s ./...
 
-## Run protocol integration tests against a real S3 service.
-## Usage: make integration TINYSYNC_IT_S3_ENDPOINT=http://localhost:9000 \
+## Run protocol integration tests against a real S3 service / real
+## GitHub. Usage: make integration TINYSYNC_IT_S3_ENDPOINT=http://localhost:9000 \
 ##          TINYSYNC_IT_S3_ACCESS_KEY=... TINYSYNC_IT_S3_SECRET_KEY=...
-## 未设置 ENDPOINT 时相关测试自动跳过（不影响退出码）。
+## GitHub Release: make integration TINYSYNC_IT_GITHUB_REPO=owner/repo \
+##          [TINYSYNC_IT_GITHUB_TOKEN=...]
+## 未设置 ENDPOINT / REPO 时相关测试自动跳过（不影响退出码）。
 integration:
 	@echo "[tinysync] protocol integration"
 	@$(GOENV) \
@@ -225,6 +228,8 @@ integration:
 		TINYSYNC_IT_S3_BUCKET="$(TINYSYNC_IT_S3_BUCKET)" \
 		TINYSYNC_IT_S3_PREFIX="$(TINYSYNC_IT_S3_PREFIX)" \
 		TINYSYNC_IT_S3_PATH_STYLE="$(TINYSYNC_IT_S3_PATH_STYLE)" \
+		TINYSYNC_IT_GITHUB_REPO="$(TINYSYNC_IT_GITHUB_REPO)" \
+		TINYSYNC_IT_GITHUB_TOKEN="$(TINYSYNC_IT_GITHUB_TOKEN)" \
 		$(GO) test -timeout 300s -v -run 'TestIntegration' ./internal/e2e/
 
 ## Generate backend coverage files for Codecov and local inspection.

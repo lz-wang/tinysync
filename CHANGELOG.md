@@ -21,6 +21,13 @@ GitHub Release 摘要一致。
 
 ## [Unreleased]
 
+### 新增
+
+- 新增 GitHub Release 同步源：把一个 GitHub 仓库的 Releases 转换为版本目录树，交给既有同步引擎执行扫描、过滤、下载与校验。支持四种版本选择策略——最新稳定版（`latest`）、指定 Tag（`tag`）、最近 N 个版本（`recent`，按发布时间完整枚举排序）与全部版本（`all`）；预发布版本默认排除、草稿一律不参与，枚举规模超过 1000 个版本时整轮失败而非截断。
+- GitHub Release 的版本目录按 `版本名__Release ID` 组织（tag 中的特殊字符 percent-encode），同一 Release 下同名制品重新上传后自动识别并重新下载；GitHub 提供内容摘要（SHA-256）时在下载过程中流式校验，校验失败不覆盖本地文件。
+- GitHub Release 支持创建前「测试并预览」：以表单配置（或已保存同步源）预览版本发现结果——仓库名称、版本、发布时间、制品数量与大小、摘要可用性，不下载任何制品，不持久化配置。
+- 公开仓库可匿名访问 GitHub Release；私有仓库使用具备读取权限的 Personal Access Token。访问 GitHub API 的元数据请求支持 ETag 条件请求缓存（304 不计入主速率限制），下载重定向仅允许 GitHub 官方 CDN 且剥离 Authorization 头。
+
 ## [0.10.1] - 2026-09-22
 
 ### 修复

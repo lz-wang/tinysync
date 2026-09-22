@@ -21,6 +21,15 @@ func NewFactory() *Factory {
 	return &Factory{}
 }
 
+// NewFactoryWithAPIBase 构造指向指定 API base 的 factory：仅供 e2e
+// 测试注入进程内假 GitHub（与 S3 的 API 注入口同构）；生产统一使用
+// NewFactory（固定 api.github.com，契约见设计文档 §7）。
+func NewFactoryWithAPIBase(baseURL string) *Factory {
+	return &Factory{newClientAt: func(_, token, owner, repo string) *client {
+		return newClientAtDefault(baseURL, token, owner, repo)
+	}}
+}
+
 // Type 实现 source.RemoteFactory：本 factory 服务 github_release 类型。
 func (f *Factory) Type() source.Type {
 	return source.TypeGitHubRelease
