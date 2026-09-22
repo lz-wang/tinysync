@@ -214,8 +214,8 @@ func ValidateGitHubRepository(raw string) error {
 	if trimmed == "" {
 		return fmt.Errorf("%w: github_release repository is required", ErrInvalid)
 	}
-	owner, repo, ok := splitGitHubRepository(trimmed)
-	if !ok {
+	owner, repo, err := ParseGitHubRepository(trimmed)
+	if err != nil {
 		return fmt.Errorf("%w: github_release repository %q must be owner/repo or a github.com repository URL", ErrInvalid, raw)
 	}
 	for _, seg := range [2]string{owner, repo} {
@@ -226,32 +226,37 @@ func ValidateGitHubRepository(raw string) error {
 	return nil
 }
 
-// splitGitHubRepository 从 owner/repo 或 github.com 仓库 URL 中提取
-// owner 与 repo 两段；repo 去掉 .git 后缀。返回 ok=false 表示形态
-// 无法识别。
-func splitGitHubRepository(raw string) (owner, repo string, ok bool) {
-	if !strings.Contains(raw, "://") {
-		owner, repo, found := strings.Cut(raw, "/")
-		if !found || strings.Contains(repo, "/") {
-			return "", "", false
-		}
-		return owner, strings.TrimSuffix(repo, ".git"), true
+// ParseGitHubRepository 从 owner/repo 或 github.com 仓库 URL 中提取
+// owner 与 repo 两段；repo 去掉 .git 后缀。形态无法识别时返回
+// ErrInvalid。导出供 githubrelease factory 在客户端构造时复用同一
+// 解析规则，避免校验与运行时各持一份。
+func ParseGitHubRepository(raw string) (owner, repo string, err error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", "", fmt.Errorf("%w: github_release repository is required", ErrInvalid)
 	}
-	u, err := url.Parse(raw)
+	if !strings.Contains(trimmed, "://") {
+		o, r, found := strings.Cut(trimmed, "/")
+		if !found || strings.Contains(r, "/") {
+			return "", "", fmt.Errorf("%w: github_release repository %q must be owner/repo or a github.com repository URL", ErrInvalid, raw)
+		}
+		return o, strings.TrimSuffix(r, ".git"), nil
+	}
+	u, err := url.Parse(trimmed)
 	if err != nil {
-		return "", "", false
+		return "", "", fmt.Errorf("%w: parse github_release repository %q: %v", ErrInvalid, raw, err)
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return "", "", false
+		return "", "", fmt.Errorf("%w: github_release repository URL %q must be http(s)", ErrInvalid, raw)
 	}
 	if u.Host != "github.com" && u.Host != "www.github.com" {
-		return "", "", false
+		return "", "", fmt.Errorf("%w: github_release repository URL %q must point at github.com", ErrInvalid, raw)
 	}
 	segs := strings.Split(strings.Trim(u.Path, "/"), "/")
 	if len(segs) < 2 || segs[0] == "" || segs[1] == "" {
-		return "", "", false
+		return "", "", fmt.Errorf("%w: github_release repository URL %q has no owner/repo path", ErrInvalid, raw)
 	}
-	return segs[0], strings.TrimSuffix(segs[1], ".git"), true
+	return segs[0], strings.TrimSuffix(segs[1], ".git"), nil
 }
 
 // validGitHubRepoSegment 判断 owner / repo 段是否只含 GitHub 允许的
