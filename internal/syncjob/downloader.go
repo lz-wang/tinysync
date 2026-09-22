@@ -44,10 +44,12 @@ type fileHooks struct {
 }
 
 // Downloader 把远端文件原子下载到 LocalRoot 之下的目标路径：
-// remote.Open → 同目录临时文件 → io.Copy → 大小校验 → Sync/Close →
-// rename 替换目标。任何失败都清理临时文件且不触碰已有目标；
-// 仅 source.IsRetryable 的瞬时错误按 maxAttempts 重试，context 取消
-// 与确定性失败立即放弃。
+// remote.Open → 同目录临时文件 → io.Copy → 大小与 SHA-256 校验 →
+// Sync/Close → rename 替换目标。expected 指纹携带协议摘要
+// （Fingerprint.Checksum，如 GitHub 的 "sha256:<hex>"）时流式计算
+// 并严格比较，任何校验失败都不原子替换、不触碰已有目标；任何失败
+// 都清理临时文件。仅 source.IsRetryable 的瞬时错误按 maxAttempts
+// 重试，context 取消与确定性失败立即放弃。
 type Downloader struct {
 	remote      source.Remote
 	maxAttempts int
@@ -196,14 +198,19 @@ func (d *Downloader) renameFile(old, new string) error {
 	return os.Rename(old, new)
 }
 
-// copyAndVerify 把远端内容写入临时文件并校验字节数；取消传播依赖
-// 远端 reader（response body 绑定 request context）。每一步失败都
-// 由调用方负责清理临时文件。listener 非 nil 时走显式拷贝循环回报
-// 进度——io.Copy 的 ReaderFrom / WriterTo 快速路径会绕过包装，
-// 计数路径不能依赖 writer 包装。
+// copyAndVerify 把远端内容写入临时文件并校验字节数与（协议提供时的）
+// SHA-256 摘要；取消传播依赖远端 reader（response body 绑定 request
+// context）。每一步失败都由调用方负责清理临时文件。listener 非 nil
+// 时走显式拷贝循环回报进度——io.Copy 的 ReaderFrom / WriterTo 快速
+// 路径会绕过包装，计数路径不能依赖 writer 包装。摘要校验器以
+// MultiWriter 挂在最终写入目标上：无论 listeners / hooks 如何包装，
+// 落盘字节与摘要喂入恒为同一份数据。
 func (d *Downloader) copyAndVerify(tempPath string, rc io.Reader, expected source.Fingerprint, listener TransferListener) error {
+	verifier, err := newChecksumVerifier(expected.Checksum)
+	if err != nil {
+		return source.MarkPermanent(fmt.Errorf("checksum %s for %s: %w", expected.Checksum, tempPath, err))
+	}
 	var out *os.File
-	var err error
 	if d.hooks != nil && d.hooks.createTemp != nil {
 		out, err = d.hooks.createTemp(tempPath)
 	} else {
@@ -215,6 +222,11 @@ func (d *Downloader) copyAndVerify(tempPath string, rc io.Reader, expected sourc
 	var w io.Writer = out
 	if d.hooks != nil && d.hooks.wrapWriter != nil {
 		w = d.hooks.wrapWriter(out)
+	}
+	// 摘要喂入挂最终 writer 链末端：无论 listener / hooks 如何包装，
+	// 落盘字节与摘要计算恒为同一份数据。
+	if verifier != nil {
+		w = io.MultiWriter(w, verifier.hasher)
 	}
 	var written int64
 	var copyErr error
@@ -242,6 +254,11 @@ func (d *Downloader) copyAndVerify(tempPath string, rc io.Reader, expected sourc
 	// 重新传输收敛。
 	if written != expected.Size {
 		return source.MarkPermanent(fmt.Errorf("size mismatch for %s: got %d bytes, want %d", tempPath, written, expected.Size))
+	}
+	// 摘要校验在字节数校验之后：任何一项不匹配都属确定性失败，
+	// 不原子替换、不触碰已有目标文件（契约见设计文档 §5）。
+	if err := verifier.verify(tempPath); err != nil {
+		return source.MarkPermanent(err)
 	}
 	return nil
 }
