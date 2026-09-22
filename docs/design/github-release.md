@@ -107,7 +107,7 @@ GitHub Asset 字段 → TinySync `Fingerprint` 的映射（冻结）：
 ## 9. REST / MCP 表面
 
 - 现有 Source CRUD、`POST /sources/:id/test`、Job / Run / 文件浏览接口全部兼容，`github_release` 作为第四类型自然接入。
-- 新增 `POST /api/v1/sources/inspect`（admin scope，不持久化）：请求携带完整表单配置 + 临时 Token，或 `source_id`（服务端读取已存凭据）；响应为连接状态、仓库名称、可见 Release 概览（版本、发布时间、prerelease 标记、Asset 数量与总大小、digest 可用性）。预览数据供「测试并预览」，不下载制品。
+- 新增 `POST /api/v1/sources/inspect`（admin scope，不持久化）：请求按字段组合解释——仅 `source_id`（已存配置 + 已存凭据）；`source_id` + 提案 `config`（编辑表单微调后预览，服务端沿用已存凭据，无需重新索取 Token）；再传 `credentials.token` 则临时覆盖已存 Token；仅 `config` + 临时 Token（创建表单，匿名或提案 Token）。响应为连接状态、仓库名称、可见 Release 概览（版本、发布时间、prerelease 标记、Asset 数量与总大小、digest 可用性）。预览数据供「测试并预览」，不下载制品。
 - MCP `list_sources` DTO 按 `github_release` 分发同一份非敏感配置，不泄露 Token。
 
 ## 10. 验收清单
