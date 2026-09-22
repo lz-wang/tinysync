@@ -294,9 +294,11 @@ export function testSource(id: string): Promise<TestSourceResponse> {
     return requestJSON<TestSourceResponse>('POST', `/api/v1/sources/${id}/test`)
 }
 
-// InspectSourceInput 对应 POST /api/v1/sources/inspect：source_id
-// 形态预览已保存 Source（服务端读取已存凭据），config + credentials
-// 形态直接使用表单值（不持久化）。两种形态互斥。
+// InspectSourceInput 对应 POST /api/v1/sources/inspect，语义按字段
+// 组合解释（均不持久化）：source_id only 用已存配置 + 已存凭据；
+// source_id + config 用提案配置 + 已存凭据（编辑态微调后预览，无需
+// 重新索取 Token）；credentials.token 存在时临时覆盖已存 Token；
+// config only（type=github_release）为创建态表单直接预览。
 export interface InspectSourceInput {
     source_id?: string
     type?: SourceType

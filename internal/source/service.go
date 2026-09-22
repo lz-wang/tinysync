@@ -177,9 +177,14 @@ func (s *Service) TestConnection(ctx context.Context, id string) (TestResult, er
 	return TestResult{OK: true, LatencyMS: latency}, nil
 }
 
-// InspectInput 是预览请求的输入：SourceID 非 nil 时预览已保存 Source
-// （配置与凭据都取已保存值，供编辑表单「测试并预览」）；否则用
-// GitHubConfig 与 Token 构造临时客户端（创建表单，不持久化）。
+// InspectInput 是预览请求的输入，语义按字段组合解释（不持久化任何
+// 值）：
+//   - 仅 SourceID：预览已保存 Source（已存配置 + 已存凭据）；
+//   - SourceID + GitHubConfig：提案配置 + 已存凭据（编辑表单微调后
+//     预览，无需重新索取 Token）；
+//   - SourceID + GitHubConfig + Token：提案配置 + 提案 Token；
+//   - 仅 GitHubConfig（+ 可选 Token）：提案配置 + 匿名/提案 Token
+//     （创建表单）。
 type InspectInput struct {
 	SourceID     string
 	GitHubConfig *GitHubReleaseConfig
@@ -215,6 +220,24 @@ func (s *Service) Inspect(ctx context.Context, input InspectInput) (InspectResul
 		creds, err = s.repo.GetCredentials(ctx, input.SourceID)
 		if err != nil {
 			return InspectResult{}, err
+		}
+		// 编辑态预览：提案配置 / 提案 Token 只作用于本次预览的临时
+		// 实例（src / creds 是仓库返回值的拷贝，不写回持久层）；
+		// 未提供的部分沿用已存值。覆盖项仅对 github_release 有意义，
+		// 其余类型拒绝以免静默忽略造成「以为用新配置预览了」的错位。
+		if input.GitHubConfig != nil || input.Token != "" {
+			if src.Type != TypeGitHubRelease {
+				return InspectResult{}, fmt.Errorf("%w: inspect overrides require github_release source, got %q", ErrInvalid, src.Type)
+			}
+		}
+		if input.GitHubConfig != nil {
+			if err := ValidateConfig(TypeGitHubRelease, Config{GitHubRelease: input.GitHubConfig}); err != nil {
+				return InspectResult{}, err
+			}
+			src.Config = Config{GitHubRelease: input.GitHubConfig}.Normalized(TypeGitHubRelease)
+		}
+		if input.Token != "" {
+			creds.GitHubRelease = &GitHubReleaseCredentials{Token: input.Token}
 		}
 	} else {
 		if input.GitHubConfig == nil {

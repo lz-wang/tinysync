@@ -106,15 +106,17 @@ export default function GitHubReleaseFields({
         setPreviewing(true)
         setPreviewError(null)
         try {
-            // 编辑态且表单未改动时用 source_id 形态（服务端读取已存
-            // 凭据）；否则直接提交表单值（Token 留空即匿名预览）。
-            const unchanged =
-                source !== null &&
-                !tokenDirty &&
-                JSON.stringify(config) === JSON.stringify(source.config)
+            // 编辑态始终携带 source_id：服务端沿用该 Source 已存凭据
+            // 预览当前未保存的表单配置（Token 未改动时无需重新索取）；
+            // Token 有改动时以输入值临时覆盖。创建态直接提交表单值
+            //（Token 留空即匿名预览）。
             const result = await inspectSource(
-                source !== null && unchanged
-                    ? { source_id: source.id }
+                source !== null
+                    ? {
+                          source_id: source.id,
+                          config,
+                          credentials: tokenDirty ? { token } : undefined,
+                      }
                     : {
                           type: 'github_release',
                           config,

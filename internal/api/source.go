@@ -502,9 +502,13 @@ func (h *sourceHandlers) test(c *gin.Context) {
 	})
 }
 
-// inspectRequest 是创建前预览的请求体：source_id 形态预览已保存
-// Source（服务端读取已存凭据，前端无需重新索取 Token）；config +
-// credentials 形态直接使用表单值（不持久化）。两种形态互斥。
+// inspectRequest 是创建前预览的请求体，语义按字段组合解释（均不持
+// 久化）：
+//   - source_id only → 已存配置 + 已存凭据；
+//   - source_id + config → 提案配置 + 已存凭据（编辑表单微调后预览，
+//     服务端沿用已存 Token，前端无需重新索取）；
+//   - source_id + config + credentials.token → 提案配置 + 提案 Token；
+//   - config only（type=github_release）→ 提案配置 + 匿名。
 type inspectRequest struct {
 	SourceID    string          `json:"source_id,omitempty"`
 	Type        string          `json:"type,omitempty"`
@@ -538,8 +542,10 @@ type inspectResultDTO struct {
 	Releases   []inspectedReleaseDTO `json:"releases,omitempty"`
 }
 
-// inspect POST /api/v1/sources/inspect。创建前测试并预览：不持久化
-// 任何配置；仅 github_release 类型支持。
+// inspect POST /api/v1/sources/inspect。创建前/编辑态测试并预览：不
+// 持久化任何值；仅 github_release 类型支持。config / credentials 与
+// source_id 可组合：与 source_id 同传时作为提案覆盖项，服务端沿用
+// 已存凭据（或以 credentials.token 临时覆盖）。
 func (h *sourceHandlers) inspect(c *gin.Context) {
 	var req inspectRequest
 	if !strictBind(c, &req) {
@@ -555,6 +561,8 @@ func (h *sourceHandlers) inspect(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "inspect config is required"})
 			return
 		}
+	}
+	if req.Config != nil {
 		config, err := decodeConfigPayload(source.TypeGitHubRelease, req.Config)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -565,15 +573,15 @@ func (h *sourceHandlers) inspect(c *gin.Context) {
 			return
 		}
 		input.GitHubConfig = config.GitHubRelease
-		if req.Credentials != nil {
-			creds, err := decodeCredentialsPayload(source.TypeGitHubRelease, req.Credentials)
-			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-				return
-			}
-			if creds.GitHubRelease != nil {
-				input.Token = creds.GitHubRelease.Token
-			}
+	}
+	if req.Credentials != nil {
+		creds, err := decodeCredentialsPayload(source.TypeGitHubRelease, req.Credentials)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if creds.GitHubRelease != nil {
+			input.Token = creds.GitHubRelease.Token
 		}
 	}
 	result, err := h.svc.Inspect(c.Request.Context(), input)
