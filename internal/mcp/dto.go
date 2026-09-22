@@ -41,6 +41,8 @@ func toSourceSummary(s source.Source) (sourceSummary, error) {
 		config = s.Config.S3
 	case source.TypeSFTP:
 		config = s.Config.SFTP
+	case source.TypeGitHubRelease:
+		config = s.Config.GitHubRelease
 	default:
 		return sourceSummary{}, fmt.Errorf("unsupported source type %q", s.Type)
 	}

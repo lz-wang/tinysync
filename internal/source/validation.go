@@ -20,7 +20,7 @@ const sftpDefaultPort = 22
 // ValidateType 校验协议类型。
 func ValidateType(t Type) error {
 	switch t {
-	case TypeWebDAV, TypeS3, TypeSFTP:
+	case TypeWebDAV, TypeS3, TypeSFTP, TypeGitHubRelease:
 		return nil
 	case "":
 		return fmt.Errorf("%w: type is required", ErrInvalid)
@@ -99,6 +99,14 @@ func ValidateConfig(t Type, c Config) error {
 			return fmt.Errorf("%w: config must only contain sftp fields for type sftp", ErrInvalid)
 		}
 		return validateSFTPConfig(*c.SFTP)
+	case TypeGitHubRelease:
+		if c.GitHubRelease == nil {
+			return fmt.Errorf("%w: github_release config is required", ErrInvalid)
+		}
+		if c.WebDAV != nil || c.S3 != nil || c.SFTP != nil {
+			return fmt.Errorf("%w: config must only contain github_release fields for type github_release", ErrInvalid)
+		}
+		return validateGitHubReleaseConfig(*c.GitHubRelease)
 	case "":
 		return fmt.Errorf("%w: type is required", ErrInvalid)
 	default:
@@ -169,6 +177,100 @@ func validateSFTPConfig(c SFTPConfig) error {
 	return validateHostKeyFingerprint(c.HostKeyFingerprint)
 }
 
+// validateGitHubReleaseConfig 校验 GitHub Release 配置。只覆盖归一化
+// （Normalized）无法修复的约束：repository 格式、policy 取值、tag /
+// recent 模式的必填项与 verify_sha256 取值；非对应策略下的 Tag /
+// RecentCount 由 Normalized 归一为零值，此处不拒绝（校验须同时接受
+// 归一化前后的形态，Service.Update 先校验后归一）。
+func validateGitHubReleaseConfig(c GitHubReleaseConfig) error {
+	if err := ValidateGitHubRepository(c.Repository); err != nil {
+		return err
+	}
+	switch c.ReleasePolicy {
+	case "", ReleaseLatest, ReleaseTag, ReleaseRecent, ReleaseAll:
+	default:
+		return fmt.Errorf("%w: unsupported github_release release_policy %q", ErrInvalid, c.ReleasePolicy)
+	}
+	if c.ReleasePolicy == ReleaseTag && strings.TrimSpace(c.Tag) == "" {
+		return fmt.Errorf("%w: github_release tag is required for release_policy=tag", ErrInvalid)
+	}
+	if c.ReleasePolicy == ReleaseRecent && (c.RecentCount < 1 || c.RecentCount > MaxGitHubRecentCount) {
+		return fmt.Errorf("%w: github_release recent_count must be between 1 and %d", ErrInvalid, MaxGitHubRecentCount)
+	}
+	switch c.VerifySHA256 {
+	case "", SHA256IfAvailable, SHA256Required:
+	default:
+		return fmt.Errorf("%w: unsupported github_release verify_sha256 %q", ErrInvalid, c.VerifySHA256)
+	}
+	return nil
+}
+
+// ValidateGitHubRepository 校验 repository 字段：接受 owner/repo 或
+// github.com / www.github.com 的仓库 URL（可带 .git 后缀与深层 path，
+// 解析由 adapter 承担）。owner 与 repo 段限定 GitHub 允许的字符集，
+// 保证其可直接拼入 API path，不做运行时 escape。
+func ValidateGitHubRepository(raw string) error {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return fmt.Errorf("%w: github_release repository is required", ErrInvalid)
+	}
+	owner, repo, ok := splitGitHubRepository(trimmed)
+	if !ok {
+		return fmt.Errorf("%w: github_release repository %q must be owner/repo or a github.com repository URL", ErrInvalid, raw)
+	}
+	for _, seg := range [2]string{owner, repo} {
+		if seg == "" || !validGitHubRepoSegment(seg) {
+			return fmt.Errorf("%w: github_release repository %q has invalid segment %q", ErrInvalid, raw, seg)
+		}
+	}
+	return nil
+}
+
+// splitGitHubRepository 从 owner/repo 或 github.com 仓库 URL 中提取
+// owner 与 repo 两段；repo 去掉 .git 后缀。返回 ok=false 表示形态
+// 无法识别。
+func splitGitHubRepository(raw string) (owner, repo string, ok bool) {
+	if !strings.Contains(raw, "://") {
+		owner, repo, found := strings.Cut(raw, "/")
+		if !found || strings.Contains(repo, "/") {
+			return "", "", false
+		}
+		return owner, strings.TrimSuffix(repo, ".git"), true
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", "", false
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", "", false
+	}
+	if u.Host != "github.com" && u.Host != "www.github.com" {
+		return "", "", false
+	}
+	segs := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(segs) < 2 || segs[0] == "" || segs[1] == "" {
+		return "", "", false
+	}
+	return segs[0], strings.TrimSuffix(segs[1], ".git"), true
+}
+
+// validGitHubRepoSegment 判断 owner / repo 段是否只含 GitHub 允许的
+// 字符（字母、数字、.、_、-），并拒绝 . / .. 等点路径分量。
+func validGitHubRepoSegment(seg string) bool {
+	if seg == "." || seg == ".." {
+		return false
+	}
+	for _, r := range seg {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.' || r == '_' || r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // validateHostKeyFingerprint 校验 SHA256:<unpadded base64> 形式的
 // host key fingerprint（ssh.FingerprintSHA256 的输出格式）。
 func validateHostKeyFingerprint(fp string) error {
@@ -226,6 +328,11 @@ func ValidateCredentials(t Type, c Config, creds Credentials) error {
 		default:
 			return fmt.Errorf("%w: unsupported sftp auth_method %q", ErrInvalid, c.SFTP.AuthMethod)
 		}
+	case TypeGitHubRelease:
+		if creds.WebDAV != nil || creds.S3 != nil || creds.SFTP != nil {
+			return fmt.Errorf("%w: credentials must only contain github_release fields for type github_release", ErrInvalid)
+		}
+		// Token 可为空（公开仓库匿名访问），无必填约束。
 	case "":
 		return fmt.Errorf("%w: type is required", ErrInvalid)
 	default:
@@ -257,6 +364,12 @@ func CredentialStateOf(t Type, creds Credentials) CredentialState {
 			st.PrivateKeyPassphraseSet = creds.SFTP.PrivateKeyPassphrase != ""
 		}
 		return CredentialState{SFTP: &st}
+	case TypeGitHubRelease:
+		set := false
+		if creds.GitHubRelease != nil {
+			set = creds.GitHubRelease.Token != ""
+		}
+		return CredentialState{GitHubRelease: &GitHubReleaseCredentialState{TokenSet: set}}
 	default:
 		return CredentialState{}
 	}
@@ -282,6 +395,10 @@ func ValidateCredentialsUpdate(t Type, creds *CredentialsUpdate) error {
 	case TypeSFTP:
 		if creds.WebDAV != nil || creds.S3 != nil {
 			return fmt.Errorf("%w: credentials update must only contain sftp fields for type sftp", ErrInvalid)
+		}
+	case TypeGitHubRelease:
+		if creds.WebDAV != nil || creds.S3 != nil || creds.SFTP != nil {
+			return fmt.Errorf("%w: credentials update must only contain github_release fields for type github_release", ErrInvalid)
 		}
 	case "":
 		return fmt.Errorf("%w: type is required", ErrInvalid)
@@ -338,6 +455,17 @@ func applyCredentialsUpdate(t Type, current CredentialState, update *Credentials
 			c.PrivateKeyPassphraseSet = *update.SFTP.PrivateKeyPassphrase != ""
 		}
 		return CredentialState{SFTP: &c}
+	case TypeGitHubRelease:
+		if update.GitHubRelease == nil || update.GitHubRelease.Token == nil {
+			return current
+		}
+		set := *update.GitHubRelease.Token != ""
+		if current.GitHubRelease == nil {
+			current.GitHubRelease = &GitHubReleaseCredentialState{}
+		}
+		c := *current.GitHubRelease
+		c.TokenSet = set
+		return CredentialState{GitHubRelease: &c}
 	default:
 		return current
 	}

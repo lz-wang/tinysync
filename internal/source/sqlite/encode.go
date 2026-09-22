@@ -21,6 +21,8 @@ func encodeConfig(t source.Type, c source.Config) (string, error) {
 		data = c.S3
 	case source.TypeSFTP:
 		data = c.SFTP
+	case source.TypeGitHubRelease:
+		data = c.GitHubRelease
 	default:
 		return "", fmt.Errorf("encode source config: %w: %q", source.ErrUnsupportedType, t)
 	}
@@ -55,6 +57,12 @@ func decodeConfig(t source.Type, raw string) (source.Config, error) {
 			return source.Config{}, fmt.Errorf("decode sftp config: %w", err)
 		}
 		return source.Config{SFTP: c}, nil
+	case source.TypeGitHubRelease:
+		c := &source.GitHubReleaseConfig{}
+		if err := json.Unmarshal([]byte(raw), c); err != nil {
+			return source.Config{}, fmt.Errorf("decode github_release config: %w", err)
+		}
+		return source.Config{GitHubRelease: c}, nil
 	default:
 		return source.Config{}, fmt.Errorf("decode source config: %w: %q", source.ErrUnsupportedType, t)
 	}
@@ -67,6 +75,7 @@ type credentialsJSON struct {
 	SecretKey            *string `json:"secret_key,omitempty"`
 	PrivateKey           *string `json:"private_key,omitempty"`
 	PrivateKeyPassphrase *string `json:"private_key_passphrase,omitempty"`
+	Token                *string `json:"token,omitempty"`
 }
 
 // encodeCredentials 把凭据集合编码为当前协议的扁平 JSON 对象。
@@ -86,6 +95,10 @@ func encodeCredentials(t source.Type, c source.Credentials) (string, error) {
 			raw.Password = strPtr(c.SFTP.Password)
 			raw.PrivateKey = strPtr(c.SFTP.PrivateKey)
 			raw.PrivateKeyPassphrase = strPtr(c.SFTP.PrivateKeyPassphrase)
+		}
+	case source.TypeGitHubRelease:
+		if c.GitHubRelease != nil {
+			raw.Token = strPtr(c.GitHubRelease.Token)
 		}
 	default:
 		return "", fmt.Errorf("encode source credentials: %w: %q", source.ErrUnsupportedType, t)
@@ -118,6 +131,10 @@ func decodeCredentials(t source.Type, raw string) (source.Credentials, error) {
 			Password:             derefStr(data.Password),
 			PrivateKey:           derefStr(data.PrivateKey),
 			PrivateKeyPassphrase: derefStr(data.PrivateKeyPassphrase),
+		}}, nil
+	case source.TypeGitHubRelease:
+		return source.Credentials{GitHubRelease: &source.GitHubReleaseCredentials{
+			Token: derefStr(data.Token),
 		}}, nil
 	default:
 		return source.Credentials{}, fmt.Errorf("decode source credentials: %w: %q", source.ErrUnsupportedType, t)

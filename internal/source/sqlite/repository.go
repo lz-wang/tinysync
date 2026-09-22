@@ -35,6 +35,8 @@ const credentialStateExpr = `CASE type
 		'password_set', CASE WHEN COALESCE(json_extract(credentials_json, '$.password'), '') != '' THEN json('true') ELSE json('false') END,
 		'private_key_set', CASE WHEN COALESCE(json_extract(credentials_json, '$.private_key'), '') != '' THEN json('true') ELSE json('false') END,
 		'private_key_passphrase_set', CASE WHEN COALESCE(json_extract(credentials_json, '$.private_key_passphrase'), '') != '' THEN json('true') ELSE json('false') END))
+	WHEN 'github_release' THEN json_object('github_release', json_object(
+		'token_set', CASE WHEN COALESCE(json_extract(credentials_json, '$.token'), '') != '' THEN json('true') ELSE json('false') END))
 	ELSE '{}'
 END`
 
@@ -217,6 +219,12 @@ func mergeCredentials(t source.Type, oldRaw string, update *source.CredentialsUp
 		if update.SFTP.PrivateKeyPassphrase != nil {
 			old.SFTP.PrivateKeyPassphrase = *update.SFTP.PrivateKeyPassphrase
 		}
+		return old, nil
+	case source.TypeGitHubRelease:
+		if update.GitHubRelease == nil || update.GitHubRelease.Token == nil {
+			return old, nil
+		}
+		old.GitHubRelease.Token = *update.GitHubRelease.Token
 		return old, nil
 	default:
 		return source.Credentials{}, fmt.Errorf("%w: %q", source.ErrUnsupportedType, t)

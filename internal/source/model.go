@@ -18,10 +18,40 @@ type Type string
 
 // 支持的协议类型。
 const (
-	TypeWebDAV Type = "webdav"
-	TypeS3     Type = "s3"
-	TypeSFTP   Type = "sftp"
+	TypeWebDAV        Type = "webdav"
+	TypeS3            Type = "s3"
+	TypeSFTP          Type = "sftp"
+	TypeGitHubRelease Type = "github_release"
 )
+
+// GitHubReleasePolicy 是 GitHub Release Source 的版本选择策略。
+type GitHubReleasePolicy string
+
+// 支持的版本选择策略。语义契约见 docs/design/github-release.md §2：
+// latest 遵循 GitHub 的 latest 端点选择规则（非 prerelease、非
+// draft），不假定其为发布时间最近或版本号最大；recent 按完整枚举
+// 后的 published_at 降序取前 N。
+const (
+	ReleaseLatest GitHubReleasePolicy = "latest"
+	ReleaseTag    GitHubReleasePolicy = "tag"
+	ReleaseRecent GitHubReleasePolicy = "recent"
+	ReleaseAll    GitHubReleasePolicy = "all"
+)
+
+// GitHubSHA256Mode 是 GitHub Release Asset 的 SHA-256 校验策略。
+type GitHubSHA256Mode string
+
+// 校验策略：if_available 在 GitHub 提供 digest 时强制校验（默认），
+// required 要求全部入选 Asset 均带有效 digest，否则扫描阶段失败。
+const (
+	SHA256IfAvailable GitHubSHA256Mode = "if_available"
+	SHA256Required    GitHubSHA256Mode = "required"
+)
+
+// MaxGitHubRecentCount 是 recent 策略允许的最大版本数，与扫描规模
+// 上限（1000 个 Release）一致：超过上限拒绝配置，而不是截断后进入
+// Mirror 删除授权。
+const MaxGitHubRecentCount = 1000
 
 // SFTPAuthMethod 是 SFTP 的认证方式；显式声明，不根据字段非空推断。
 type SFTPAuthMethod string
@@ -65,9 +95,10 @@ type Source struct {
 
 // Config 是 Source 的非敏感协议配置，按 Type 严格单选。
 type Config struct {
-	WebDAV *WebDAVConfig
-	S3     *S3Config
-	SFTP   *SFTPConfig
+	WebDAV        *WebDAVConfig
+	S3            *S3Config
+	SFTP          *SFTPConfig
+	GitHubRelease *GitHubReleaseConfig
 }
 
 // WebDAVConfig 是 WebDAV Source 的非敏感配置。
@@ -100,13 +131,33 @@ type SFTPConfig struct {
 	HostKeyFingerprint string         `json:"host_key_fingerprint"`
 }
 
+// GitHubReleaseConfig 是 GitHub Release Source 的非敏感配置。
+// Repository 接受 owner/repo 或完整 GitHub 仓库 URL（解析规则由
+// adapter 承担，持久化只做 trim）；Tag / RecentCount 仅在对应策略
+// 下有意义，持久化前经 Normalized 归一为零值。
+type GitHubReleaseConfig struct {
+	Repository         string              `json:"repository"`
+	ReleasePolicy      GitHubReleasePolicy `json:"release_policy"`
+	Tag                string              `json:"tag,omitempty"`
+	RecentCount        int                 `json:"recent_count,omitempty"`
+	IncludePrereleases bool                `json:"include_prereleases"`
+	VerifySHA256       GitHubSHA256Mode    `json:"verify_sha256"`
+}
+
 // Credentials 是一次写入或构造远端客户端的 secret 集合，按 Type
 // 严格单选。仅在 CreateInput / UpdateInput / Repository 凭据查询 /
 // Remote 构造路径流转，绝不进入 Source 对象与 API 响应。
 type Credentials struct {
-	WebDAV *WebDAVCredentials
-	S3     *S3Credentials
-	SFTP   *SFTPCredentials
+	WebDAV        *WebDAVCredentials
+	S3            *S3Credentials
+	SFTP          *SFTPCredentials
+	GitHubRelease *GitHubReleaseCredentials
+}
+
+// GitHubReleaseCredentials 是 GitHub Release 的 secret。Token 可为空
+// （公开仓库匿名访问）；私有仓库需要具有相应读取权限的 PAT。
+type GitHubReleaseCredentials struct {
+	Token string
 }
 
 // WebDAVCredentials 是 WebDAV 的 secret。Password 可为空（匿名访问）。
@@ -132,9 +183,10 @@ type SFTPCredentials struct {
 // CredentialState 是各 secret 是否已设置的布尔集合，协议无关地用于
 // API 回显与 UI 状态展示；按 Type 严格单选，与 Config 对应。
 type CredentialState struct {
-	WebDAV *WebDAVCredentialState `json:"webdav,omitempty"`
-	S3     *S3CredentialState     `json:"s3,omitempty"`
-	SFTP   *SFTPCredentialState   `json:"sftp,omitempty"`
+	WebDAV        *WebDAVCredentialState        `json:"webdav,omitempty"`
+	S3            *S3CredentialState            `json:"s3,omitempty"`
+	SFTP          *SFTPCredentialState          `json:"sftp,omitempty"`
+	GitHubRelease *GitHubReleaseCredentialState `json:"github_release,omitempty"`
 }
 
 // WebDAVCredentialState 是 WebDAV 的凭据状态。
@@ -152,6 +204,11 @@ type SFTPCredentialState struct {
 	PasswordSet             bool `json:"password_set"`
 	PrivateKeySet           bool `json:"private_key_set"`
 	PrivateKeyPassphraseSet bool `json:"private_key_passphrase_set"`
+}
+
+// GitHubReleaseCredentialState 是 GitHub Release 的凭据状态。
+type GitHubReleaseCredentialState struct {
+	TokenSet bool `json:"token_set"`
 }
 
 // idPrefix 是 Source ID 的固定前缀，便于在日志与 API 中一眼识别。
@@ -181,9 +238,15 @@ type CreateInput struct {
 // CredentialsUpdate 是更新 secret 的输入：指针字段区分「未提供」
 // （保留现有值）与「空串」（清除）；非空替换。按 Type 单选组。
 type CredentialsUpdate struct {
-	WebDAV *WebDAVCredentialsUpdate
-	S3     *S3CredentialsUpdate
-	SFTP   *SFTPCredentialsUpdate
+	WebDAV        *WebDAVCredentialsUpdate
+	S3            *S3CredentialsUpdate
+	SFTP          *SFTPCredentialsUpdate
+	GitHubRelease *GitHubReleaseCredentialsUpdate
+}
+
+// GitHubReleaseCredentialsUpdate 是 GitHub Release secret 的更新输入。
+type GitHubReleaseCredentialsUpdate struct {
+	Token *string
 }
 
 // WebDAVCredentialsUpdate 是 WebDAV secret 的更新输入。
@@ -214,7 +277,10 @@ type UpdateInput struct {
 }
 
 // Normalized 返回按 Type 归一化后的配置副本：WebDAV endpoint 去首尾
-// 空白，SFTP port 零值取默认 22。调用前必须已通过 ValidateConfig。
+// 空白，SFTP port 零值取默认 22，GitHub Release 的 policy 空值取
+// latest、verify_sha256 空值取 if_available，非对应策略下的 Tag /
+// RecentCount 归一为零值（身份比较与持久化因此形态稳定）。调用前必须
+// 已通过 ValidateConfig。
 func (c Config) Normalized(t Type) Config {
 	switch t {
 	case TypeWebDAV:
@@ -245,6 +311,25 @@ func (c Config) Normalized(t Type) Config {
 			sftp.Port = 22
 		}
 		return Config{SFTP: &sftp}
+	case TypeGitHubRelease:
+		if c.GitHubRelease == nil {
+			return c
+		}
+		gh := *c.GitHubRelease
+		gh.Repository = strings.TrimSpace(gh.Repository)
+		if gh.ReleasePolicy == "" {
+			gh.ReleasePolicy = ReleaseLatest
+		}
+		if gh.ReleasePolicy != ReleaseTag {
+			gh.Tag = ""
+		}
+		if gh.ReleasePolicy != ReleaseRecent {
+			gh.RecentCount = 0
+		}
+		if gh.VerifySHA256 == "" {
+			gh.VerifySHA256 = SHA256IfAvailable
+		}
+		return Config{GitHubRelease: &gh}
 	default:
 		return c
 	}
