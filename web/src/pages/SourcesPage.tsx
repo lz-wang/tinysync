@@ -327,6 +327,7 @@ function SourceTable({
                     <MenuItem value="webdav">WebDAV</MenuItem>
                     <MenuItem value="s3">S3</MenuItem>
                     <MenuItem value="sftp">SFTP</MenuItem>
+                    <MenuItem value="github_release">GitHub Release</MenuItem>
                 </TextField>
                 <TextField
                     select

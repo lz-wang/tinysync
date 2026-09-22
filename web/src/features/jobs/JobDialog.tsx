@@ -16,6 +16,7 @@ import {
 import { useEffect, useState } from 'react'
 import {
     createJob,
+    type GitHubReleaseConfig,
     type JobMode,
     type JobResponse,
     type ScheduleSpec,
@@ -170,6 +171,20 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
         remoteRoot.trim() !== '' &&
         schedule !== null
 
+    // 选定 GitHub Release Source 后的针对性适配（契约见设计文档 §4.2）：
+    // 动态版本策略（latest / recent / all）的远端根目录固定为 /——
+    // 选定某个具体版本目录会导致下一版本发布后不再跟随；tag 模式允许
+    // 浏览选择该版本目录。Mirror 在版本轮换时会删除退出选择范围的
+    // 旧版本目录，需明确提示。
+    const selectedSource = sources.find(source => source.id === sourceId) ?? null
+    const isGitHubSource = selectedSource?.type === 'github_release'
+    const githubDynamicRoot =
+        isGitHubSource &&
+        selectedSource !== null &&
+        ['latest', 'recent', 'all'].includes(
+            (selectedSource.config as GitHubReleaseConfig).release_policy,
+        )
+
     async function handleSave() {
         if (schedule === null) {
             return
@@ -269,7 +284,20 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
                             select
                             label="同步源"
                             value={sourceId}
-                            onChange={e => setSourceId(e.target.value)}
+                            onChange={e => {
+                                setSourceId(e.target.value)
+                                // 切到 GitHub Release 动态策略时固定根目录，
+                                // 避免残留其它协议的子路径。
+                                const next = sources.find(source => source.id === e.target.value)
+                                if (
+                                    next?.type === 'github_release' &&
+                                    ['latest', 'recent', 'all'].includes(
+                                        (next.config as GitHubReleaseConfig).release_policy,
+                                    )
+                                ) {
+                                    setRemoteRoot('/')
+                                }
+                            }}
                             required
                             helperText="从此同步源拉取远端文件"
                         >
@@ -303,8 +331,13 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
                                 value={remoteRoot}
                                 onChange={e => setRemoteRoot(e.target.value)}
                                 required
+                                disabled={githubDynamicRoot}
                                 placeholder="/photos"
-                                helperText="要同步的远端绝对路径"
+                                helperText={
+                                    githubDynamicRoot
+                                        ? '动态版本策略固定为 /，始终跟随最新选中版本'
+                                        : '要同步的远端绝对路径'
+                                }
                                 sx={{
                                     flex: 1,
                                     minWidth: 0,
@@ -316,11 +349,19 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
                                 size="large"
                                 startIcon={<FolderOpenOutlinedIcon />}
                                 onClick={() => setPickerOpen(true)}
+                                disabled={githubDynamicRoot}
                                 sx={{ mt: 0.5, minWidth: 104, height: 48, flexShrink: 0 }}
                             >
                                 浏览
                             </Button>
                         </Box>
+                        {isGitHubSource && mode === 'mirror' && (
+                            <Alert severity="warning">
+                                镜像模式 + GitHub Release：当新版本进入选择范围、旧版本退出后，
+                                旧版本的本地文件将被删除（版本清理）。如需永久保留旧版本，请使用
+                                复制模式。
+                            </Alert>
+                        )}
                         <Box
                             sx={{
                                 display: 'flex',
@@ -404,8 +445,12 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
                             onChange={e => setIncludeText(e.target.value)}
                             multiline
                             minRows={3}
-                            placeholder="**/*.jpg"
-                            helperText="每行一个 glob；留空包含全部"
+                            placeholder={isGitHubSource ? '**/*linux-amd64*' : '**/*.jpg'}
+                            helperText={
+                                isGitHubSource
+                                    ? '针对包含版本目录的相对路径：**/*linux-amd64* 匹配所有版本下的制品；单段 *.zip 无法命中版本子目录。留空包含全部'
+                                    : '每行一个 glob；留空包含全部'
+                            }
                             sx={{ '& textarea': { fontFamily: 'monospace' } }}
                         />
                         <TextField
@@ -414,7 +459,7 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
                             onChange={e => setExcludeText(e.target.value)}
                             multiline
                             minRows={3}
-                            placeholder="tmp/**"
+                            placeholder={isGitHubSource ? '**/*.sig' : 'tmp/**'}
                             helperText="每行一个 glob；排除优先"
                             sx={{ '& textarea': { fontFamily: 'monospace' } }}
                         />
@@ -449,6 +494,7 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
                 }}
                 boundSourceId={sourceId}
                 initialPath={remoteRoot}
+                readOnly={isGitHubSource}
             />
             <LocalDirectoryPicker
                 open={localPickerOpen}

@@ -27,19 +27,22 @@ import { useCallback, useEffect, useState } from 'react'
 import { createRemoteDirectory, listRemoteFiles, listSources, type SourceResponse } from '../../api'
 
 // RemotePathPicker 与本地目录选择器采用同一尺寸与交互：只展示目录，默认
-// 隐藏点开头的条目，并可在当前远端目录创建直接子目录。
+// 隐藏点开头的条目，并可在当前远端目录创建直接子目录。readOnly 用于
+// 只读协议（GitHub Release 等）：隐藏新建文件夹入口，浏览仍可用。
 export default function RemotePathPicker({
     open,
     onClose,
     onPick,
     boundSourceId,
     initialPath,
+    readOnly,
 }: {
     open: boolean
     onClose: () => void
     onPick: (path: string) => void
     boundSourceId?: string
     initialPath?: string
+    readOnly?: boolean
 }) {
     const [sources, setSources] = useState<SourceResponse[]>([])
     const [pickedSourceId, setPickedSourceId] = useState('')
@@ -141,17 +144,19 @@ export default function RemotePathPicker({
                     }
                     label={<Typography variant="body2">显示隐藏文件</Typography>}
                 />
-                <Tooltip title="新建文件夹">
-                    <span>
-                        <IconButton
-                            aria-label="新建文件夹"
-                            disabled={loading || activeSourceId === ''}
-                            onClick={event => setFolderAnchor(event.currentTarget)}
-                        >
-                            <CreateNewFolderOutlinedIcon />
-                        </IconButton>
-                    </span>
-                </Tooltip>
+                {!readOnly && (
+                    <Tooltip title="新建文件夹">
+                        <span>
+                            <IconButton
+                                aria-label="新建文件夹"
+                                disabled={loading || activeSourceId === ''}
+                                onClick={event => setFolderAnchor(event.currentTarget)}
+                            >
+                                <CreateNewFolderOutlinedIcon />
+                            </IconButton>
+                        </span>
+                    </Tooltip>
+                )}
             </DialogTitle>
             <DialogContent
                 dividers
