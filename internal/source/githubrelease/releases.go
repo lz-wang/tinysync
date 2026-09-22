@@ -57,7 +57,7 @@ func (c *client) selectReleases(ctx context.Context, cfg source.GitHubReleaseCon
 	case source.ReleaseLatest:
 		return c.latestRelease(ctx)
 	case source.ReleaseTag:
-		return c.releaseByTag(ctx, cfg.Tag)
+		return c.releaseByTag(ctx, cfg.Tag, cfg.IncludePrereleases)
 	case source.ReleaseRecent:
 		return c.recentReleases(ctx, cfg.RecentCount, cfg.IncludePrereleases)
 	case source.ReleaseAll:
@@ -79,13 +79,18 @@ func (c *client) latestRelease(ctx context.Context) ([]Release, error) {
 }
 
 // releaseByTag 精确匹配一个 Release Tag；404 表示该 Tag 无 Release，
-// 属确定性失败（permanent）。Tag 含斜杠等特殊字符时经 path escape
-// 进入 API path。
-func (c *client) releaseByTag(ctx context.Context, tag string) ([]Release, error) {
+// 属确定性失败（permanent）。命中结果同样执行入选过滤：draft 一律
+// 拒绝、prerelease 按配置开关、无 published_at 防御性拒绝——显式
+// 指定的 Tag 不豁免契约（「草稿一律不参与同步；预发布默认排除」，
+// 设计文档 §2）。Tag 含斜杠等特殊字符时经 path escape 进入 API path。
+func (c *client) releaseByTag(ctx context.Context, tag string, includePrereleases bool) ([]Release, error) {
 	var r Release
 	path := c.apiPath("/releases/tags/" + url.PathEscape(tag))
 	if _, err := c.getJSON(ctx, path, &r); err != nil {
 		return nil, fmt.Errorf("github: release by tag %q: %w", tag, err)
+	}
+	if !r.selectable(includePrereleases) {
+		return nil, fmt.Errorf("%w: release tag %q is not selectable (draft, prerelease without include_prereleases, or missing published_at)", source.ErrInvalid, tag)
 	}
 	return []Release{r}, nil
 }

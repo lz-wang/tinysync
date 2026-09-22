@@ -1,6 +1,7 @@
 package githubrelease
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -358,5 +359,73 @@ func TestAssetNameValidation(t *testing.T) {
 	err := r.ScanTree(t.Context(), "/", func(fi source.FileInfo) error { return nil })
 	if err == nil {
 		t.Fatal("ScanTree succeeded with backslash asset name, want error")
+	}
+}
+
+// TestSHA256RequiredEnforcedAtSnapshot 验证 verify_sha256=required 在
+// Asset 快照阶段强制生效（Stat / List / ScanTree / Inspect 共享
+// releaseAssets 边界）：缺失或格式非法的 digest 都整体失败——下载
+// 开始前拦截，而不是让 Downloader 退化为仅 size 校验；if_available
+// 时同样的数据不失败（契约见设计文档 §5）。
+func TestSHA256RequiredEnforcedAtSnapshot(t *testing.T) {
+	validDigest := "sha256:" + strings.Repeat("ab", 32)
+	cases := []struct {
+		name      string
+		digest    string
+		required  bool
+		wantErr   bool
+		wantCheck bool
+	}{
+		{"if_available missing digest ok", "", false, false, false},
+		{"required missing digest fails", "", true, true, false},
+		{"required malformed digest fails", "sha256:nothex", true, true, false},
+		{"required wrong algorithm fails", "md5:" + strings.Repeat("ab", 32), true, true, false},
+		{"required valid digest ok", validDigest, true, false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeGitHub(t, "", func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/repos/gitea/gitea/releases":
+					_, _ = w.Write([]byte("[" + releaseJSON(103, "v3", "2026-01-03T00:00:00Z", false, false) + "]"))
+				case "/repos/gitea/gitea/releases/103/assets":
+					_, _ = w.Write([]byte("[" + assetJSON(1001, "app.tar.gz", 100, tc.digest, "uploaded") + "]"))
+				default:
+					http.NotFound(w, r)
+				}
+			})
+			mode := source.SHA256IfAvailable
+			if tc.required {
+				mode = source.SHA256Required
+			}
+			r := &remote{client: f.c, cfg: source.GitHubReleaseConfig{
+				ReleasePolicy: source.ReleaseAll,
+				VerifySHA256:  mode,
+			}}
+			var file source.FileInfo
+			err := r.ScanTree(t.Context(), "/", func(fi source.FileInfo) error {
+				if !fi.IsDir {
+					file = fi
+				}
+				return nil
+			})
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("ScanTree succeeded with digest %q, want error", tc.digest)
+				}
+				if !errors.Is(err, source.ErrInvalid) {
+					t.Errorf("rejection should be ErrInvalid-marked: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ScanTree: %v", err)
+			}
+			// 指纹 Checksum 原样携带协议摘要；required + 合法 digest 时
+			// 必须非空（Downloader 据此做最终内容校验）。
+			if got := file.Fingerprint.Checksum; tc.wantCheck && got != validDigest {
+				t.Errorf("fingerprint checksum = %q, want %q", got, validDigest)
+			}
+		})
 	}
 }

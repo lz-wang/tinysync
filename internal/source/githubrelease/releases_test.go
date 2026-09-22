@@ -93,6 +93,57 @@ func TestSelectReleasesByTag(t *testing.T) {
 	}
 }
 
+// TestSelectReleasesByTagFiltering 验证 tag 策略同样执行入选过滤：
+// draft 一律拒绝、prerelease 按 include_prereleases 开关、无
+// published_at 防御性拒绝——显式指定 Tag 不豁免契约（「草稿一律不
+// 参与同步；预发布默认排除」，设计文档 §2）。
+func TestSelectReleasesByTagFiltering(t *testing.T) {
+	cases := []struct {
+		name       string
+		release    string
+		includePre bool
+		wantErr    bool
+	}{
+		{"stable accepted", releaseJSON(9, "v1.0.0", "2026-01-09T00:00:00Z", false, false), false, false},
+		{"prerelease rejected when excluded", releaseJSON(9, "v2.0.0-rc1", "2026-01-09T00:00:00Z", false, true), false, true},
+		{"prerelease accepted when included", releaseJSON(9, "v2.0.0-rc1", "2026-01-09T00:00:00Z", false, true), true, false},
+		{"draft rejected even when included", releaseJSON(9, "v3.0.0", "2026-01-09T00:00:00Z", true, false), true, true},
+		{"missing published_at rejected", releaseJSON(9, "v4.0.0", "", false, false), true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeGitHub(t, "", func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/repos/gitea/gitea/releases/tags/v1" {
+					http.NotFound(w, r)
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(tc.release))
+			})
+			got, err := f.c.selectReleases(t.Context(), source.GitHubReleaseConfig{
+				ReleasePolicy:      source.ReleaseTag,
+				Tag:                "v1",
+				IncludePrereleases: tc.includePre,
+			})
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("selectReleases = %+v, want error", got)
+				}
+				if !errors.Is(err, source.ErrInvalid) {
+					t.Errorf("rejection should be ErrInvalid-marked: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("selectReleases: %v", err)
+			}
+			if len(got) != 1 || got[0].ID != 9 {
+				t.Errorf("selectReleases = %+v, want single release id 9", got)
+			}
+		})
+	}
+}
+
 // TestSelectReleasesByTagMissing 指定 Tag 无 Release 时 404 permanent。
 func TestSelectReleasesByTagMissing(t *testing.T) {
 	f := newFakeGitHub(t, "", func(w http.ResponseWriter, r *http.Request) {

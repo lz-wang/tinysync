@@ -123,12 +123,34 @@ func (r *remote) releaseAssets(ctx context.Context, releaseID int64) ([]Asset, e
 		if err := source.ValidateLogicalPath("/" + a.Name); err != nil {
 			return nil, fmt.Errorf("github: asset name %q of release %d: %w", a.Name, releaseID, err)
 		}
+		if err := r.validateAssetDigest(a); err != nil {
+			return nil, fmt.Errorf("github: asset %q of release %d: %w", a.Name, releaseID, err)
+		}
 	}
 	if r.assets == nil {
 		r.assets = make(map[int64][]Asset)
 	}
 	r.assets[releaseID] = assets
 	return assets, nil
+}
+
+// validateAssetDigest 在 verify_sha256=required 时强制每个入选 Asset
+// 携带合法 sha256 摘要：缺失或格式非法都让本次元数据获取整体失败。
+// required 的契约是「下载开始前拦截」——若放行空 digest，Downloader
+// 会退化为仅 size 校验，与 if_available 行为趋同，属假安全（设计文
+// 档 §5）。经 releaseAssets 生效：Stat / List / ScanTree / Inspect 四
+// 个入口共享同一边界。摘要格式规则由 source.ParseChecksum 统一定义。
+func (r *remote) validateAssetDigest(a Asset) error {
+	if r.cfg.VerifySHA256 != source.SHA256Required {
+		return nil
+	}
+	if _, err := source.ParseChecksum(a.Digest); err != nil {
+		return fmt.Errorf("%w: verify_sha256=required but asset has no usable digest: %v", source.ErrInvalid, err)
+	}
+	if a.Digest == "" {
+		return fmt.Errorf("%w: verify_sha256=required but asset provides no sha256 digest", source.ErrInvalid)
+	}
+	return nil
 }
 
 // splitReleasePath 把逻辑路径拆为（版本目录, asset 名）："/" → 两段

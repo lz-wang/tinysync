@@ -231,6 +231,70 @@ func TestETagConditionalRequest(t *testing.T) {
 	}
 }
 
+// TestETagPaginationPreservesNextLink 验证 304 分页续拉：304 响应不
+// 携带 Link header 时，分页游标必须复用 200 时缓存的 next——绝不把
+// 「304 无 Link」当「已到末页」。该截断会把后续页的 Release 误判为
+// 远端消失并产生 Mirror 删除授权，违反「不完整扫描不得产生删除授权」
+// 的 fail-closed 不变量（验收：第二轮完整扫描仍拿到两页全部条目）。
+func TestETagPaginationPreservesNextLink(t *testing.T) {
+	pages := [][]string{
+		{releaseJSON(1, "v1", "2026-01-01T00:00:00Z", false, false), releaseJSON(2, "v2", "2026-01-02T00:00:00Z", false, false)},
+		{releaseJSON(3, "v3", "2026-01-03T00:00:00Z", false, false)},
+	}
+	f := newFakeGitHub(t, "", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/gitea/gitea/releases" {
+			http.NotFound(w, r)
+			return
+		}
+		page := 1
+		if p := r.URL.Query().Get("page"); p != "" {
+			page, _ = strconv.Atoi(p)
+		}
+		if page < 1 || page > len(pages) {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		// 条件命中返回 304，且刻意不回传 Link：GitHub 对 304 不携带
+		// 分页头，正是截断缺陷的触发条件。
+		if r.Header.Get("If-None-Match") != "" {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		if page < len(pages) {
+			w.Header().Set("Link", nextLinkHeader(r, page+1))
+		}
+		w.Header().Set("ETag", fmt.Sprintf(`"page%d"`, page))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("[" + joinJSON(pages[page-1]) + "]"))
+	})
+
+	first, err := listAllReleases(t.Context(), f.c)
+	if err != nil {
+		t.Fatalf("first listAll: %v", err)
+	}
+	if len(first) != 3 {
+		t.Fatalf("first scan got %d releases, want 3", len(first))
+	}
+
+	// 第二轮完整扫描：两页都 304 且无 Link，仍必须拿到全部 3 条。
+	second, err := listAllReleases(t.Context(), f.c)
+	if err != nil {
+		t.Fatalf("second listAll: %v", err)
+	}
+	if len(second) != 3 {
+		t.Fatalf("second scan truncated to %d releases, want 3 (304 must reuse cached next link)", len(second))
+	}
+	for i, want := range []int64{1, 2, 3} {
+		if second[i].ID != want {
+			t.Errorf("second[%d].ID = %d, want %d", i, second[i].ID, want)
+		}
+	}
+	if f.requestCount() != 4 {
+		t.Errorf("requests = %d, want 4 (2 pages × 2 scans)", f.requestCount())
+	}
+}
+
 // TestClassifyStatusViaClient 验证状态码分类经过真实 HTTP 路径生效
 // （adapter boundary 契约：403/429 限流可重试，其余 4xx permanent）。
 func TestClassifyStatusViaClient(t *testing.T) {

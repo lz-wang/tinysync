@@ -190,10 +190,15 @@ func classifyStatus(resp *http.Response, body string) error {
 	return e
 }
 
-// etagCacheEntry 是条件请求缓存的条目：上次响应的 ETag 与 body。
+// etagCacheEntry 是条件请求缓存的条目：上次响应的 ETag、body 与
+// Link 分页游标。next 必须随 body 一起缓存：GitHub 的 304 响应不
+// 携带 Link header，若分页续拉依赖 304 响应头解析 next，列表会被
+// 错误截断为首页——对 Mirror 而言等于把「远端消失」误判到被截断
+// 的页上，违反「不完整扫描不得产生删除授权」的不变量。
 type etagCacheEntry struct {
 	etag string
 	body []byte
+	next string
 }
 
 // etagCache 是按 URL 键控的条件请求缓存：GET 携带 If-None-Match，
@@ -273,7 +278,9 @@ func (c *client) getJSONLocked(ctx context.Context, pathOrURL string, out any) (
 		if err := json.Unmarshal(entry.body, out); err != nil {
 			return "", fmt.Errorf("github: decode cached %s: %w", rawURL, err)
 		}
-		return c.nextLink(resp)
+		// 304 响应不携带 Link header：分页游标复用 200 时的缓存值，
+		// 绝不把「无 Link」当「已到末页」（fail-closed，见 etagCacheEntry）。
+		return entry.next, nil
 	}
 	if resp.StatusCode >= http.StatusBadRequest {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
@@ -287,12 +294,16 @@ func (c *client) getJSONLocked(ctx context.Context, pathOrURL string, out any) (
 	if err := json.Unmarshal(body, out); err != nil {
 		return "", fmt.Errorf("github: decode %s: %w", rawURL, err)
 	}
+	next, err := c.nextLink(resp)
+	if err != nil {
+		return "", err
+	}
 	// 仅缓存携带 ETag 的响应；无 ETag 时退化为直连请求（正确性不受
 	// 影响，只是少了条件请求优惠）。
 	if etag := resp.Header.Get("ETag"); etag != "" {
-		c.cache.put(rawURL, etagCacheEntry{etag: etag, body: body})
+		c.cache.put(rawURL, etagCacheEntry{etag: etag, body: body, next: next})
 	}
-	return c.nextLink(resp)
+	return next, nil
 }
 
 // maxMetadataBodyBytes 是单个元数据响应的读取上限：releases 列表每页
