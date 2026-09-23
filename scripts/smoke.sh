@@ -19,7 +19,10 @@
 #	    Source，响应不含密码明文、credential_state 正确
 #	10b. 创建 S3 Source（config 单选组 + secret_key），secret 不回显
 #	10c. 创建 SFTP Source（含 auth_method 与 host key fingerprint）
-#	11. GET /api/v1/sources 列表可见三个 Source 且不含 secret，
+#	10d. 凭据库生命周期：创建 ssh_key 凭据（指纹回显、secret 不回显），
+#	     创建引用该凭据的 SFTP Source（credential_state 跟随凭据），
+#	     删除被引用凭据被 409 拒绝
+#	11. GET /api/v1/sources 列表可见四个 Source 且不含 secret，
 #	    tinysync.db 已创建
 #	12. POST /api/v1/jobs 创建引用 WebDAV Source 的 Copy Job
 #	13. POST /api/v1/jobs/:id/run 异步启动（202），对不可达远端收敛为 failed
@@ -313,12 +316,94 @@ fi
 sftp_id=$(grep -o '"id":"src_[a-f0-9]*"' source_sftp.json | head -1 | cut -d '"' -f4)
 echo "[smoke] sftp source created: ${sftp_id}"
 
-# 11. GET 列表可见三个 Source 且不含 secret；数据库文件已创建。
+# 10d. 凭据库生命周期。固定测试钥（ed25519，公钥指纹
+# SHA256:OJ9FPyy9KMBFzGfsIHU+6ahpI7MyCAmGhlvr+Vlu7DQ），仅用于 smoke。
+smoke_key_marker='GxM5A1i2+KjEA'
+cat >smoke_key.pem <<'PEM'
+-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACBevv1jThlT4cPrwg07ozpT4ZLf1N/NnGxM5A1i2+KjEAAAAJD+Oas2/jmr
+NgAAAAtzc2gtZWQyNTUxOQAAACBevv1jThlT4cPrwg07ozpT4ZLf1N/NnGxM5A1i2+KjEA
+AAAEA9XYYH83y5RuDkoXWGhlTYZKuRdGNf9L4vp2bTCGT4116+/WNOGVPhw+vCDTujOlPh
+kt/U382cbEzkDWLb4qMQAAAADXRpbnlzeW5jLXRlc3Q=
+-----END OPENSSH PRIVATE KEY-----
+PEM
+smoke_key_body=$(cat smoke_key.pem)
+python3 - "$smoke_key_body" <<'PY' >credential_req.json
+import json, sys
+print(json.dumps({
+	"name": "Smoke Credential",
+	"type": "ssh_key",
+	"secret": {"private_key": sys.argv[1]},
+}))
+PY
+cred_code=$(curl --silent -o credential.json -w '%{http_code}' -b cookie.jar \
+	-H 'Content-Type: application/json' \
+	--data @credential_req.json \
+	"${base_url}/api/v1/credentials")
+if [[ "${cred_code}" != "201" ]]; then
+	echo "Error: credential creation failed (${cred_code})" >&2
+	cat credential.json >&2
+	exit 1
+fi
+grep -F '"type":"ssh_key"' credential.json >/dev/null || {
+	echo "Error: credential response missing type" >&2
+	exit 1
+}
+grep -F '"has_passphrase":false' credential.json >/dev/null || {
+	echo "Error: credential has_passphrase wrong" >&2
+	exit 1
+}
+cred_fp=$(grep -o '"fingerprint":"SHA256:[A-Za-z0-9+/=_-]*"' credential.json | head -1 | cut -d '"' -f4)
+if [[ -z "${cred_fp}" ]]; then
+	echo "Error: credential fingerprint missing" >&2
+	exit 1
+fi
+if grep -F "${smoke_key_marker}" credential.json >/dev/null; then
+	echo "Error: credential create response leaks private key" >&2
+	exit 1
+fi
+cred_id=$(grep -o '"id":"crd_[a-f0-9]*"' credential.json | head -1 | cut -d '"' -f4)
+echo "[smoke] credential created: ${cred_id} ${cred_fp}"
+
+# 10d-2. 引用该凭据的 SFTP Source：credential_state 跟随凭据。
+curl --fail --silent -b cookie.jar \
+	-H 'Content-Type: application/json' \
+	--data "{\"name\":\"Smoke SFTP Ref\",\"type\":\"sftp\",\"config\":{\"host\":\"127.0.0.1\",\"port\":22,\"username\":\"smoke\",\"remote_root\":\"/srv/smoke\",\"auth_method\":\"private_key\",\"host_key_fingerprint\":\"\",\"credential_id\":\"${cred_id}\"}}" \
+	"${base_url}/api/v1/sources" >source_sftp_ref.json
+grep -F '"sftp":{"password_set":false,"private_key_set":true,"private_key_passphrase_set":false}' source_sftp_ref.json >/dev/null || {
+	echo "Error: referencing sftp source creation failed" >&2
+	cat source_sftp_ref.json >&2
+	exit 1
+}
+if grep -F "${smoke_key_marker}" source_sftp_ref.json >/dev/null; then
+	echo "Error: referencing source response leaks private key" >&2
+	exit 1
+fi
+sftp_ref_id=$(grep -o '"id":"src_[a-f0-9]*"' source_sftp_ref.json | head -1 | cut -d '"' -f4)
+echo "[smoke] referencing sftp source created: ${sftp_ref_id}"
+
+# 10d-3. 删除被引用凭据：409 冲突并列出引用源。
+cred_del_code=$(curl --silent -o cred_del.json -w '%{http_code}' -b cookie.jar \
+	-X DELETE "${base_url}/api/v1/credentials/${cred_id}")
+if [[ "${cred_del_code}" != "409" ]]; then
+	echo "Error: deleting referenced credential should 409, got ${cred_del_code}" >&2
+	cat cred_del.json >&2
+	exit 1
+fi
+grep -F "${sftp_ref_id}" cred_del.json >/dev/null || {
+	echo "Error: conflict response missing referencing source" >&2
+	exit 1
+}
+echo "[smoke] referenced credential delete rejected (409)"
+
+# 11. GET 列表可见四个 Source 且不含 secret；数据库文件已创建。
 curl --fail --silent -b cookie.jar "${base_url}/api/v1/sources" >sources.json
 grep -F "${source_id}" sources.json >/dev/null
 grep -F "${s3_id}" sources.json >/dev/null
 grep -F "${sftp_id}" sources.json >/dev/null
-for secret in 'S3cret-Smoke' 'S3cret-Key' 'S3cret-FTP'; do
+grep -F "${sftp_ref_id}" sources.json >/dev/null
+for secret in 'S3cret-Smoke' 'S3cret-Key' 'S3cret-FTP' "${smoke_key_marker}"; do
 	if grep -F "${secret}" sources.json >/dev/null; then
 		echo "Error: list response leaks secret ${secret}" >&2
 		exit 1
@@ -397,8 +482,14 @@ grep -F '"bucket":"smoke-bucket"' source2_s3.json >/dev/null
 curl --fail --silent -b cookie.jar "${base_url}/api/v1/sources/${sftp_id}" >source2_sftp.json
 grep -F '"sftp":{"password_set":true,"private_key_set":false,"private_key_passphrase_set":false}' source2_sftp.json >/dev/null
 grep -F '"remote_root":"/srv/smoke"' source2_sftp.json >/dev/null
-for secret in 'S3cret-Smoke' 'S3cret-Key' 'S3cret-FTP'; do
-	for f in source2.json source2_s3.json source2_sftp.json; do
+curl --fail --silent -b cookie.jar "${base_url}/api/v1/sources/${sftp_ref_id}" >source2_sftp_ref.json
+grep -F "${cred_id}" source2_sftp_ref.json >/dev/null
+grep -F '"private_key_set":true' source2_sftp_ref.json >/dev/null
+curl --fail --silent -b cookie.jar "${base_url}/api/v1/credentials" >credentials2.json
+grep -F "${cred_id}" credentials2.json >/dev/null
+grep -F "${cred_fp}" credentials2.json >/dev/null
+for secret in 'S3cret-Smoke' 'S3cret-Key' 'S3cret-FTP' "${smoke_key_marker}"; do
+	for f in source2.json source2_s3.json source2_sftp.json source2_sftp_ref.json credentials2.json; do
 		if grep -F "${secret}" "${f}" >/dev/null; then
 			echo "Error: restarted response ${f} leaks secret ${secret}" >&2
 			exit 1

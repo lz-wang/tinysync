@@ -39,7 +39,7 @@ export default function PromoteCredentialDialog({
             setSaving(false)
             setError(null)
         }
-    }, [open, source])
+    }, [open])
 
     async function handlePromote() {
         if (source === null || name.trim() === '') {

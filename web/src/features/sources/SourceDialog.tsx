@@ -717,55 +717,49 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                                         </Select>
                                     </FormControl>
                                     {keySource === 'credential' ? (
-                                        <>
-                                            <FormControl fullWidth required>
-                                                <InputLabel id="sftp-credential-label">
-                                                    凭据
-                                                </InputLabel>
-                                                <Select
-                                                    labelId="sftp-credential-label"
-                                                    value={sftp.credential_id ?? ''}
-                                                    label="凭据"
-                                                    onChange={e =>
-                                                        setSftp({
-                                                            ...sftp,
-                                                            credential_id: e.target.value,
-                                                        })
-                                                    }
+                                        <FormControl fullWidth required>
+                                            <InputLabel id="sftp-credential-label">凭据</InputLabel>
+                                            <Select
+                                                labelId="sftp-credential-label"
+                                                value={sftp.credential_id ?? ''}
+                                                label="凭据"
+                                                onChange={e =>
+                                                    setSftp({
+                                                        ...sftp,
+                                                        credential_id: e.target.value,
+                                                    })
+                                                }
+                                            >
+                                                {credentials.map(credential => (
+                                                    <MenuItem
+                                                        key={credential.id}
+                                                        value={credential.id}
+                                                    >
+                                                        {credential.name} · {credential.fingerprint}
+                                                        {credential.has_passphrase
+                                                            ? '（带口令）'
+                                                            : ''}
+                                                    </MenuItem>
+                                                ))}
+                                            </Select>
+                                            {credentials.length === 0 ? (
+                                                <Typography
+                                                    variant="caption"
+                                                    color="text.secondary"
+                                                    sx={{ mt: 1 }}
                                                 >
-                                                    {credentials.map(credential => (
-                                                        <MenuItem
-                                                            key={credential.id}
-                                                            value={credential.id}
-                                                        >
-                                                            {credential.name} ·{' '}
-                                                            {credential.fingerprint}
-                                                            {credential.has_passphrase
-                                                                ? '（带口令）'
-                                                                : ''}
-                                                        </MenuItem>
-                                                    ))}
-                                                </Select>
-                                                {credentials.length === 0 ? (
-                                                    <Typography
-                                                        variant="caption"
-                                                        color="text.secondary"
-                                                        sx={{ mt: 1 }}
-                                                    >
-                                                        凭据库为空：请先在「凭据」页创建 SSH
-                                                        私钥凭据。
-                                                    </Typography>
-                                                ) : (
-                                                    <Typography
-                                                        variant="caption"
-                                                        color="text.secondary"
-                                                        sx={{ mt: 1 }}
-                                                    >
-                                                        引用态换钥在「凭据」页一次完成，全部引用源自动生效；引用与内联私钥互斥。
-                                                    </Typography>
-                                                )}
-                                            </FormControl>
-                                        </>
+                                                    凭据库为空：请先在「凭据」页创建 SSH 私钥凭据。
+                                                </Typography>
+                                            ) : (
+                                                <Typography
+                                                    variant="caption"
+                                                    color="text.secondary"
+                                                    sx={{ mt: 1 }}
+                                                >
+                                                    引用态换钥在「凭据」页一次完成，全部引用源自动生效；引用与内联私钥互斥。
+                                                </Typography>
+                                            )}
+                                        </FormControl>
                                     ) : (
                                         <>
                                             <SecretField

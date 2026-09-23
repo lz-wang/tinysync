@@ -598,7 +598,7 @@ func (h *sourceHandlers) promote(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"source":     updatedDTO,
+		"source": updatedDTO,
 		"credential": promoteCredentialDTO{
 			ID:            created.ID,
 			Name:          created.Name,

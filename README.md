@@ -41,6 +41,7 @@ TinySync 是一个面向 HomeLab 的文件同步服务：单一 Go 二进制，�
 
 从 [Releases](https://github.com/lz-wang/tinysync/releases) 下载对应平台的
 压缩包（linux/darwin/windows × amd64/arm64），解压即用，无需任何运行时依赖。
+以 systemd 服务常驻运行在 Linux 主机的完整步骤见[部署（systemd）](docs/guides/deployment.md)。
 
 ## 快速开始
 

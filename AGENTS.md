@@ -11,7 +11,8 @@ TinySync 面向 HomeLab，目标是将异构远端文件单向同步到本地，
 
 | 任务 | 按需阅读 |
 | --- | --- |
-| 开发、测试、格式化、配置或 API 变更 | [开发与验证](docs/guides/development.md)，命令入口为 [Makefile](Makefile)（`make help`） |
+|开发、测试、格式化、配置或 API 变更|[开发与验证](docs/guides/development.md)，命令入口为 [Makefile](Makefile)（`make help`）|
+|Linux 主机部署（systemd 服务、升级、备份）|[部署（systemd）](docs/guides/deployment.md)|
 | CI、版本、打包或发布 | [构建与发布](docs/guides/release.md) → 对应 workflow / script |
 | Source、同步、调度、文件访问、认证或 MCP | 从 [CONTEXT.md](CONTEXT.md) 进入对应术语，再探索 `internal/` 对应领域包 |
 
