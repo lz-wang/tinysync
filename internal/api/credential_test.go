@@ -369,3 +369,78 @@ func TestSourceCredentialReferenceAPI(t *testing.T) {
 		t.Errorf("state after unbind = %v, want private_key_set false", state)
 	}
 }
+
+// 提升为凭据：内联私钥源一键转存为凭据并改写引用（票 #6）。
+func TestSourcePromoteCredentialAPI(t *testing.T) {
+	dataDir := t.TempDir()
+	db, err := storage.Open(dataDir)
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(context.Background(), db, dataDir); err != nil {
+		t.Fatalf("storage.Migrate: %v", err)
+	}
+	srcRepo := sourcesqlite.New(db)
+	credSvc := credential.NewService(credentialsqlite.New(db))
+	srcSvc := source.NewService(srcRepo, fakeFactory{remote: fakeRemote{}})
+	srcSvc.Credentials = credSvc
+	router := newTestAuth(t, db, Dependencies{Sources: srcSvc, Credentials: credSvc, CredentialRefs: srcRepo})
+
+	keyPEM, _ := newKeyPEM(t)
+
+	// 建内联私钥源（引用态之外，满足提升资格）。
+	rec := doJSON(t, router, "POST", "/api/v1/sources",
+		`{"name":"内联源","type":"sftp","config":{"host":"nas.example.com","port":22,"username":"tinysync","remote_root":"/","auth_method":"private_key","host_key_fingerprint":"","credential_id":""},"credentials":{"private_key":`+jq(keyPEM)+`}}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create inline source: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	srcID, _ := decodeJSON(t, rec)["id"].(string)
+
+	// 提升：200，凭据与引用一并返回。
+	rec = doJSON(t, router, "POST", "/api/v1/sources/"+srcID+"/promote-credential",
+		`{"name":"提升的钥匙"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("promote: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	body := decodeJSON(t, rec)
+	credentialOut, _ := body["credential"].(map[string]any)
+	if credentialOut == nil || !strings.HasPrefix(credentialOut["fingerprint"].(string), "SHA256:") {
+		t.Errorf("credential = %v, want fingerprint", body["credential"])
+	}
+	sourceOut, _ := body["source"].(map[string]any)
+	config, _ := sourceOut["config"].(map[string]any)
+	if config["credential_id"] == "" || config["credential_id"] == nil {
+		t.Errorf("source config credential_id = %v, want set", config["credential_id"])
+	}
+
+	// 提升后源不再具备资格：再次提升 400。
+	rec = doJSON(t, router, "POST", "/api/v1/sources/"+srcID+"/promote-credential",
+		`{"name":"再来一次"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("second promote: status = %d, want 400", rec.Code)
+	}
+
+	// 名称冲突经凭据唯一性 409：建第二个内联源提升同名。
+	rec = doJSON(t, router, "POST", "/api/v1/sources",
+		`{"name":"内联源二","type":"sftp","config":{"host":"nas2.example.com","port":22,"username":"tinysync","remote_root":"/","auth_method":"private_key","host_key_fingerprint":"","credential_id":""},"credentials":{"private_key":`+jq(keyPEM)+`}}`)
+	srcID2, _ := decodeJSON(t, rec)["id"].(string)
+	rec = doJSON(t, router, "POST", "/api/v1/sources/"+srcID2+"/promote-credential",
+		`{"name":"提升的钥匙"}`)
+	if rec.Code != http.StatusConflict {
+		t.Errorf("conflict promote: status = %d, want 409", rec.Code)
+	}
+
+	// password 方式源：资格不合格 400。
+	rec = doJSON(t, router, "POST", "/api/v1/sources",
+		`{"name":"密码源","type":"sftp","config":{"host":"nas3.example.com","port":22,"username":"tinysync","remote_root":"/","auth_method":"password","host_key_fingerprint":"","credential_id":""},"credentials":{"password":"pw"}}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create password source: status = %d", rec.Code)
+	}
+	pwID, _ := decodeJSON(t, rec)["id"].(string)
+	rec = doJSON(t, router, "POST", "/api/v1/sources/"+pwID+"/promote-credential",
+		`{"name":"不该成功"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("password promote: status = %d, want 400", rec.Code)
+	}
+}

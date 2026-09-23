@@ -400,6 +400,31 @@ export async function deleteCredential(id: string): Promise<void> {
     await requestJSON<void>('DELETE', `/api/v1/credentials/${id}`)
 }
 
+// PromoteCredentialResponse 对应 POST /sources/:id/promote-credential：
+// 提升后的源（引用态）与凭据摘要。
+export interface PromoteCredentialResponse {
+    source: SourceResponse
+    credential: {
+        id: string
+        name: string
+        fingerprint: string
+        has_passphrase: boolean
+    }
+}
+
+// promoteSourceCredential 把源已存的内联私钥转存为命名凭据并改写为
+// 引用（私钥不经手前端）。
+export function promoteSourceCredential(
+    id: string,
+    name: string,
+): Promise<PromoteCredentialResponse> {
+    return requestJSON<PromoteCredentialResponse>(
+        'POST',
+        `/api/v1/sources/${id}/promote-credential`,
+        { name },
+    )
+}
+
 // JobMode 是同步模式：Copy 只增不改删本地既有文件；
 // Mirror 额外按 managed 授权删除远端已消失的本地文件。
 export type JobMode = 'copy' | 'mirror'

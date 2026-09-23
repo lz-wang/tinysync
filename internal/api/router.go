@@ -53,7 +53,7 @@ func NewRouter(webFS fs.FS, deps Dependencies) *gin.Engine {
 	protected := router.Group("/api/v1", authMiddleware(deps.Auth))
 	{
 		registerSessionRoutes(protected, deps.Auth)
-		registerSourceRoutes(protected, deps.Sources, deps.Jobs)
+		registerSourceRoutes(protected, deps.Sources, deps.Jobs, deps.Credentials)
 		registerCredentialRoutes(protected, deps.Credentials, deps.CredentialRefs)
 		registerJobRoutes(protected, deps.Jobs, deps.Runner)
 		registerRemoteFileRoutes(protected, deps.Browser)

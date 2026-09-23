@@ -144,6 +144,33 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	return s.repo.Delete(ctx, id)
 }
 
+// PromoteEligible 报告源是否可提升为凭据：SFTP + private_key 方式 +
+// 未引用凭据。UI 据此决定是否展示提升动作。
+func (s *Service) PromoteEligible(ctx context.Context, id string) (bool, error) {
+	src, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	return src.Type == TypeSFTP && src.Config.SFTP != nil &&
+		src.Config.SFTP.AuthMethod == SFTPAuthPrivateKey &&
+		src.Config.SFTP.CredentialID == "", nil
+}
+
+// InlineCredentialsForPromote 返回源存储的内联凭据明文：仅供提升迁移
+// 转存进凭据库使用，私钥不经手前端。非 SFTP / 引用态源返回 ErrInvalid。
+func (s *Service) InlineCredentialsForPromote(ctx context.Context, id string) (Credentials, error) {
+	src, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return Credentials{}, err
+	}
+	if src.Type != TypeSFTP || src.Config.SFTP == nil ||
+		src.Config.SFTP.CredentialID != "" ||
+		src.Config.SFTP.AuthMethod != SFTPAuthPrivateKey {
+		return Credentials{}, fmt.Errorf("%w: source is not eligible for credential promotion", ErrInvalid)
+	}
+	return s.repo.GetCredentials(ctx, id)
+}
+
 // clearInlineSFTPUpdate 返回强制清除全部内联 SFTP secret 的更新输入：
 // 三个字段均为空串（三态清除），显式覆盖调用方同请求携带的任何值。
 func clearInlineSFTPUpdate(creds *CredentialsUpdate) *CredentialsUpdate {

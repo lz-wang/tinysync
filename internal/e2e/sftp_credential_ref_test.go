@@ -315,3 +315,76 @@ func splitHostPort(addr string) (string, int) {
 	_, _ = fmt.Sscanf(p, "%d", &n)
 	return h, n
 }
+
+// TestSFTPPromoteCredentialEndToEnd：内联私钥源提升为凭据后，同步无
+// 缝继续（提升编排与 API handler 一致：读内联 → 建凭据 → 源改引用，
+// service 层强制清除内联 secret）。
+func TestSFTPPromoteCredentialEndToEnd(t *testing.T) {
+	ctx := context.Background()
+	pem1, pub1 := newClientKey(t)
+	e := newRefEnv(t, pub1)
+
+	// 内联私钥源（未引用）。
+	host, port := splitHostPort(e.server.addr())
+	src, err := e.sources.Create(ctx, source.CreateInput{
+		Name:    "内联源",
+		Type:    source.TypeSFTP,
+		Enabled: true,
+		Config: source.Config{SFTP: &source.SFTPConfig{
+			Host:               host,
+			Port:               port,
+			Username:           "tinysync",
+			RemoteRoot:         e.server.root,
+			AuthMethod:         source.SFTPAuthPrivateKey,
+			HostKeyFingerprint: e.server.fingerprint,
+		}},
+		Credentials: source.Credentials{SFTP: &source.SFTPCredentials{PrivateKey: pem1}},
+	})
+	if err != nil {
+		t.Fatalf("create inline source: %v", err)
+	}
+	e.sourceID = src.ID
+
+	// 首轮：内联私钥同步成功。
+	writeRemoteFileE2E(t, e.server.root, "a.txt", "alpha")
+	localA := t.TempDir()
+	e.runJob(t, localA)
+	assertLocalFile(t, localA, "a.txt", "alpha")
+
+	// 提升编排（与 promote handler 一致）：读内联 → 建凭据 → 改引用。
+	inline, err := e.sources.InlineCredentialsForPromote(ctx, src.ID)
+	if err != nil {
+		t.Fatalf("inline credentials: %v", err)
+	}
+	created, err := e.credentials.Create(ctx, credential.CreateInput{
+		Name: "提升的钥匙",
+		Type: credential.TypeSSHKey,
+		Secret: credential.Secret{
+			PrivateKey:           inline.SFTP.PrivateKey,
+			PrivateKeyPassphrase: inline.SFTP.PrivateKeyPassphrase,
+		},
+	})
+	if err != nil {
+		t.Fatalf("promote create credential: %v", err)
+	}
+	cfg := *src.Config.SFTP
+	cfg.CredentialID = created.ID
+	if _, err := e.sources.Update(ctx, src.ID, source.UpdateInput{
+		Config: &source.Config{SFTP: &cfg},
+	}); err != nil {
+		t.Fatalf("promote rebind: %v", err)
+	}
+
+	// 提升后同步无缝继续；引用态下内联 secret 已被强制清除。
+	refetched, err := e.sources.Get(ctx, src.ID)
+	if err != nil {
+		t.Fatalf("get after promote: %v", err)
+	}
+	if refetched.Config.SFTP.CredentialID != created.ID {
+		t.Errorf("credential_id = %q, want %q", refetched.Config.SFTP.CredentialID, created.ID)
+	}
+	writeRemoteFileE2E(t, e.server.root, "b.txt", "beta")
+	localB := t.TempDir()
+	e.runJob(t, localB)
+	assertLocalFile(t, localB, "b.txt", "beta")
+}

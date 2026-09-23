@@ -1,4 +1,5 @@
 import FolderOpenOutlinedIcon from '@mui/icons-material/FolderOpenOutlined'
+import KeyOutlinedIcon from '@mui/icons-material/KeyOutlined'
 import {
     Alert,
     Box,
@@ -37,6 +38,7 @@ import {
 } from '../../api'
 import RemotePathPicker from '../files/RemotePathPicker'
 import GitHubReleaseFields from './GitHubReleaseFields'
+import PromoteCredentialDialog from './PromoteCredentialDialog'
 import SecretField from './SecretField'
 
 interface SourceDialogProps {
@@ -94,6 +96,7 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
     // 互斥）或一次性粘贴。credentials 是凭据库可选项。
     const [keySource, setKeySource] = useState<'credential' | 'inline'>('inline')
     const [credentials, setCredentials] = useState<CredentialResponse[]>([])
+    const [promoteOpen, setPromoteOpen] = useState(false)
     const [github, setGithub] = useState<GitHubReleaseConfig>({
         repository: '',
         release_policy: 'latest',
@@ -404,6 +407,15 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
         }
         return true
     }
+
+    // promoteEligible：编辑态 + 内联私钥已存 + 未引用 → 可一键提升为
+    // 凭据（提升后由后端改写为引用态）。
+    const promoteEligible =
+        source !== null &&
+        type === 'sftp' &&
+        sftp.auth_method === 'private_key' &&
+        keySource === 'inline' &&
+        (source.credential_state.sftp?.private_key_set ?? false)
 
     const secretChip = (key: SecretKey, label: string) => {
         if (source === null) {
@@ -775,6 +787,27 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                                                 onChange={v => setSecret('sftp.passphrase', v)}
                                                 onClear={() => clearSecret('sftp.passphrase')}
                                             />
+                                            {promoteEligible && (
+                                                <Box>
+                                                    <Button
+                                                        variant="outlined"
+                                                        size="small"
+                                                        startIcon={
+                                                            <KeyOutlinedIcon fontSize="small" />
+                                                        }
+                                                        onClick={() => setPromoteOpen(true)}
+                                                    >
+                                                        提升为凭据
+                                                    </Button>
+                                                    <Typography
+                                                        variant="caption"
+                                                        color="text.secondary"
+                                                        sx={{ display: 'block', mt: 0.5 }}
+                                                    >
+                                                        把已保存的私钥转存为命名凭据并改为引用，换钥一次生效全部。
+                                                    </Typography>
+                                                </Box>
+                                            )}
                                         </>
                                     )}
                                 </>
@@ -845,6 +878,15 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                 initialPath={
                     type === 'webdav' ? (webdav.remote_root ?? '/') : sftp.remote_root || '/'
                 }
+            />
+            <PromoteCredentialDialog
+                open={promoteOpen}
+                source={promoteEligible ? source : null}
+                onClose={() => setPromoteOpen(false)}
+                onPromoted={updated => {
+                    setPromoteOpen(false)
+                    onSaved(updated)
+                }}
             />
         </Dialog>
     )

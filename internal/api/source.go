@@ -13,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"tinysync/internal/auth"
+	"tinysync/internal/credential"
 	"tinysync/internal/source"
 	"tinysync/internal/syncjob"
 )
@@ -20,12 +21,13 @@ import (
 // registerSourceRoutes 注册 Source 管理端点。svc 为 nil 时跳过注册
 // （依赖缺失时由未知路径 404 兜底，避免生产静默降级之外的 panic）。
 // jobs 非 nil 时启用引用保护：被 Job 引用的 Source 返回 409，
-// 数据库层 FK RESTRICT 作为并发路径的兜底。
-func registerSourceRoutes(group *gin.RouterGroup, svc *source.Service, jobs *syncjob.Service) {
+// 数据库层 FK RESTRICT 作为并发路径的兜底。credentials 非 nil 时启用
+// 「提升为凭据」端点（编排凭据服务，见 promote）。
+func registerSourceRoutes(group *gin.RouterGroup, svc *source.Service, jobs *syncjob.Service, credentials *credential.Service) {
 	if svc == nil {
 		return
 	}
-	h := &sourceHandlers{svc: svc}
+	h := &sourceHandlers{svc: svc, credentials: credentials}
 	if jobs != nil {
 		h.refGuard = func(ctx context.Context, sourceID string) error {
 			count, err := jobs.CountBySource(ctx, sourceID)
@@ -46,6 +48,9 @@ func registerSourceRoutes(group *gin.RouterGroup, svc *source.Service, jobs *syn
 	group.PATCH("/sources/:id", requireScope(auth.ScopeAdmin), h.update)
 	group.DELETE("/sources/:id", requireScope(auth.ScopeAdmin), h.delete)
 	group.POST("/sources/:id/test", requireScope(auth.ScopeAdmin), h.test)
+	// 提升为凭据：把已存内联私钥转存为命名凭据并改写引用（私钥不
+	// 经手前端），编排凭据服务与源更新。
+	group.POST("/sources/:id/promote-credential", requireScope(auth.ScopeAdmin), h.promote)
 	// inspect 必须先于 :id 路由注册意图上无冲突（gin 的静态段优先），
 	// 显式声明不持久化的创建前预览端点。
 	group.POST("/sources/inspect", requireScope(auth.ScopeAdmin), h.inspect)
@@ -58,6 +63,8 @@ type sourceHandlers struct {
 	// 删除始终校验；remote identity 变更时校验（防止 Mirror Job 下轮
 	// 连接到另一个合法远端后把全部 managed 文件误判为远端消失）。
 	refGuard func(ctx context.Context, sourceID string) error
+	// credentials 是凭据应用服务；非 nil 时启用「提升为凭据」端点。
+	credentials *credential.Service
 }
 
 // sourceDTO 是 Source 的 API 表示：config 为非敏感协议配置单选组，
@@ -499,6 +506,105 @@ func (h *sourceHandlers) test(c *gin.Context) {
 		OK:        result.OK,
 		LatencyMS: result.LatencyMS,
 		Error:     result.Error,
+	})
+}
+
+// promoteCredentialRequest 是「提升为凭据」的请求体：只为新凭据起名。
+type promoteCredentialRequest struct {
+	Name string `json:"name"`
+}
+
+// promoteCredentialDTO 是提升结果的凭据摘要（secret 不回显）。
+type promoteCredentialDTO struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	Fingerprint   string `json:"fingerprint"`
+	HasPassphrase bool   `json:"has_passphrase"`
+}
+
+// promote POST /api/v1/sources/:id/promote-credential。把源已存的
+// 内联私钥转存为命名凭据并把源改写为引用：私钥明文在后端内部流转，
+// 不经手前端。编排顺序——读内联凭据（校验资格）→ 解析建凭据 →
+// 源改引用（service 强制清除内联 secret）。若建凭据成功而源更新
+// 失败，遗留一条无引用凭据，可由用户安全删除。
+func (h *sourceHandlers) promote(c *gin.Context) {
+	if h.credentials == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "credential service is not configured"})
+		return
+	}
+	var req promoteCredentialRequest
+	if !strictBind(c, &req) {
+		return
+	}
+	id := c.Param("id")
+
+	// 资格校验：SFTP + private_key + 未引用（不存在 404，不合格 400）。
+	eligible, err := h.svc.PromoteEligible(c.Request.Context(), id)
+	if err != nil {
+		handleSourceError(c, err)
+		return
+	}
+	if !eligible {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "source is not eligible for credential promotion"})
+		return
+	}
+	inline, err := h.svc.InlineCredentialsForPromote(c.Request.Context(), id)
+	if err != nil {
+		handleSourceError(c, err)
+		return
+	}
+	if inline.SFTP == nil || inline.SFTP.PrivateKey == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "source has no inline private key"})
+		return
+	}
+
+	// 解析（入口 fail-closed）并落库；指纹由凭据服务随创建派生。
+	secret := credential.Secret{
+		PrivateKey:           inline.SFTP.PrivateKey,
+		PrivateKeyPassphrase: inline.SFTP.PrivateKeyPassphrase,
+	}
+	if _, err := credential.ParseSecret(secret); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	created, err := h.credentials.Create(c.Request.Context(), credential.CreateInput{
+		Name:   req.Name,
+		Type:   credential.TypeSSHKey,
+		Secret: secret,
+	})
+	if err != nil {
+		handleCredentialError(c, err)
+		return
+	}
+
+	// 源改写为引用；service 层强制清除内联 secret（互斥不变量）。
+	src, err := h.svc.Get(c.Request.Context(), id)
+	if err != nil {
+		handleSourceError(c, err)
+		return
+	}
+	cfg := *src.Config.SFTP
+	cfg.CredentialID = created.ID
+	updated, err := h.svc.Update(c.Request.Context(), id, source.UpdateInput{
+		Config: &source.Config{SFTP: &cfg},
+	})
+	if err != nil {
+		handleSourceError(c, err)
+		return
+	}
+	updatedDTO, err := toSourceDTO(updated)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"source":     updatedDTO,
+		"credential": promoteCredentialDTO{
+			ID:            created.ID,
+			Name:          created.Name,
+			Fingerprint:   created.Fingerprint,
+			HasPassphrase: created.HasPassphrase,
+		},
 	})
 }
 

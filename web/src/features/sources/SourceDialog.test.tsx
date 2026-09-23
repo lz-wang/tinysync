@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CredentialResponse, SFTPConfig, SourceResponse } from '../../api'
-import { createSource, listCredentials, updateSource } from '../../api'
+import { createSource, listCredentials, promoteSourceCredential, updateSource } from '../../api'
 import SourceDialog from './SourceDialog'
 
 // mock 整个 API 模块：SourceDialog 与 RemotePathPicker 都引用它。
@@ -11,6 +11,7 @@ vi.mock('../../api', () => ({
     listCredentials: vi.fn(),
     listRemoteFiles: vi.fn(),
     listSources: vi.fn(),
+    promoteSourceCredential: vi.fn(),
     updateSource: vi.fn(),
 }))
 
@@ -20,6 +21,7 @@ const mocked = vi.mocked({
     listCredentials,
     listRemoteFiles: await import('../../api').then(m => m.listRemoteFiles),
     listSources: await import('../../api').then(m => m.listSources),
+    promoteSourceCredential,
     updateSource,
 })
 
@@ -147,5 +149,53 @@ describe('SourceDialog 凭据选择器', () => {
         const input = mocked.createSource.mock.calls[0][0]
         const config = input.config as SFTPConfig
         expect(config.credential_id).toBe('crd-1')
+    })
+})
+
+// 提升为凭据：内联私钥源在编辑态可一键提升（票 #6）。
+describe('SourceDialog 提升为凭据', () => {
+    it('合格源展示提升按钮，提交调用 promote API', async () => {
+        const inlineSource: SourceResponse = {
+            ...referencingSource,
+            id: 'src-inline',
+            name: '内联源',
+            config: {
+                ...referencingSource.config,
+                credential_id: '',
+            },
+        }
+        mocked.promoteSourceCredential.mockResolvedValue({
+            source: {
+                ...inlineSource,
+                config: { ...inlineSource.config, credential_id: 'crd-new' },
+            },
+            credential: {
+                id: 'crd-new',
+                name: '提升的钥匙',
+                fingerprint: 'SHA256:new',
+                has_passphrase: false,
+            },
+        })
+        const onSaved = vi.fn()
+        renderDialog({ source: inlineSource, onSaved })
+
+        fireEvent.click(await screen.findByRole('button', { name: /提升为凭据/ }))
+        fireEvent.change(await screen.findByLabelText(/凭据名称/), {
+            target: { value: '提升的钥匙' },
+        })
+        fireEvent.click(screen.getByRole('button', { name: '提升' }))
+
+        await waitFor(() => {
+            expect(mocked.promoteSourceCredential).toHaveBeenCalledWith('src-inline', '提升的钥匙')
+        })
+        await waitFor(() => {
+            expect(onSaved).toHaveBeenCalled()
+        })
+    })
+
+    it('引用态源不展示提升按钮', async () => {
+        renderDialog({ source: referencingSource })
+        await waitFor(() => expect(mocked.listCredentials).toHaveBeenCalled())
+        expect(screen.queryByRole('button', { name: /提升为凭据/ })).toBeNull()
     })
 })
