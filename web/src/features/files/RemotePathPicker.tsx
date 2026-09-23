@@ -123,6 +123,7 @@ export default function RemotePathPicker({
             open={open}
             onClose={onClose}
             maxWidth={false}
+            disableRestoreFocus
             slotProps={{ paper: { sx: { width: '50vw', maxWidth: 'none', height: '80vh' } } }}
         >
             <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 2, py: 1 }}>

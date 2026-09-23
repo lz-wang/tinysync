@@ -20,8 +20,10 @@ import {
 } from '@mui/material'
 import { useEffect, useState } from 'react'
 import {
+    type CredentialResponse,
     createSource,
     type GitHubReleaseConfig,
+    listCredentials,
     type S3Config,
     type SFTPConfig,
     type SFTPCredentials,
@@ -86,7 +88,12 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
         remote_root: '',
         auth_method: 'password',
         host_key_fingerprint: '',
+        credential_id: '',
     })
+    // keySource 决定 private_key 方式的私钥来源：凭据库引用（与内联
+    // 互斥）或一次性粘贴。credentials 是凭据库可选项。
+    const [keySource, setKeySource] = useState<'credential' | 'inline'>('inline')
+    const [credentials, setCredentials] = useState<CredentialResponse[]>([])
     const [github, setGithub] = useState<GitHubReleaseConfig>({
         repository: '',
         release_policy: 'latest',
@@ -158,6 +165,7 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                           remote_root: cfg.remote_root ?? '',
                           auth_method: cfg.auth_method ?? 'password',
                           host_key_fingerprint: cfg.host_key_fingerprint ?? '',
+                          credential_id: cfg.credential_id ?? '',
                       }
                   })()
                 : {
@@ -167,7 +175,14 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                       remote_root: '',
                       auth_method: 'password',
                       host_key_fingerprint: '',
+                      credential_id: '',
                   },
+        )
+        // 私钥来源按现有引用态初始化；凭据列表在打开时加载。
+        setKeySource(
+            source?.type === 'sftp' && (source.config as SFTPConfig).credential_id
+                ? 'credential'
+                : 'inline',
         )
         setGithub(
             source?.type === 'github_release'
@@ -204,6 +219,29 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
         setSaving(false)
         setError(null)
     }, [open, source])
+
+    // 凭据库选项：SFTP 表单打开时加载；失败按空列表降级（选择器内
+    // 提示先建凭据）。
+    useEffect(() => {
+        if (!open || type !== 'sftp') {
+            return
+        }
+        let cancelled = false
+        listCredentials()
+            .then(list => {
+                if (!cancelled) {
+                    setCredentials(list)
+                }
+            })
+            .catch(() => {
+                if (!cancelled) {
+                    setCredentials([])
+                }
+            })
+        return () => {
+            cancelled = true
+        }
+    }, [open, type])
 
     function setSecret(key: SecretKey, value: string) {
         setSecrets(prev => ({ ...prev, [key]: value }))
@@ -242,7 +280,8 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
         if (type === 'github_release') {
             return { ...github }
         }
-        return { ...sftp }
+        // 内联一次性私钥时 credential_id 恒为空：引用与内联互斥。
+        return keySource === 'credential' ? { ...sftp } : { ...sftp, credential_id: '' }
     }
 
     function buildCredentials(): SourceCredentials | undefined {
@@ -357,7 +396,13 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
             }
             return true
         }
-        return sftp.host.trim() !== '' && sftp.username.trim() !== ''
+        if (sftp.host.trim() === '' || sftp.username.trim() === '') {
+            return false
+        }
+        if (sftp.auth_method === 'private_key' && keySource === 'credential') {
+            return (sftp.credential_id ?? '') !== ''
+        }
+        return true
     }
 
     const secretChip = (key: SecretKey, label: string) => {
@@ -379,6 +424,7 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
             open={open}
             onClose={onClose}
             scroll="paper"
+            disableRestoreFocus
             slotProps={{
                 paper: {
                     sx: {
@@ -638,25 +684,99 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                                 />
                             ) : (
                                 <>
-                                    <SecretField
-                                        label="私钥（PEM）"
-                                        value={secrets['sftp.private_key']}
-                                        dirty={secretsDirty.has('sftp.private_key')}
-                                        cleared={secretsCleared.has('sftp.private_key')}
-                                        chip={secretChip('sftp.private_key', '私钥')}
-                                        onChange={v => setSecret('sftp.private_key', v)}
-                                        onClear={() => clearSecret('sftp.private_key')}
-                                        multiline
-                                    />
-                                    <SecretField
-                                        label="私钥口令（可选）"
-                                        value={secrets['sftp.passphrase']}
-                                        dirty={secretsDirty.has('sftp.passphrase')}
-                                        cleared={secretsCleared.has('sftp.passphrase')}
-                                        chip={secretChip('sftp.passphrase', '私钥口令')}
-                                        onChange={v => setSecret('sftp.passphrase', v)}
-                                        onClear={() => clearSecret('sftp.passphrase')}
-                                    />
+                                    <FormControl fullWidth>
+                                        <InputLabel id="sftp-key-source-label">私钥来源</InputLabel>
+                                        <Select
+                                            labelId="sftp-key-source-label"
+                                            value={keySource}
+                                            label="私钥来源"
+                                            onChange={e => {
+                                                const next = e.target.value as
+                                                    | 'credential'
+                                                    | 'inline'
+                                                setKeySource(next)
+                                                if (next === 'inline') {
+                                                    setSftp({ ...sftp, credential_id: '' })
+                                                }
+                                            }}
+                                        >
+                                            <MenuItem value="credential">从凭据库选择</MenuItem>
+                                            <MenuItem value="inline">粘贴一次性私钥</MenuItem>
+                                        </Select>
+                                    </FormControl>
+                                    {keySource === 'credential' ? (
+                                        <>
+                                            <FormControl fullWidth required>
+                                                <InputLabel id="sftp-credential-label">
+                                                    凭据
+                                                </InputLabel>
+                                                <Select
+                                                    labelId="sftp-credential-label"
+                                                    value={sftp.credential_id ?? ''}
+                                                    label="凭据"
+                                                    onChange={e =>
+                                                        setSftp({
+                                                            ...sftp,
+                                                            credential_id: e.target.value,
+                                                        })
+                                                    }
+                                                >
+                                                    {credentials.map(credential => (
+                                                        <MenuItem
+                                                            key={credential.id}
+                                                            value={credential.id}
+                                                        >
+                                                            {credential.name} ·{' '}
+                                                            {credential.fingerprint}
+                                                            {credential.has_passphrase
+                                                                ? '（带口令）'
+                                                                : ''}
+                                                        </MenuItem>
+                                                    ))}
+                                                </Select>
+                                                {credentials.length === 0 ? (
+                                                    <Typography
+                                                        variant="caption"
+                                                        color="text.secondary"
+                                                        sx={{ mt: 1 }}
+                                                    >
+                                                        凭据库为空：请先在「凭据」页创建 SSH
+                                                        私钥凭据。
+                                                    </Typography>
+                                                ) : (
+                                                    <Typography
+                                                        variant="caption"
+                                                        color="text.secondary"
+                                                        sx={{ mt: 1 }}
+                                                    >
+                                                        引用态换钥在「凭据」页一次完成，全部引用源自动生效；引用与内联私钥互斥。
+                                                    </Typography>
+                                                )}
+                                            </FormControl>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <SecretField
+                                                label="私钥（PEM）"
+                                                value={secrets['sftp.private_key']}
+                                                dirty={secretsDirty.has('sftp.private_key')}
+                                                cleared={secretsCleared.has('sftp.private_key')}
+                                                chip={secretChip('sftp.private_key', '私钥')}
+                                                onChange={v => setSecret('sftp.private_key', v)}
+                                                onClear={() => clearSecret('sftp.private_key')}
+                                                multiline
+                                            />
+                                            <SecretField
+                                                label="私钥口令（可选）"
+                                                value={secrets['sftp.passphrase']}
+                                                dirty={secretsDirty.has('sftp.passphrase')}
+                                                cleared={secretsCleared.has('sftp.passphrase')}
+                                                chip={secretChip('sftp.passphrase', '私钥口令')}
+                                                onChange={v => setSecret('sftp.passphrase', v)}
+                                                onClear={() => clearSecret('sftp.passphrase')}
+                                            />
+                                        </>
+                                    )}
                                 </>
                             )}
                             <RootField

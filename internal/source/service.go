@@ -113,6 +113,12 @@ func (s *Service) Update(ctx context.Context, id string, input UpdateInput) (Sou
 			return Source{}, err
 		}
 		updated.Config = normalized
+		// 落到引用态时强制清除内联 secret：config 切到引用而调用方
+		// 未显式清钥时，存储中的旧钥会残留，互斥不变量在存储层被
+		// 打破（引用态的生效 secret 只来自凭据库）。
+		if updated.Type == TypeSFTP && updated.Config.SFTP != nil && updated.Config.SFTP.CredentialID != "" {
+			input.Credentials = clearInlineSFTPUpdate(input.Credentials)
+		}
 	}
 	if input.Credentials != nil {
 		if err := ValidateCredentialsUpdate(updated.Type, input.Credentials); err != nil {
@@ -136,6 +142,22 @@ func (s *Service) Update(ctx context.Context, id string, input UpdateInput) (Sou
 // 不触及远端文件。
 func (s *Service) Delete(ctx context.Context, id string) error {
 	return s.repo.Delete(ctx, id)
+}
+
+// clearInlineSFTPUpdate 返回强制清除全部内联 SFTP secret 的更新输入：
+// 三个字段均为空串（三态清除），显式覆盖调用方同请求携带的任何值。
+func clearInlineSFTPUpdate(creds *CredentialsUpdate) *CredentialsUpdate {
+	empty := ""
+	clear := &CredentialsUpdate{SFTP: &SFTPCredentialsUpdate{
+		Password:             &empty,
+		PrivateKey:           &empty,
+		PrivateKeyPassphrase: &empty,
+	}}
+	if creds == nil {
+		return clear
+	}
+	creds.SFTP = clear.SFTP
+	return creds
 }
 
 // OpenRemote 按 ID 读取 Source 并构造其远端客户端：凭据查询与协议
