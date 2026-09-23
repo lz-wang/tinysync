@@ -1,0 +1,303 @@
+package api
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"tinysync/internal/credential"
+	"tinysync/internal/credential/keytest"
+	credentialsqlite "tinysync/internal/credential/sqlite"
+	sourcesqlite "tinysync/internal/source/sqlite"
+	"tinysync/internal/storage"
+)
+
+// newCredentialRouter 构造挂载真实凭据服务的路由与数据库句柄（引用
+// 索引复用 Source 仓库，与生产装配一致）。
+func newCredentialRouter(t *testing.T) (testRouter, *sql.DB) {
+	t.Helper()
+	dataDir := t.TempDir()
+	db, err := storage.Open(dataDir)
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(context.Background(), db, dataDir); err != nil {
+		t.Fatalf("storage.Migrate: %v", err)
+	}
+	srcRepo := sourcesqlite.New(db)
+	svc := credential.NewService(credentialsqlite.New(db))
+	router := newTestAuth(t, db, Dependencies{Credentials: svc, CredentialRefs: srcRepo})
+	return router, db
+}
+
+// newKeyPEM 生成一把钥匙 PEM，并返回其中段片段作为泄漏标记（随机
+// 钥匙的任何片段都不应出现在响应里）。
+func newKeyPEM(t *testing.T) (string, string) {
+	t.Helper()
+	pem, err := keytest.UnencryptedEd25519()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	mid := len(pem) / 2
+	return pem, pem[mid : mid+24]
+}
+
+// jq 是 JSON 字符串字面量包装（Go %q 产生合法 JSON 字符串）。
+func jq(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}
+
+// createBody 构造创建凭据的请求体。
+func createBody(name, pem string) string {
+	return `{"name":` + jq(name) + `,"type":"ssh_key","secret":{"private_key":` + jq(pem) + `}}`
+}
+
+// doBearerJSON 以 Bearer token 发送 JSON 请求（不附带 cookie）。
+func doBearerJSON(t *testing.T, router testRouter, method, path, rawToken, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if rawToken != "" {
+		req.Header.Set("Authorization", "Bearer "+rawToken)
+	}
+	rec := httptest.NewRecorder()
+	router.Engine.ServeHTTP(rec, req)
+	return rec
+}
+
+// 完整生命周期：创建 → 读取 → 列表 → 改名 → 换钥 → 删除。
+// 全程 secret 明文不出现在任何响应中。
+func TestCredentialLifecycleAPI(t *testing.T) {
+	router, _ := newCredentialRouter(t)
+	pem1, marker1 := newKeyPEM(t)
+	pem2, marker2 := newKeyPEM(t)
+
+	// POST 创建。
+	rec := doJSON(t, router, "POST", "/api/v1/credentials", createBody("NAS 钥匙", pem1))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	body := decodeJSON(t, rec)
+	id, _ := body["id"].(string)
+	if id == "" || !strings.HasPrefix(id, "crd_") {
+		t.Fatalf("id = %v, want crd_ prefix", body["id"])
+	}
+	if body["type"] != "ssh_key" {
+		t.Errorf("type = %v, want ssh_key", body["type"])
+	}
+	if fp, _ := body["fingerprint"].(string); !strings.HasPrefix(fp, "SHA256:") {
+		t.Errorf("fingerprint = %v, want SHA256: prefix", body["fingerprint"])
+	}
+	if body["has_passphrase"] != false || body["referenced_by"] != float64(0) {
+		t.Errorf("flags = %v / %v, want false / 0", body["has_passphrase"], body["referenced_by"])
+	}
+	if strings.Contains(rec.Body.String(), marker1) {
+		t.Fatalf("create response leaks key material")
+	}
+
+	// GET 单个。
+	rec = doJSON(t, router, "GET", "/api/v1/credentials/"+id, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get status = %d", rec.Code)
+	}
+
+	// 列表：引用计数为 0，不含 secret。
+	rec = doJSON(t, router, "GET", "/api/v1/credentials", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status = %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), marker1) {
+		t.Fatalf("list response leaks key material")
+	}
+
+	// PATCH 只改名：指纹不变。
+	rec = doJSON(t, router, "PATCH", "/api/v1/credentials/"+id, `{"name":"改名后的钥匙"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rename status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if body = decodeJSON(t, rec); body["name"] != "改名后的钥匙" {
+		t.Errorf("name = %v, want renamed", body["name"])
+	}
+
+	// PATCH 换钥：指纹更新为新钥的指纹。
+	rec = doJSON(t, router, "PATCH", "/api/v1/credentials/"+id,
+		`{"secret":{"private_key":`+jq(pem2)+`}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rekey status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), marker2) {
+		t.Fatalf("rekey response leaks key material")
+	}
+	rekeyBody := decodeJSON(t, rec)
+	newFP, _ := rekeyBody["fingerprint"].(string)
+	if !strings.HasPrefix(newFP, "SHA256:") {
+		t.Errorf("fingerprint after rekey = %v", rekeyBody["fingerprint"])
+	}
+
+	// DELETE → 204 → GET 404。
+	rec = doJSON(t, router, "DELETE", "/api/v1/credentials/"+id, "")
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("delete status = %d", rec.Code)
+	}
+	rec = doJSON(t, router, "GET", "/api/v1/credentials/"+id, "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("get after delete status = %d, want 404", rec.Code)
+	}
+}
+
+// 创建校验：坏 PEM、缺 secret、未知类型、未知字段，一律 400。
+func TestCredentialCreateValidationAPI(t *testing.T) {
+	router, _ := newCredentialRouter(t)
+
+	rec := doJSON(t, router, "POST", "/api/v1/credentials", createBody("坏钥", "not a pem"))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "PEM") {
+		t.Errorf("bad pem: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	rec = doJSON(t, router, "POST", "/api/v1/credentials", `{"name":"x","type":"ssh_key"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("missing secret: status = %d", rec.Code)
+	}
+
+	rec = doJSON(t, router, "POST", "/api/v1/credentials",
+		`{"name":"x","type":"webdav","secret":{"private_key":"junk"}}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("unknown type: status = %d", rec.Code)
+	}
+
+	rec = doJSON(t, router, "POST", "/api/v1/credentials",
+		`{"name":"x","type":"ssh_key","bogus":1,"secret":{"private_key":"junk"}}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("unknown field: status = %d", rec.Code)
+	}
+}
+
+// 重名冲突 409（大小写不敏感）。
+func TestCredentialNameConflictAPI(t *testing.T) {
+	router, _ := newCredentialRouter(t)
+	pem, _ := newKeyPEM(t)
+
+	if rec := doJSON(t, router, "POST", "/api/v1/credentials", createBody("NAS", pem)); rec.Code != http.StatusCreated {
+		t.Fatalf("first create status = %d", rec.Code)
+	}
+	rec := doJSON(t, router, "POST", "/api/v1/credentials", createBody("nas", pem))
+	if rec.Code != http.StatusConflict {
+		t.Errorf("conflict status = %d, want 409", rec.Code)
+	}
+}
+
+// 加密钥匙：缺口令与错口令 400，正确口令创建成功并回显 has_passphrase。
+func TestCredentialEncryptedKeyAPI(t *testing.T) {
+	router, _ := newCredentialRouter(t)
+	encPEM, err := keytest.EncryptedEd25519("correct-pass")
+	if err != nil {
+		t.Fatalf("generate encrypted key: %v", err)
+	}
+
+	rec := doJSON(t, router, "POST", "/api/v1/credentials", createBody("enc", encPEM))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "passphrase is required") {
+		t.Errorf("missing passphrase: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	body := `{"name":"enc","type":"ssh_key","secret":{"private_key":` + jq(encPEM) + `,"private_key_passphrase":"wrong"}}`
+	rec = doJSON(t, router, "POST", "/api/v1/credentials", body)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "incorrect private key passphrase") {
+		t.Errorf("wrong passphrase: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	body = `{"name":"enc","type":"ssh_key","secret":{"private_key":` + jq(encPEM) + `,"private_key_passphrase":"correct-pass"}}`
+	rec = doJSON(t, router, "POST", "/api/v1/credentials", body)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("correct passphrase: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if body := decodeJSON(t, rec); body["has_passphrase"] != true {
+		t.Errorf("has_passphrase = %v, want true", body["has_passphrase"])
+	}
+}
+
+// 删除被引用凭据：409 + 引用源清单；无引用凭据删除 204；列表回显
+// 引用计数。
+func TestCredentialDeleteInUseAPI(t *testing.T) {
+	router, db := newCredentialRouter(t)
+	pem, _ := newKeyPEM(t)
+
+	rec := doJSON(t, router, "POST", "/api/v1/credentials", createBody("被引用", pem))
+	created := decodeJSON(t, rec)
+	id, _ := created["id"].(string)
+
+	// 直接落一行引用该凭据的 sftp 源（引用态由 config JSON 承载，
+	// 领域字段在后续票接入）。
+	now := time.Now().UnixMilli()
+	if _, err := db.ExecContext(context.Background(),
+		`INSERT INTO sources (id, name, type, endpoint, username, password, config_json, credentials_json, enabled, created_at, updated_at)
+		 VALUES ('src_ref', 'NAS 源', 'sftp', '', '', '', json_object('credential_id', ?), '{}', 1, ?, ?)`,
+		id, now, now,
+	); err != nil {
+		t.Fatalf("insert referencing source: %v", err)
+	}
+
+	// 列表回显引用计数（按 id 定位目标条目）。
+	rec = doJSON(t, router, "GET", "/api/v1/credentials", "")
+	list := decodeJSON(t, rec)
+	entries, _ := list["credentials"].([]any)
+	if len(entries) != 1 {
+		t.Fatalf("credentials = %v, want 1 entry", list["credentials"])
+	}
+	entry, _ := entries[0].(map[string]any)
+	if entry["referenced_by"] != float64(1) {
+		t.Errorf("referenced_by = %v, want 1", entry["referenced_by"])
+	}
+
+	rec = doJSON(t, router, "DELETE", "/api/v1/credentials/"+id, "")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("delete in-use status = %d, want 409", rec.Code)
+	}
+	body := decodeJSON(t, rec)
+	sources, _ := body["sources"].([]any)
+	if len(sources) != 1 {
+		t.Fatalf("sources = %v, want 1 entry", body["sources"])
+	}
+	ref, _ := sources[0].(map[string]any)
+	if ref["id"] != "src_ref" || ref["name"] != "NAS 源" {
+		t.Errorf("ref = %v, want src_ref / NAS 源", ref)
+	}
+
+	// 无引用凭据删除 204。
+	rec = doJSON(t, router, "POST", "/api/v1/credentials", createBody("无引用", pem))
+	freeID, _ := decodeJSON(t, rec)["id"].(string)
+	rec = doJSON(t, router, "DELETE", "/api/v1/credentials/"+freeID, "")
+	if rec.Code != http.StatusNoContent {
+		t.Errorf("delete free status = %d, want 204", rec.Code)
+	}
+}
+
+// 权限矩阵：read scope 的 Bearer token 与匿名请求对凭据端点一律拒绝。
+func TestCredentialScopeAPI(t *testing.T) {
+	router, _ := newCredentialRouter(t)
+	readRaw, _ := createTokenViaAPI(t, router, `{"name": "reader", "scopes": ["read"]}`)
+
+	if rec := doBearerJSON(t, router, "GET", "/api/v1/credentials", readRaw, ""); rec.Code != http.StatusForbidden {
+		t.Errorf("read token list status = %d, want 403", rec.Code)
+	}
+	if rec := doBearerJSON(t, router, "POST", "/api/v1/credentials", readRaw,
+		`{"name":"x","type":"ssh_key","secret":{"private_key":"junk"}}`); rec.Code != http.StatusForbidden {
+		t.Errorf("read token create status = %d, want 403", rec.Code)
+	}
+
+	rec := doJSON(t, testRouter{Engine: router.Engine}, "GET", "/api/v1/credentials", "")
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("anonymous status = %d, want 401", rec.Code)
+	}
+}

@@ -13,6 +13,7 @@ import (
 	"tinysync/internal/auth"
 	"tinysync/internal/browser"
 	"tinysync/internal/buildinfo"
+	"tinysync/internal/credential"
 	"tinysync/internal/share"
 	"tinysync/internal/source"
 	"tinysync/internal/syncjob"
@@ -53,6 +54,7 @@ func NewRouter(webFS fs.FS, deps Dependencies) *gin.Engine {
 	{
 		registerSessionRoutes(protected, deps.Auth)
 		registerSourceRoutes(protected, deps.Sources, deps.Jobs)
+		registerCredentialRoutes(protected, deps.Credentials, deps.CredentialRefs)
 		registerJobRoutes(protected, deps.Jobs, deps.Runner)
 		registerRemoteFileRoutes(protected, deps.Browser)
 		registerLocalFileRoutes(protected, deps.LocalFiles)
@@ -80,6 +82,11 @@ type Dependencies struct {
 	Auth *auth.Service
 	// Sources 是 Source 应用服务（REST / Web UI / MCP 共用）。
 	Sources *source.Service
+	// Credentials 是凭据应用服务；为 nil 时不注册凭据端点。
+	Credentials *credential.Service
+	// CredentialRefs 提供凭据引用计数与删除守卫（由 Source 存储实现）；
+	// 为 nil 时引用计数回显为 0，删除不做引用拦截。
+	CredentialRefs credential.ReferenceIndex
 	// Jobs 是 Sync Job 应用服务；为 nil 时不注册 Job 端点，
 	// 也不启用 Source 的 Job 引用删除保护。
 	Jobs *syncjob.Service
