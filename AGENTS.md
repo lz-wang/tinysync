@@ -27,6 +27,16 @@ TinySync 面向 HomeLab，目标是将异构远端文件单向同步到本地，
 代码结构以当前源码为准，不在本文件维护目录清单。
 <!-- CODEGRAPH_END -->
 
+## Agent skills
+
+### Issue tracker
+
+工单托管在 GitHub Issues（`lz-wang/tinysync`），通过 `gh` CLI 读写。见 `docs/agents/issue-tracker.md`。
+
+### Domain docs
+
+single-context 布局：根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/domain.md`。
+
 ## 始终遵守
 
 - 全工程禁止 CGO；版本号唯一事实来源是 Git；保留无 Node 环境的 Go fallback 构建路径。领域语义见 [CONTEXT.md](CONTEXT.md)，架构决策见 `docs/adr/`。
