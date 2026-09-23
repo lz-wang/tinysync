@@ -7,6 +7,7 @@ import {
     listAPITokens,
     revokeAPIToken,
 } from '../api'
+import { formatTime } from '../app/formatTime'
 import { useToast } from '../app/toast'
 import CreateTokenDialog from '../features/tokens/CreateTokenDialog'
 import RawTokenDialog from '../features/tokens/RawTokenDialog'
@@ -24,10 +25,6 @@ function tokenStatus(token: APITokenResponse): {
         return { label: '已过期', color: 'warning' }
     }
     return { label: '有效', color: 'success' }
-}
-
-function formatTime(value: string): string {
-    return value === '' ? '-' : new Date(value).toLocaleString()
 }
 
 // TokensPage 是 API Token 管理页：列表 / 创建（raw 一次性展示）/

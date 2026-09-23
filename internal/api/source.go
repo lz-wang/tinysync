@@ -538,16 +538,8 @@ func (h *sourceHandlers) promote(c *gin.Context) {
 	}
 	id := c.Param("id")
 
-	// 资格校验：SFTP + private_key + 未引用（不存在 404，不合格 400）。
-	eligible, err := h.svc.PromoteEligible(c.Request.Context(), id)
-	if err != nil {
-		handleSourceError(c, err)
-		return
-	}
-	if !eligible {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "source is not eligible for credential promotion"})
-		return
-	}
+	// 资格校验（SFTP + private_key + 未引用）与内联凭据读取合一：
+	// 不存在 404，不合格 400。
 	inline, err := h.svc.InlineCredentialsForPromote(c.Request.Context(), id)
 	if err != nil {
 		handleSourceError(c, err)
@@ -577,17 +569,9 @@ func (h *sourceHandlers) promote(c *gin.Context) {
 		return
 	}
 
-	// 源改写为引用；service 层强制清除内联 secret（互斥不变量）。
-	src, err := h.svc.Get(c.Request.Context(), id)
-	if err != nil {
-		handleSourceError(c, err)
-		return
-	}
-	cfg := *src.Config.SFTP
-	cfg.CredentialID = created.ID
-	updated, err := h.svc.Update(c.Request.Context(), id, source.UpdateInput{
-		Config: &source.Config{SFTP: &cfg},
-	})
+	// 源改写为引用：以最新配置为基础绑定（service 层强制清除内联
+	// secret，互斥不变量）。
+	updated, err := h.svc.BindCredential(c.Request.Context(), id, created.ID)
 	if err != nil {
 		handleSourceError(c, err)
 		return

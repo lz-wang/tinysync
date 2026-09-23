@@ -306,6 +306,10 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
             }
             return undefined
         }
+        if (keySource === 'credential') {
+            // 引用与内联互斥：凭据库模式下残留的 dirty 内联输入一律丢弃。
+            return undefined
+        }
         const creds: SFTPCredentials = {}
         let changed = false
         for (const key of ['sftp.password', 'sftp.private_key', 'sftp.passphrase'] as const) {
@@ -402,8 +406,16 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
         if (sftp.host.trim() === '' || sftp.username.trim() === '') {
             return false
         }
-        if (sftp.auth_method === 'private_key' && keySource === 'credential') {
-            return (sftp.credential_id ?? '') !== ''
+        if (sftp.auth_method === 'private_key') {
+            if (keySource === 'credential') {
+                return (sftp.credential_id ?? '') !== ''
+            }
+            // 内联模式必须持有私钥：存量已有（未清除）或本次粘贴——
+            // 从引用态切回内联时存量已被清除，必须重贴。
+            const hasStored =
+                source !== null && (source.credential_state.sftp?.private_key_set ?? false)
+            const pasted = secrets['sftp.private_key'].trim() !== ''
+            return hasStored || pasted
         }
         return true
     }
@@ -671,13 +683,22 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                                         labelId="sftp-auth-label"
                                         value={sftp.auth_method}
                                         label="认证方式"
-                                        onChange={e =>
-                                            setSftp({
-                                                ...sftp,
-                                                auth_method: e.target
-                                                    .value as SFTPConfig['auth_method'],
-                                            })
-                                        }
+                                        onChange={e => {
+                                            const next = e.target.value as SFTPConfig['auth_method']
+                                            if (next === 'password') {
+                                                // 密码方式不携带凭据引用：清引用并
+                                                // 复位私钥来源，避免过期 credential_id
+                                                // 触发后端 400。
+                                                setKeySource('inline')
+                                                setSftp({
+                                                    ...sftp,
+                                                    auth_method: next,
+                                                    credential_id: '',
+                                                })
+                                                return
+                                            }
+                                            setSftp({ ...sftp, auth_method: next })
+                                        }}
                                     >
                                         <MenuItem value="password">密码</MenuItem>
                                         <MenuItem value="private_key">私钥</MenuItem>
@@ -730,6 +751,11 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                                                     })
                                                 }
                                             >
+                                                {credentials.length === 0 && (
+                                                    <MenuItem value="">
+                                                        <em>凭据库为空或加载中</em>
+                                                    </MenuItem>
+                                                )}
                                                 {credentials.map(credential => (
                                                     <MenuItem
                                                         key={credential.id}

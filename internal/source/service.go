@@ -113,12 +113,14 @@ func (s *Service) Update(ctx context.Context, id string, input UpdateInput) (Sou
 			return Source{}, err
 		}
 		updated.Config = normalized
-		// 落到引用态时强制清除内联 secret：config 切到引用而调用方
-		// 未显式清钥时，存储中的旧钥会残留，互斥不变量在存储层被
-		// 打破（引用态的生效 secret 只来自凭据库）。
-		if updated.Type == TypeSFTP && updated.Config.SFTP != nil && updated.Config.SFTP.CredentialID != "" {
-			input.Credentials = clearInlineSFTPUpdate(input.Credentials)
-		}
+	}
+
+	// 引用态源不接受内联 secret 写入：无论本次是否变更 config，只要
+	// 生效配置处于引用态，就强制清除同请求携带（或合并进存储）的内联
+	// secret——否则「引用 + 沉睡内联钥」会在后续解绑时静默复活旧钥，
+	// 互斥不变量在存储层被打破。
+	if updated.Type == TypeSFTP && updated.Config.SFTP != nil && updated.Config.SFTP.CredentialID != "" {
+		input.Credentials = clearInlineSFTPUpdate(input.Credentials)
 	}
 	if input.Credentials != nil {
 		if err := ValidateCredentialsUpdate(updated.Type, input.Credentials); err != nil {
@@ -144,16 +146,38 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	return s.repo.Delete(ctx, id)
 }
 
-// PromoteEligible 报告源是否可提升为凭据：SFTP + private_key 方式 +
-// 未引用凭据。UI 据此决定是否展示提升动作。
-func (s *Service) PromoteEligible(ctx context.Context, id string) (bool, error) {
+// BindCredential 把源的凭据引用指向 credentialID 并强制清除内联
+// secret：以调用时点的最新配置为基础改写，返回更新后的源。与源配置
+// 的整体替换语义一致，并发编辑遵循 last-write-wins；提升编排（api
+// 层）在紧邻调用前创建凭据，窗口已尽量收窄。
+func (s *Service) BindCredential(ctx context.Context, id string, credentialID string) (Source, error) {
 	src, err := s.repo.Get(ctx, id)
 	if err != nil {
-		return false, err
+		return Source{}, err
 	}
-	return src.Type == TypeSFTP && src.Config.SFTP != nil &&
-		src.Config.SFTP.AuthMethod == SFTPAuthPrivateKey &&
-		src.Config.SFTP.CredentialID == "", nil
+	if src.Type != TypeSFTP || src.Config.SFTP == nil ||
+		src.Config.SFTP.AuthMethod != SFTPAuthPrivateKey {
+		return Source{}, fmt.Errorf("%w: source is not eligible for credential promotion", ErrInvalid)
+	}
+	cfg := *src.Config.SFTP
+	cfg.CredentialID = credentialID
+	normalized := (Config{SFTP: &cfg}).Normalized(src.Type)
+	if err := s.validateCredentialReference(ctx, normalized); err != nil {
+		return Source{}, err
+	}
+	if err := s.repo.Update(ctx, sourceForUpdate(src, normalized), clearInlineSFTPUpdate(nil)); err != nil {
+		return Source{}, err
+	}
+	// 写后重读：回显以存储推导的 CredentialState 为准。
+	return s.repo.Get(ctx, id)
+}
+
+// sourceForUpdate 以现有源为基底套用新配置（name / enabled 等其余
+// 可变字段保持不变）。
+func sourceForUpdate(src Source, cfg Config) Source {
+	updated := src
+	updated.Config = cfg
+	return updated
 }
 
 // InlineCredentialsForPromote 返回源存储的内联凭据明文：仅供提升迁移

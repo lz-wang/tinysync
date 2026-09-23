@@ -19,14 +19,11 @@ import {
 } from '@mui/material'
 import { useCallback, useEffect, useState } from 'react'
 import { type CredentialResponse, listCredentials, listSources, type SourceResponse } from '../api'
+import { formatTime } from '../app/formatTime'
 import { useToast } from '../app/toast'
 import { usePageTitle } from '../app/usePageTitle'
 import CredentialDialog from '../features/credentials/CredentialDialog'
 import DeleteCredentialDialog from '../features/credentials/DeleteCredentialDialog'
-
-function formatTime(value: string): string {
-    return value === '' ? '-' : new Date(value).toLocaleString()
-}
 
 // CredentialsPage 是凭据管理页：列表（名称 / 公钥指纹 / 带口令 /
 // 引用数 / 更新时间）、创建 / 编辑（secret 整体替换）、删除（被引用

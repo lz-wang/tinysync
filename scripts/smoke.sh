@@ -329,17 +329,12 @@ kt/U382cbEzkDWLb4qMQAAAADXRpbnlzeW5jLXRlc3Q=
 -----END OPENSSH PRIVATE KEY-----
 PEM
 smoke_key_body=$(cat smoke_key.pem)
-python3 - "$smoke_key_body" <<'PY' >credential_req.json
-import json, sys
-print(json.dumps({
-	"name": "Smoke Credential",
-	"type": "ssh_key",
-	"secret": {"private_key": sys.argv[1]},
-}))
-PY
+# 纯 bash 构造 JSON（PEM 无引号/反斜杠，仅换行需转义；不依赖
+# python3——Windows Git Bash runner 不保证其在 PATH 中）。
+smoke_key_escaped=${smoke_key_body//$'\n'/\\n}
 cred_code=$(curl --silent -o credential.json -w '%{http_code}' -b cookie.jar \
 	-H 'Content-Type: application/json' \
-	--data @credential_req.json \
+	--data "{\"name\":\"Smoke Credential\",\"type\":\"ssh_key\",\"secret\":{\"private_key\":\"${smoke_key_escaped}\"}}" \
 	"${base_url}/api/v1/credentials")
 if [[ "${cred_code}" != "201" ]]; then
 	echo "Error: credential creation failed (${cred_code})" >&2

@@ -210,6 +210,21 @@ func TestCredentialReferenceLifecycle(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("rebind update: %v", err)
 	}
+
+	// 只带 credentials 的 PATCH（无 config）打在引用态源上：内联钥
+	// 被强制清除，存储不出现「引用 + 沉睡内联钥」。
+	staleKey := mustNewKeyPEM(t)
+	if _, err := env.sources.Update(ctx, src.ID, source.UpdateInput{
+		Credentials: &source.CredentialsUpdate{SFTP: &source.SFTPCredentialsUpdate{
+			PrivateKey: &staleKey,
+		}},
+	}); err != nil {
+		t.Fatalf("credentials-only update on referenced source: %v", err)
+	}
+	got = resolvedCreds(t, env, src.ID)
+	if got.SFTP == nil || got.SFTP.PrivateKey == staleKey {
+		t.Errorf("resolved creds = inline pasted key, want referenced credential key")
+	}
 	if _, err := env.db.ExecContext(ctx, "DELETE FROM credentials"); err != nil {
 		t.Fatalf("raw delete credential: %v", err)
 	}
