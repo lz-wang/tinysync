@@ -17,20 +17,31 @@ type fakeRepo struct {
 	deleted         []string
 	// deleteErr 非 nil 时 Delete 返回该错误。
 	deleteErr error
+	// secrets 记录 Create / ReplaceSecret 写入的 secret（GetSecret 读回）。
+	secrets map[string]Secret
 }
 
 func newFakeRepo() *fakeRepo {
-	return &fakeRepo{creds: map[string]Credential{}}
+	return &fakeRepo{creds: map[string]Credential{}, secrets: map[string]Secret{}}
 }
 
-func (r *fakeRepo) Create(_ context.Context, c Credential, _ Secret) error {
+func (r *fakeRepo) Create(_ context.Context, c Credential, secret Secret) error {
 	for _, existing := range r.creds {
 		if strings.EqualFold(existing.Name, c.Name) {
 			return ErrConflict
 		}
 	}
 	r.creds[c.ID] = c
+	r.secrets[c.ID] = secret
 	return nil
+}
+
+func (r *fakeRepo) GetSecret(_ context.Context, id string) (Secret, error) {
+	secret, ok := r.secrets[id]
+	if !ok {
+		return Secret{}, errNotFound(id)
+	}
+	return secret, nil
 }
 
 func (r *fakeRepo) Get(_ context.Context, id string) (Credential, error) {
@@ -73,6 +84,7 @@ func (r *fakeRepo) ReplaceSecret(_ context.Context, id string, secret Secret, fi
 	c.Fingerprint = fingerprint
 	c.HasPassphrase = hasPassphrase
 	r.creds[id] = c
+	r.secrets[id] = secret
 	r.replacedSecrets = append(r.replacedSecrets, &secret)
 	return nil
 }

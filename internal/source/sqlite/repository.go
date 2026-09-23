@@ -25,7 +25,10 @@ func New(db *sql.DB) *Repository {
 // credentialStateExpr 在 SQL 中从 credentials_json 推导各 secret 的
 // 回显状态：普通读取路径只取状态布尔，永不取回 secret 明文。
 // SQLite 比较结果为整数，json('true') / json('false') 保证输出
-// JSON 布尔。
+// JSON 布尔。SFTP 引用态（config 携带 credential_id）跟随凭据：
+// private_key_set 反映引用存在，passphrase 状态取引用凭据的
+// has_passphrase——回显描述「生效 secret」，而生效 secret 在引用态
+// 来自凭据库。
 const credentialStateExpr = `CASE type
 	WHEN 'webdav' THEN json_object('webdav', json_object(
 		'password_set', CASE WHEN COALESCE(json_extract(credentials_json, '$.password'), '') != '' THEN json('true') ELSE json('false') END))
@@ -33,8 +36,12 @@ const credentialStateExpr = `CASE type
 		'secret_key_set', CASE WHEN COALESCE(json_extract(credentials_json, '$.secret_key'), '') != '' THEN json('true') ELSE json('false') END))
 	WHEN 'sftp' THEN json_object('sftp', json_object(
 		'password_set', CASE WHEN COALESCE(json_extract(credentials_json, '$.password'), '') != '' THEN json('true') ELSE json('false') END,
-		'private_key_set', CASE WHEN COALESCE(json_extract(credentials_json, '$.private_key'), '') != '' THEN json('true') ELSE json('false') END,
-		'private_key_passphrase_set', CASE WHEN COALESCE(json_extract(credentials_json, '$.private_key_passphrase'), '') != '' THEN json('true') ELSE json('false') END))
+		'private_key_set', CASE WHEN COALESCE(json_extract(credentials_json, '$.private_key'), '') != ''
+			OR COALESCE(` + CredentialIDExpr + `, '') != '' THEN json('true') ELSE json('false') END,
+		'private_key_passphrase_set', CASE WHEN COALESCE(json_extract(credentials_json, '$.private_key_passphrase'), '') != ''
+			OR (COALESCE(` + CredentialIDExpr + `, '') != ''
+				AND EXISTS (SELECT 1 FROM credentials c WHERE c.id = ` + CredentialIDExpr + ` AND c.has_passphrase = 1))
+			THEN json('true') ELSE json('false') END))
 	WHEN 'github_release' THEN json_object('github_release', json_object(
 		'token_set', CASE WHEN COALESCE(json_extract(credentials_json, '$.token'), '') != '' THEN json('true') ELSE json('false') END))
 	ELSE '{}'

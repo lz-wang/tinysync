@@ -13,6 +13,7 @@ import (
 	"tinysync/internal/credential"
 	"tinysync/internal/credential/keytest"
 	credentialsqlite "tinysync/internal/credential/sqlite"
+	"tinysync/internal/source"
 	sourcesqlite "tinysync/internal/source/sqlite"
 	"tinysync/internal/storage"
 )
@@ -299,5 +300,72 @@ func TestCredentialScopeAPI(t *testing.T) {
 	rec := doJSON(t, testRouter{Engine: router.Engine}, "GET", "/api/v1/credentials", "")
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("anonymous status = %d, want 401", rec.Code)
+	}
+}
+
+// 源凭据引用的 API 语义：存在性校验 400、互斥 400、引用态回显跟随
+// 凭据、解绑回退（票 #3）。
+func TestSourceCredentialReferenceAPI(t *testing.T) {
+	dataDir := t.TempDir()
+	db, err := storage.Open(dataDir)
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(context.Background(), db, dataDir); err != nil {
+		t.Fatalf("storage.Migrate: %v", err)
+	}
+	srcRepo := sourcesqlite.New(db)
+	credSvc := credential.NewService(credentialsqlite.New(db))
+	srcSvc := source.NewService(srcRepo, fakeFactory{remote: fakeRemote{}})
+	srcSvc.Credentials = credSvc
+	router := newTestAuth(t, db, Dependencies{Sources: srcSvc, Credentials: credSvc, CredentialRefs: srcRepo})
+
+	// 建凭据。
+	pem, _ := newKeyPEM(t)
+	rec := doJSON(t, router, "POST", "/api/v1/credentials", createBody("NAS 钥匙", pem))
+	credID, _ := decodeJSON(t, rec)["id"].(string)
+
+	sftpCfg := func(credentialID string) string {
+		return `"host":"nas.example.com","port":22,"username":"tinysync","remote_root":"/","auth_method":"private_key"` +
+			`,"host_key_fingerprint":"","credential_id":` + jq(credentialID)
+	}
+
+	// 引用不存在的凭据 → 400。
+	rec = doJSON(t, router, "POST", "/api/v1/sources", `{"name":"坏引用","type":"sftp","config":{`+sftpCfg("crd_missing")+`}}`)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "does not exist") {
+		t.Errorf("missing reference: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	// 互斥：引用 + 内联私钥 → 400。
+	rec = doJSON(t, router, "POST", "/api/v1/sources",
+		`{"name":"互斥","type":"sftp","config":{`+sftpCfg(credID)+`},"credentials":{"private_key":"junk"}}`)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "mutually exclusive") {
+		t.Errorf("mutex: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	// 正常引用创建 → 201，回显 state 跟随凭据。
+	rec = doJSON(t, router, "POST", "/api/v1/sources", `{"name":"NAS","type":"sftp","config":{`+sftpCfg(credID)+`}}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("reference create: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	body := decodeJSON(t, rec)
+	srcID, _ := body["id"].(string)
+	state, _ := body["credential_state"].(map[string]any)
+	sftpState, _ := state["sftp"].(map[string]any)
+	if sftpState == nil || sftpState["private_key_set"] != true {
+		t.Errorf("credential_state = %v, want sftp private_key_set true", state)
+	}
+
+	// 解绑（config 缺省 credential_id）→ state 回退 false。
+	rec = doJSON(t, router, "PATCH", "/api/v1/sources/"+srcID,
+		`{"config":{"host":"nas.example.com","port":22,"username":"tinysync","remote_root":"/","auth_method":"private_key","host_key_fingerprint":"","credential_id":""}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unbind: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	state, _ = decodeJSON(t, rec)["credential_state"].(map[string]any)
+	sftpState, _ = state["sftp"].(map[string]any)
+	if sftpState == nil || sftpState["private_key_set"] != false {
+		t.Errorf("state after unbind = %v, want private_key_set false", state)
 	}
 }

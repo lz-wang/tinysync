@@ -83,3 +83,68 @@ func TestCredentialReferences(t *testing.T) {
 		t.Errorf("refs = %+v, want empty", empty)
 	}
 }
+
+// 引用态回显：CredentialState 跟随凭据（private_key_set 反映引用
+// 存在，passphrase 状态取引用凭据的 has_passphrase）；解绑后回退。
+func TestCredentialReferenceStateEcho(t *testing.T) {
+	db, repo := openRepository(t)
+	ctx := context.Background()
+	now := time.Now().UnixMilli()
+
+	// 建一条带口令的凭据。
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO credentials (id, name, type, secret_json, fingerprint, has_passphrase, created_at, updated_at)
+		 VALUES ('crd_p', 'NAS', 'ssh_key', '{}', 'SHA256:x', 1, ?, ?)`, now, now); err != nil {
+		t.Fatalf("insert credential: %v", err)
+	}
+
+	// 引用态 sftp 源（credentials_json 为空）。
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO sources (id, name, type, endpoint, username, password, config_json, credentials_json, enabled, created_at, updated_at)
+		 VALUES ('src_ref', '引用源', 'sftp', '', '', '', json_object('credential_id', 'crd_p', 'auth_method', 'private_key'), '{}', 1, ?, ?)`,
+		now, now); err != nil {
+		t.Fatalf("insert referencing source: %v", err)
+	}
+
+	src, err := repo.Get(ctx, "src_ref")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	sftp := src.CredentialState.SFTP
+	if sftp == nil || !sftp.PrivateKeySet || !sftp.PrivateKeyPassphraseSet || sftp.PasswordSet {
+		t.Errorf("reference state = %+v, want key+passphrase set, password clear", sftp)
+	}
+
+	// 引用无口令凭据：passphrase 状态回退为 false。
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO credentials (id, name, type, secret_json, fingerprint, has_passphrase, created_at, updated_at)
+		 VALUES ('crd_np', '无口令', 'ssh_key', '{}', 'SHA256:y', 0, ?, ?)`, now, now); err != nil {
+		t.Fatalf("insert credential np: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		"UPDATE sources SET config_json = json_object('credential_id', 'crd_np', 'auth_method', 'private_key') WHERE id = 'src_ref'"); err != nil {
+		t.Fatalf("rebind source: %v", err)
+	}
+	src, err = repo.Get(ctx, "src_ref")
+	if err != nil {
+		t.Fatalf("Get after rebind: %v", err)
+	}
+	sftp = src.CredentialState.SFTP
+	if sftp == nil || !sftp.PrivateKeySet || sftp.PrivateKeyPassphraseSet {
+		t.Errorf("state after rebind = %+v, want key set only", sftp)
+	}
+
+	// 解绑：无内联无引用 → 全 false。
+	if _, err := db.ExecContext(ctx,
+		"UPDATE sources SET config_json = json_object('auth_method', 'private_key') WHERE id = 'src_ref'"); err != nil {
+		t.Fatalf("unbind source: %v", err)
+	}
+	src, err = repo.Get(ctx, "src_ref")
+	if err != nil {
+		t.Fatalf("Get after unbind: %v", err)
+	}
+	sftp = src.CredentialState.SFTP
+	if sftp == nil || sftp.PrivateKeySet || sftp.PrivateKeyPassphraseSet {
+		t.Errorf("state after unbind = %+v, want all clear", sftp)
+	}
+}

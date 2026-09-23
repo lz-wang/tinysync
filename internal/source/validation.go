@@ -171,6 +171,14 @@ func validateSFTPConfig(c SFTPConfig) error {
 	default:
 		return fmt.Errorf("%w: unsupported sftp auth_method %q", ErrInvalid, c.AuthMethod)
 	}
+	// 互斥不变量（ADR 0005）：凭据引用非空 ⟺ auth_method=private_key。
+	// 引用态下内联 secret 的互斥由 ValidateCredentials 在凭据组上校验。
+	switch {
+	case c.CredentialID != "" && c.AuthMethod != SFTPAuthPrivateKey:
+		return fmt.Errorf("%w: sftp credential_id requires auth_method=private_key", ErrInvalid)
+	case c.CredentialID != "" && strings.TrimSpace(c.CredentialID) != c.CredentialID:
+		return fmt.Errorf("%w: sftp credential_id must not contain surrounding whitespace", ErrInvalid)
+	}
 	if strings.TrimSpace(c.HostKeyFingerprint) == "" {
 		return nil
 	}
@@ -300,7 +308,8 @@ func validateHostKeyFingerprint(fp string) error {
 //   - WebDAV：password 可为空（匿名）；
 //   - S3：secret_key 必填；
 //   - SFTP：password 方式要求 password；private_key 方式要求
-//     private_key（passphrase 可选）。
+//     private_key（passphrase 可选），但引用态（credential_id 非空）
+//     时源自身不得再持有任何内联 secret——引用与内联互斥。
 func ValidateCredentials(t Type, c Config, creds Credentials) error {
 	switch t {
 	case TypeWebDAV:
@@ -319,6 +328,9 @@ func ValidateCredentials(t Type, c Config, creds Credentials) error {
 			return fmt.Errorf("%w: credentials must only contain sftp fields for type sftp", ErrInvalid)
 		}
 		if creds.SFTP == nil {
+			if c.SFTP.CredentialID != "" {
+				return nil
+			}
 			return fmt.Errorf("%w: sftp credentials are required", ErrInvalid)
 		}
 		switch c.SFTP.AuthMethod {
@@ -327,6 +339,12 @@ func ValidateCredentials(t Type, c Config, creds Credentials) error {
 				return fmt.Errorf("%w: sftp password is required for auth_method=password", ErrInvalid)
 			}
 		case SFTPAuthPrivateKey:
+			if c.SFTP.CredentialID != "" {
+				if creds.SFTP.PrivateKey != "" || creds.SFTP.PrivateKeyPassphrase != "" || creds.SFTP.Password != "" {
+					return fmt.Errorf("%w: sftp credential reference and inline secrets are mutually exclusive", ErrInvalid)
+				}
+				return nil
+			}
 			if creds.SFTP.PrivateKey == "" {
 				return fmt.Errorf("%w: sftp private_key is required for auth_method=private_key", ErrInvalid)
 			}

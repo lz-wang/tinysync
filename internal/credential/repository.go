@@ -16,6 +16,10 @@ type Repository interface {
 	// Get 按 ID 读取；不存在返回 ErrNotFound。
 	Get(ctx context.Context, id string) (Credential, error)
 
+	// GetSecret 返回凭据明文集合；不存在返回 ErrNotFound。唯一允许
+	// 读取 secret 的路径，仅用于凭据引用解析（构造远端客户端）。
+	GetSecret(ctx context.Context, id string) (Secret, error)
+
 	// List 返回全部凭据，按 name 大小写不敏感排序，保证列表稳定。
 	List(ctx context.Context) ([]Credential, error)
 

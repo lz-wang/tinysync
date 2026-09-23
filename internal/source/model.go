@@ -121,7 +121,10 @@ type S3Config struct {
 
 // SFTPConfig 是 SFTP Source 的非敏感配置。AuthMethod 显式声明认证
 // 方式；HostKeyFingerprint 可选，提供时必须为 SHA256:... 形式并用于
-// 严格校验；留空时跳过主机密钥校验。
+// 严格校验；留空时跳过主机密钥校验。CredentialID 是凭据引用（ADR
+// 0005）：非空时 auth_method 必须为 private_key，且源自身不得再持有
+// 内联私钥 / 口令——引用与内联互斥，生效 secret 在远端客户端构造时
+// 从凭据库解析。
 type SFTPConfig struct {
 	Host               string         `json:"host"`
 	Port               int            `json:"port"`
@@ -129,6 +132,7 @@ type SFTPConfig struct {
 	RemoteRoot         string         `json:"remote_root"`
 	AuthMethod         SFTPAuthMethod `json:"auth_method"`
 	HostKeyFingerprint string         `json:"host_key_fingerprint"`
+	CredentialID       string         `json:"credential_id"`
 }
 
 // GitHubReleaseConfig 是 GitHub Release Source 的非敏感配置。
@@ -307,6 +311,7 @@ func (c Config) Normalized(t Type) Config {
 		sftp := *c.SFTP
 		sftp.Host = strings.TrimSpace(sftp.Host)
 		sftp.Username = strings.TrimSpace(sftp.Username)
+		sftp.CredentialID = strings.TrimSpace(sftp.CredentialID)
 		if sftp.Port == 0 {
 			sftp.Port = 22
 		}

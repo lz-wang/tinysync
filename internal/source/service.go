@@ -16,6 +16,9 @@ const testTimeout = 10 * time.Second
 type Service struct {
 	repo    Repository
 	factory RemoteFactory
+	// Credentials 是凭据引用的校验与解析入口；nil 时跳过引用存在性
+	// 校验（测试装配），生产装配必须提供。
+	Credentials CredentialResolver
 	// Now 返回当前时间；默认 UTC time.Now，测试可注入固定时钟。
 	Now func() time.Time
 }
@@ -60,10 +63,16 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Source, error)
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
+	// 凭据引用存在性校验：以归一化后的 config 为准。
+	if err := s.validateCredentialReference(ctx, src.Config); err != nil {
+		return Source{}, err
+	}
 	if err := s.repo.Create(ctx, src, input.Credentials); err != nil {
 		return Source{}, err
 	}
-	return src, nil
+	// 写后重读：CredentialState 以存储推导（含引用态跟随凭据）为
+	// 单一事实来源，避免服务层推导与持久化脱节。
+	return s.repo.Get(ctx, id)
 }
 
 // Get 按 ID 读取 Source。
@@ -97,7 +106,13 @@ func (s *Service) Update(ctx context.Context, id string, input UpdateInput) (Sou
 		if err := ValidateConfig(updated.Type, *input.Config); err != nil {
 			return Source{}, err
 		}
-		updated.Config = input.Config.Normalized(updated.Type)
+		normalized := input.Config.Normalized(updated.Type)
+		// 凭据引用存在性校验：config 整体替换语义下，credential_id
+		// 缺省即解绑，出现即改绑（指向不存在的凭据在入口拒绝）。
+		if err := s.validateCredentialReference(ctx, normalized); err != nil {
+			return Source{}, err
+		}
+		updated.Config = normalized
 	}
 	if input.Credentials != nil {
 		if err := ValidateCredentialsUpdate(updated.Type, input.Credentials); err != nil {
@@ -113,7 +128,8 @@ func (s *Service) Update(ctx context.Context, id string, input UpdateInput) (Sou
 	if err := s.repo.Update(ctx, updated, input.Credentials); err != nil {
 		return Source{}, err
 	}
-	return updated, nil
+	// 写后重读：与 Create 同理，回显以存储推导的 CredentialState 为准。
+	return s.repo.Get(ctx, id)
 }
 
 // Delete 按 ID 硬删除 Source。只删除本地 Source 配置，
@@ -132,7 +148,7 @@ func (s *Service) OpenRemote(ctx context.Context, id string) (Source, Remote, er
 	if err != nil {
 		return Source{}, nil, err
 	}
-	creds, err := s.repo.GetCredentials(ctx, id)
+	creds, err := s.credentialsFor(ctx, src)
 	if err != nil {
 		return Source{}, nil, err
 	}
@@ -159,7 +175,7 @@ func (s *Service) TestConnection(ctx context.Context, id string) (TestResult, er
 	if err != nil {
 		return TestResult{}, err
 	}
-	creds, err := s.repo.GetCredentials(ctx, id)
+	creds, err := s.credentialsFor(ctx, src)
 	if err != nil {
 		return TestResult{}, err
 	}

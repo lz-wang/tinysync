@@ -126,8 +126,10 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 
 	// 装配凭据域：SQLite 仓库 + 应用服务。引用回显复用 Source 仓库
 	// （引用关系存放在 source config 的 credential_id 字段，ADR 0005）；
-	// 删除守卫由凭据仓储在同一事务内判定。
+	// 删除守卫由凭据仓储在同一事务内判定。Source 服务经 resolver
+	// 校验引用存在性并在构造远端客户端时解析引用 secret。
 	credentials := credential.NewService(credentialsqlite.New(db))
+	sources.Credentials = credentials
 
 	// 装配 Sync Job 领域：仓库共享同一 DB（FK RESTRICT / CASCADE 生效），
 	// 应用服务带 LocalRoot 归属保护，Runner 提供手动运行并以持久化

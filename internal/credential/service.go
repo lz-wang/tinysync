@@ -2,9 +2,12 @@ package credential
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	"tinysync/internal/source"
 )
 
 // Service 是 Credential 的应用服务：REST API 与 Web UI 共用的业务
@@ -125,4 +128,34 @@ func (s *Service) Update(ctx context.Context, id string, input UpdateInput) (Cre
 // fail-closed。
 func (s *Service) Delete(ctx context.Context, id string) error {
 	return s.repo.Delete(ctx, id)
+}
+
+// CredentialExists 实现 source.CredentialResolver：报告凭据是否存在
+// （引用态源在创建 / 更新时的存在性校验入口）。
+func (s *Service) CredentialExists(ctx context.Context, credentialID string) (bool, error) {
+	_, err := s.repo.Get(ctx, credentialID)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// ReferencedKeySecret 实现 source.CredentialResolver：返回引用凭据的
+// SSH 私钥 secret；凭据不存在时 found=false。仅在远端客户端构造的
+// 引用解析路径被调用。
+func (s *Service) ReferencedKeySecret(ctx context.Context, credentialID string) (source.ReferencedKeySecret, bool, error) {
+	secret, err := s.repo.GetSecret(ctx, credentialID)
+	if errors.Is(err, ErrNotFound) {
+		return source.ReferencedKeySecret{}, false, nil
+	}
+	if err != nil {
+		return source.ReferencedKeySecret{}, false, err
+	}
+	return source.ReferencedKeySecret{
+		PrivateKey:           secret.PrivateKey,
+		PrivateKeyPassphrase: secret.PrivateKeyPassphrase,
+	}, true, nil
 }

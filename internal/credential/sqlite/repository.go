@@ -72,6 +72,32 @@ func (r *Repository) Get(ctx context.Context, id string) (credential.Credential,
 	return c, nil
 }
 
+// GetSecret 实现 credential.Repository：唯一允许读取 secret 明文的
+// 路径，仅用于凭据引用解析（构造远端客户端）。
+func (r *Repository) GetSecret(ctx context.Context, id string) (credential.Secret, error) {
+	var raw string
+	err := r.db.QueryRowContext(ctx,
+		"SELECT secret_json FROM credentials WHERE id = ?", id).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return credential.Secret{}, fmt.Errorf("%w: %s", credential.ErrNotFound, id)
+	}
+	if err != nil {
+		return credential.Secret{}, fmt.Errorf("get credential secret %s: %w", id, err)
+	}
+	var decoded secretJSON
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		return credential.Secret{}, fmt.Errorf("decode secret of credential %s: %w", id, err)
+	}
+	secret := credential.Secret{}
+	if decoded.PrivateKey != nil {
+		secret.PrivateKey = *decoded.PrivateKey
+	}
+	if decoded.PrivateKeyPassphrase != nil {
+		secret.PrivateKeyPassphrase = *decoded.PrivateKeyPassphrase
+	}
+	return secret, nil
+}
+
 // List 实现 credential.Repository，按 name 大小写不敏感排序。
 func (r *Repository) List(ctx context.Context) ([]credential.Credential, error) {
 	rows, err := r.db.QueryContext(ctx,
