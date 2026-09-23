@@ -2,6 +2,7 @@ import DarkModeOutlinedIcon from '@mui/icons-material/DarkModeOutlined'
 import DashboardOutlinedIcon from '@mui/icons-material/DashboardOutlined'
 import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined'
 import HistoryOutlinedIcon from '@mui/icons-material/HistoryOutlined'
+import KeyOutlinedIcon from '@mui/icons-material/KeyOutlined'
 import LightModeOutlinedIcon from '@mui/icons-material/LightModeOutlined'
 import LogoutOutlinedIcon from '@mui/icons-material/LogoutOutlined'
 import MenuIcon from '@mui/icons-material/Menu'
@@ -41,6 +42,7 @@ const collapseKey = 'tinysync-sidebar-collapsed'
 const items = [
     { to: '/', label: '概览', icon: <DashboardOutlinedIcon /> },
     { to: '/sources', label: '同步源', icon: <StorageOutlinedIcon /> },
+    { to: '/credentials', label: '凭据', icon: <KeyOutlinedIcon /> },
     { to: '/jobs', label: '同步任务', icon: <SyncOutlinedIcon /> },
     { to: '/files', label: '文件管理', icon: <FolderOutlinedIcon /> },
     { to: '/shares', label: '共享管理', icon: <ShareOutlinedIcon /> },
@@ -182,17 +184,19 @@ export default function AppShell() {
     )
     const title = location.pathname.startsWith('/sources')
         ? '同步源'
-        : location.pathname.startsWith('/jobs')
-          ? '同步任务'
-          : location.pathname.startsWith('/files')
-            ? '文件管理'
-            : location.pathname.startsWith('/shares')
-              ? '共享管理'
-              : location.pathname.startsWith('/history')
-                ? '运行历史'
-                : location.pathname.startsWith('/settings')
-                  ? '设置'
-                  : '概览'
+        : location.pathname.startsWith('/credentials')
+          ? '凭据'
+          : location.pathname.startsWith('/jobs')
+            ? '同步任务'
+            : location.pathname.startsWith('/files')
+              ? '文件管理'
+              : location.pathname.startsWith('/shares')
+                ? '共享管理'
+                : location.pathname.startsWith('/history')
+                  ? '运行历史'
+                  : location.pathname.startsWith('/settings')
+                    ? '设置'
+                    : '概览'
     return (
         <Box sx={{ display: 'flex', minHeight: '100vh', bgcolor: 'background.default' }}>
             <AppBar

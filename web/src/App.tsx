@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 import AppShell from './app/AppShell'
 import { AuthProvider } from './features/auth/AuthProvider'
 import RequireAuth from './features/auth/RequireAuth'
+import CredentialsPage from './pages/CredentialsPage'
 import FilesPage from './pages/FilesPage'
 import HistoryPage from './pages/HistoryPage'
 import JobsPage from './pages/JobsPage'
@@ -31,6 +32,7 @@ export default function App() {
                 >
                     <Route index element={<OverviewPage />} />
                     <Route path="sources" element={<SourcesPage />} />
+                    <Route path="credentials" element={<CredentialsPage />} />
                     <Route path="jobs" element={<JobsPage />} />
                     <Route path="files" element={<FilesPage />} />
                     <Route path="shares" element={<SharesPage />} />

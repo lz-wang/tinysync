@@ -54,6 +54,9 @@ export interface SFTPConfig {
     remote_root: string
     auth_method: SFTPAuthMethod
     host_key_fingerprint: string
+    // credential_id 非空时为凭据引用（与内联私钥互斥，auth_method
+    // 必须为 private_key）。
+    credential_id?: string
 }
 
 // GitHubReleasePolicy 是 GitHub Release 的版本选择策略。
@@ -335,6 +338,66 @@ export interface InspectSourceResponse {
 // inspectSource 创建前测试并预览 GitHub Release 发现结果。
 export function inspectSource(input: InspectSourceInput): Promise<InspectSourceResponse> {
     return requestJSON<InspectSourceResponse>('POST', '/api/v1/sources/inspect', input)
+}
+
+// ===== 凭据库（ADR 0005）=====
+
+// CredentialResponse 是凭据的 API 表示：公钥指纹与口令状态回显，
+// secret 永不出现在任何响应中。
+export interface CredentialResponse {
+    id: string
+    name: string
+    type: 'ssh_key'
+    fingerprint: string
+    has_passphrase: boolean
+    referenced_by: number
+    created_at: string
+    updated_at: string
+}
+
+// CredentialsListResponse 对应 GET /api/v1/credentials 的包装对象。
+export interface CredentialsListResponse {
+    credentials: CredentialResponse[]
+}
+
+// CredentialSecretInput 是凭据 secret 输入：私钥与其解密口令不可分割。
+export interface CredentialSecretInput {
+    private_key: string
+    private_key_passphrase?: string
+}
+
+// CreateCredentialInput 对应 POST /api/v1/credentials 请求体。
+export interface CreateCredentialInput {
+    name: string
+    type: 'ssh_key'
+    secret: CredentialSecretInput
+}
+
+// UpdateCredentialInput 对应 PATCH 请求体：secret 缺省保留，出现即
+// 整体替换（无三态——私钥与口令一体）。
+export interface UpdateCredentialInput {
+    name?: string
+    secret?: CredentialSecretInput
+}
+
+export async function listCredentials(): Promise<CredentialResponse[]> {
+    const data = await getJSON<CredentialsListResponse>('/api/v1/credentials')
+    return data.credentials
+}
+
+export function createCredential(input: CreateCredentialInput): Promise<CredentialResponse> {
+    return requestJSON<CredentialResponse>('POST', '/api/v1/credentials', input)
+}
+
+export function updateCredential(
+    id: string,
+    input: UpdateCredentialInput,
+): Promise<CredentialResponse> {
+    return requestJSON<CredentialResponse>('PATCH', `/api/v1/credentials/${id}`, input)
+}
+
+export async function deleteCredential(id: string): Promise<void> {
+    await requestJSON<void>('DELETE', `/api/v1/credentials/${id}`)
 }
 
 // JobMode 是同步模式：Copy 只增不改删本地既有文件；
