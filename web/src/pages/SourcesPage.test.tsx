@@ -52,9 +52,9 @@ describe('SourcesPage 文件浏览入口', () => {
     it('源名称链接到远端文件浏览（tab=remote 且携带 source 与根路径）', async () => {
         renderPage()
         const link = await screen.findByRole('link', { name: 'NAS WebDAV' })
-        const href = link.getAttribute('href')
-        expect(href).toBeTruthy()
-        const params = new URLSearchParams(href!.split('?')[1] ?? '')
+        const href = link.getAttribute('href') ?? ''
+        expect(href).not.toBe('')
+        const params = new URLSearchParams(href.split('?')[1] ?? '')
         expect(params.get('tab')).toBe('remote')
         expect(params.get('source')).toBe('src-1')
         expect(params.get('path')).toBe('/')

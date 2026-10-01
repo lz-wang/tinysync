@@ -2,9 +2,9 @@ import { Alert, CircularProgress, Stack } from '@mui/material'
 import { useCallback, useEffect, useState } from 'react'
 import {
     type EmailSettingsPatch,
+    fetchNotificationSettings,
     type NotificationSettingsResponse,
     type PushoverSettingsPatch,
-    fetchNotificationSettings,
     testNotification,
     updateNotificationSettings,
 } from '../../api'
@@ -39,7 +39,10 @@ export default function NotificationSettings() {
     }, [])
 
     const save = useCallback(
-        async (patch: { pushover?: PushoverSettingsPatch; email?: EmailSettingsPatch }, name: string) => {
+        async (
+            patch: { pushover?: PushoverSettingsPatch; email?: EmailSettingsPatch },
+            name: string,
+        ) => {
             setSaving(true)
             try {
                 const updated = await updateNotificationSettings(patch)

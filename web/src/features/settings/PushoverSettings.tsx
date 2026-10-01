@@ -112,7 +112,9 @@ export default function PushoverSettings({
                         value={token}
                         dirty={token !== ''}
                         cleared={false}
-                        chip={secretChip(settings.token_configured, clearToken, () => setClearToken(true))}
+                        chip={secretChip(settings.token_configured, clearToken, () =>
+                            setClearToken(true),
+                        )}
                         onChange={value => {
                             setToken(value)
                             if (value !== '') setClearToken(false)
@@ -124,7 +126,9 @@ export default function PushoverSettings({
                         value={userKey}
                         dirty={userKey !== ''}
                         cleared={false}
-                        chip={secretChip(settings.user_key_configured, clearUserKey, () => setClearUserKey(true))}
+                        chip={secretChip(settings.user_key_configured, clearUserKey, () =>
+                            setClearUserKey(true),
+                        )}
                         onChange={value => {
                             setUserKey(value)
                             if (value !== '') setClearUserKey(false)
@@ -150,7 +154,8 @@ export default function PushoverSettings({
                         </Button>
                     </Stack>
                     <Typography variant="caption" color="text.secondary">
-                        任务完成（成功 / 失败 / 取消）后推送一条摘要；测试使用已保存的配置，配置保存后立即生效，无需重启。
+                        任务完成（成功 / 失败 /
+                        取消）后推送一条摘要；测试使用已保存的配置，配置保存后立即生效，无需重启。
                     </Typography>
                 </Stack>
             </CardContent>

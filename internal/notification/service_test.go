@@ -28,9 +28,12 @@ func (f *fakeRepo) Save(ctx context.Context, settings Settings, updatedAt time.T
 	return nil
 }
 
-func boolPtr(b bool) *bool        { return &b }
-func strPtr(s string) *string     { return &s }
-func intPtr(i int) *int           { return &i }
+func boolPtr(b bool) *bool { return &b }
+
+func strPtr(s string) *string { return &s }
+
+func intPtr(i int) *int { return &i }
+
 func secPtr(s Security) *Security { return &s }
 
 func TestServiceUpdatePatchSemantics(t *testing.T) {

@@ -128,7 +128,11 @@ export default function EmailSettings({
                                     endAdornment: (
                                         <InputAdornment position="end">
                                             <Typography variant="caption" color="text.secondary">
-                                                {security === 'tls' ? '465' : security === 'starttls' ? '587' : '25'}
+                                                {security === 'tls'
+                                                    ? '465'
+                                                    : security === 'starttls'
+                                                      ? '587'
+                                                      : '25'}
                                             </Typography>
                                         </InputAdornment>
                                     ),
@@ -139,7 +143,9 @@ export default function EmailSettings({
                             select
                             label="安全"
                             value={security}
-                            onChange={event => setSecurity(event.target.value as NotificationSecurity)}
+                            onChange={event =>
+                                setSecurity(event.target.value as NotificationSecurity)
+                            }
                             sx={{ flexGrow: 2 }}
                         >
                             <MenuItem value="none">无加密</MenuItem>
@@ -160,13 +166,22 @@ export default function EmailSettings({
                         cleared={false}
                         chip={
                             clearPassword ? (
-                                <Chip label="保存后将删除" size="small" color="warning" variant="outlined" />
+                                <Chip
+                                    label="保存后将删除"
+                                    size="small"
+                                    color="warning"
+                                    variant="outlined"
+                                />
                             ) : settings.password_configured ? (
                                 <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
                                     <Typography variant="caption" color="text.secondary">
                                         已配置；留空保持不变
                                     </Typography>
-                                    <Button size="small" color="error" onClick={() => setClearPassword(true)}>
+                                    <Button
+                                        size="small"
+                                        color="error"
+                                        onClick={() => setClearPassword(true)}
+                                    >
                                         删除
                                     </Button>
                                 </Stack>

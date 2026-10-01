@@ -186,9 +186,9 @@ describe('JobsPage 文件浏览入口', () => {
     it('任务名称链接到本地文件浏览（tab=local 且携带 job 与根路径）', async () => {
         renderPage()
         const link = await screen.findByRole('link', { name: '任务一' })
-        const href = link.getAttribute('href')
-        expect(href).toBeTruthy()
-        const params = new URLSearchParams(href!.split('?')[1] ?? '')
+        const href = link.getAttribute('href') ?? ''
+        expect(href).not.toBe('')
+        const params = new URLSearchParams(href.split('?')[1] ?? '')
         expect(params.get('tab')).toBe('local')
         expect(params.get('job')).toBe('job-1')
         expect(params.get('path')).toBe('/')

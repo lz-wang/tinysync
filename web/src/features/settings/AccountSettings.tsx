@@ -210,9 +210,7 @@ export default function AccountSettings() {
                             autoComplete="new-password"
                             value={confirm}
                             error={confirm !== '' && confirm !== next}
-                            helperText={
-                                confirm !== '' && confirm !== next ? '两次输入不一致' : ''
-                            }
+                            helperText={confirm !== '' && confirm !== next ? '两次输入不一致' : ''}
                             onChange={event => setConfirm(event.target.value)}
                         />
                     </Stack>
@@ -224,11 +222,7 @@ export default function AccountSettings() {
                     <Button
                         variant="contained"
                         disabled={
-                            saving ||
-                            !current ||
-                            !next ||
-                            next !== confirm ||
-                            [...next].length < 12
+                            saving || !current || !next || next !== confirm || [...next].length < 12
                         }
                         onClick={() => void changePassword()}
                     >

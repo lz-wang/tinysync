@@ -1054,8 +1054,5 @@ export function updateNotificationSettings(
 
 // testNotification 用已保存的配置向指定渠道发送测试通知。
 export function testNotification(channel: 'pushover' | 'email'): Promise<NotificationTestResponse> {
-    return requestJSON<NotificationTestResponse>(
-        'POST',
-        `/api/v1/notifications/test/${channel}`,
-    )
+    return requestJSON<NotificationTestResponse>('POST', `/api/v1/notifications/test/${channel}`)
 }
