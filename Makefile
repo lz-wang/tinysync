@@ -8,7 +8,7 @@
 	build build-all build-os package-os dist \
 	test coverage check format setup clean version help ci integration hardening benchmark \
 	benchmark-record benchmark-compare _install-benchstat \
-	web-install web-ci-install web-lint web-typecheck web-build web-format \
+	web-install web-ci-install web-lint web-typecheck web-test web-build web-format \
 	_build-platform _package-platform _check-platform \
 	_install-go-tools _check-go-format _check-go-mod
 
@@ -318,10 +318,13 @@ _install-benchstat:
 	@$(GO) install golang.org/x/perf/cmd/benchstat@$(BENCHSTAT_VERSION)
 
 ## Run read-only static checks and tests.
+## web-test 纳入 check：Vitest 用例（deep-link、组件状态一致性）与
+## Go 测试同一道 CI 门禁，避免只靠人工 npm test 才发现回归。
 check: _check-go-format _check-go-mod
 	@$(GOENV) $(GO) vet ./...
 	@$(MAKE) --no-print-directory web-lint
 	@$(MAKE) --no-print-directory web-typecheck
+	@$(MAKE) --no-print-directory web-test
 	@$(MAKE) --no-print-directory test
 
 _check-go-format:
@@ -374,6 +377,10 @@ web-lint:
 web-typecheck:
 	@cd "$(WEB_DIR)" && $(NPM) run type-check
 
+## Run Web unit tests (Vitest).
+web-test:
+	@cd "$(WEB_DIR)" && $(NPM) test
+
 ## Build React WebUI for Go embedding.
 web-build:
 	@cd "$(WEB_DIR)" && $(NPM) run build
@@ -425,6 +432,7 @@ help:
 	@echo "  make web-install    Install Web dependencies"
 	@echo "  make web-ci-install Install exact Web dependencies (npm ci)"
 	@echo "  make web-lint       Check Web sources with Biome"
+	@echo "  make web-test       Run Web unit tests (Vitest)"
 	@echo "  make web-build      Build WebUI for embedding"
 	@echo ""
 	@echo "Distribution:"
