@@ -61,7 +61,10 @@ export default function PushoverSettings({
     }
 
     // secretChip 渲染 secret 状态提示：清除标记优先，其次已配置提示；
-    // 已配置且未标记清除时提供「删除」入口（保存后生效）。
+    // 已配置且未标记清除时提供「删除」入口（保存后生效）。删除启用
+    // 渠道的必需 credential 本身意味着渠道无法继续启用——删除时同步
+    // 关闭启用开关，避免产生一个必然被后端拒绝（enabled 但 secret
+    // 缺失）的 PATCH。
     function secretChip(configured: boolean, markedClear: boolean, onDelete: () => void) {
         if (markedClear) {
             return <Chip label="保存后将删除" size="small" color="warning" variant="outlined" />
@@ -72,7 +75,14 @@ export default function PushoverSettings({
                     <Typography variant="caption" color="text.secondary">
                         已配置；留空保持不变
                     </Typography>
-                    <Button size="small" color="error" onClick={onDelete}>
+                    <Button
+                        size="small"
+                        color="error"
+                        onClick={() => {
+                            setEnabled(false)
+                            onDelete()
+                        }}
+                    >
                         删除
                     </Button>
                 </Stack>
@@ -142,9 +152,10 @@ export default function PushoverSettings({
                         <Button
                             startIcon={<NotificationsActiveOutlinedIcon />}
                             disabled={
+                                dirty ||
                                 saving ||
                                 testing ||
-                                !enabled ||
+                                !settings.enabled ||
                                 !settings.token_configured ||
                                 !settings.user_key_configured
                             }

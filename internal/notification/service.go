@@ -118,14 +118,10 @@ func (s *Service) Update(ctx context.Context, input PatchInput) (Settings, error
 			next.Email.Password = *input.Email.Password
 		}
 	}
-	// 归一化默认值：Port / Security 的零值表示「未设置」，落库前收敛到
-	// schema 默认；空收件列表统一为 nil（存储与回显语义一致）。
-	if next.Email.Port == 0 {
-		next.Email.Port = DefaultEmailPort
-	}
-	if next.Email.Security == "" {
-		next.Email.Security = DefaultEmailSecurity
-	}
+	// 空收件列表统一为 nil（存储与回显语义一致）。Port / Security 不做
+	// 零值归一化：migration 预置行已带默认值，PATCH 显式提供非法值
+	//（port=0 / security=""）应被 Validate 拒绝（400），而不是静默
+	// 重置成默认值——与「字段存在即替换」的契约一致。
 	if len(next.Email.To) == 0 {
 		next.Email.To = nil
 	}

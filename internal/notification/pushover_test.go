@@ -113,3 +113,40 @@ func TestPushoverSendContextCanceled(t *testing.T) {
 		t.Fatal("Send with canceled ctx = nil, want error")
 	}
 }
+
+// 超长内容按官方上限 rune 截断并附标记：同步失败的错误信息可能很长，
+// 恰好是最需要通知的时刻，不能因超长被整条拒绝。
+func TestPushoverSendTruncatesLongContent(t *testing.T) {
+	server, fixture := startPushoverServer(t, func() (int, string) {
+		return http.StatusOK, `{"status":1,"request":"req-1"}`
+	})
+	sender := &PushoverSender{Token: "t", UserKey: "u", Endpoint: server.URL}
+
+	longTitle := strings.Repeat("标题", 200)   // 400 runes > 250
+	longBody := strings.Repeat("正文内容。", 300) // 1500 runes > 1024
+	if err := sender.Send(context.Background(), Message{Title: longTitle, Body: longBody}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	if got := len([]rune(fixture.title)); got != pushoverTitleLimit {
+		t.Fatalf("title runes = %d, want %d", got, pushoverTitleLimit)
+	}
+	if !strings.HasSuffix(fixture.title, truncateMarker) {
+		t.Fatalf("title 未附截断标记：%q", fixture.title[len(fixture.title)-40:])
+	}
+	if got := len([]rune(fixture.body)); got != pushoverMessageLimit {
+		t.Fatalf("body runes = %d, want %d", got, pushoverMessageLimit)
+	}
+	if !strings.HasSuffix(fixture.body, truncateMarker) {
+		t.Fatalf("body 未附截断标记：%q", fixture.body[len(fixture.body)-40:])
+	}
+
+	// 短内容原样发送。
+	short := Message{Title: "短标题", Body: "短正文"}
+	if err := sender.Send(context.Background(), short); err != nil {
+		t.Fatalf("Send short: %v", err)
+	}
+	if fixture.title != short.Title || fixture.body != short.Body {
+		t.Fatalf("短内容被意外修改：title=%q body=%q", fixture.title, fixture.body)
+	}
+}

@@ -18,6 +18,32 @@ const pushoverEndpoint = "https://api.pushover.net/1/messages.json"
 // 发送器包裹独立 context 超时（ADR 0006：每个发送器单独超时）。
 const pushoverHTTPTimeout = 10 * time.Second
 
+// Pushover 官方长度上限（UTF-8 字符计）。
+const (
+	pushoverTitleLimit   = 250
+	pushoverMessageLimit = 1024
+)
+
+// truncateMarker 是截断时附加的结尾标记，读者可区分「原文到此为止」
+// 与「被截断」。
+const truncateMarker = "…（内容已截断）"
+
+// truncateRunes 按 rune 截断到 limit（含标记在内不超过 limit），中文
+// 不会被切成半个 UTF-8 序列。Email 不截断——本函数只在 Pushover
+// channel 内使用。
+func truncateRunes(s string, limit int) string {
+	runes := []rune(s)
+	if len(runes) <= limit {
+		return s
+	}
+	marker := []rune(truncateMarker)
+	cut := limit - len(marker)
+	if cut < 0 {
+		cut = 0
+	}
+	return string(runes[:cut]) + truncateMarker
+}
+
 // PushoverSender 经 Pushover Messages API 发送通知。第一版只带
 // token / user / title / message 四个字段，不涉及 priority / device /
 // sound 等高级功能。Token 与 UserKey 只进入请求体，绝不进入错误消息
@@ -32,14 +58,16 @@ type PushoverSender struct {
 }
 
 // Send 实现 Sender：构造 form 请求 → 检查 HTTP 状态 → 检查 Pushover
-// API 业务结果（status=1）。任何失败以 error 返回，由调用方记结构化
-// 日志；错误消息不含 token / user key。
+// API 业务结果（status=1）。title / message 先按官方上限做 rune 感知
+// 截断——同步失败的错误信息可能很长，恰好是最需要通知的时刻，不能
+// 因超长被 Pushover 整条拒绝。任何失败以 error 返回，由调用方记结构
+// 化日志；错误消息不含 token / user key。
 func (s *PushoverSender) Send(ctx context.Context, message Message) error {
 	form := url.Values{}
 	form.Set("token", s.Token)
 	form.Set("user", s.UserKey)
-	form.Set("title", message.Title)
-	form.Set("message", message.Body)
+	form.Set("title", truncateRunes(message.Title, pushoverTitleLimit))
+	form.Set("message", truncateRunes(message.Body, pushoverMessageLimit))
 
 	endpoint := s.Endpoint
 	if endpoint == "" {

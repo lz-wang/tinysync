@@ -113,8 +113,8 @@ func (s Settings) Validate() error {
 		return &InvalidError{Field: "email.security", Reason: "security must be none, starttls or tls"}
 	}
 	if e.From != "" {
-		if _, err := mail.ParseAddress(e.From); err != nil {
-			return &InvalidError{Field: "email.from", Reason: "from must be a valid email address"}
+		if err := validateMailbox("email.from", e.From); err != nil {
+			return err
 		}
 	}
 	if len(e.To) > 16 {
@@ -124,12 +124,25 @@ func (s Settings) Validate() error {
 		if strings.TrimSpace(addr) == "" {
 			return &InvalidError{Field: "email.to", Reason: "recipient is empty"}
 		}
-		if _, err := mail.ParseAddress(addr); err != nil {
-			return &InvalidError{Field: "email.to", Reason: "recipient must be a valid email address"}
+		if err := validateMailbox("email.to", addr); err != nil {
+			return err
 		}
 	}
 	if e.Enabled && !s.EmailConfigured() {
 		return &InvalidError{Field: "email", Reason: "host, from and at least one recipient are required when enabled"}
+	}
+	return nil
+}
+
+// validateMailbox 只接受纯 addr-spec（user@example.com）。mail.ParseAddress
+// 同时接受带 display name 的 RFC mailbox（如 `TinySync <a@b.com>`），但
+// 下游三处——SQLite 逗号序列化、SMTP MAIL FROM / RCPT TO envelope、
+// WebUI 逗号拆分——都按裸地址工作；display name 会破坏三者一致性
+// （逗号甚至可以合法出现在带引号的 display name 里），入口即拒绝。
+func validateMailbox(field, value string) error {
+	parsed, err := mail.ParseAddress(value)
+	if err != nil || parsed.Address != strings.TrimSpace(value) {
+		return &InvalidError{Field: field, Reason: "must be a plain email address (user@example.com)"}
 	}
 	return nil
 }

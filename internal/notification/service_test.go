@@ -196,6 +196,37 @@ func TestServiceUpdateInvalidDoesNotSave(t *testing.T) {
 	}
 }
 
+// PATCH 契约是「字段存在即替换」：显式非法值（port=0、security=""）
+// 必须被拒绝，而不是静默重置成默认值。
+func TestServiceUpdateRejectsExplicitInvalidScalars(t *testing.T) {
+	tests := []struct {
+		name  string
+		patch PatchInput
+	}{
+		{
+			name:  "explicit port zero",
+			patch: PatchInput{Email: &EmailPatch{Port: intPtr(0)}},
+		},
+		{
+			name:  "explicit empty security",
+			patch: PatchInput{Email: &EmailPatch{Security: secPtr("")}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &fakeRepo{settings: validSettings()}
+			svc := NewService(repo)
+			_, err := svc.Update(context.Background(), tt.patch)
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Update() = %v, want ErrInvalid", err)
+			}
+			if len(repo.saved) != 0 {
+				t.Fatalf("非法值不应落库，Save %d 次", len(repo.saved))
+			}
+		})
+	}
+}
+
 func TestServiceSettings(t *testing.T) {
 	repo := &fakeRepo{settings: validSettings()}
 	svc := NewService(repo)

@@ -97,9 +97,25 @@ func TestSettingsValidate(t *testing.T) {
 			field:   "email.from",
 		},
 		{
+			name: "email from display name form rejected",
+			mutate: func(s *Settings) {
+				s.Email.From = "TinySync <notify@example.com>"
+			},
+			wantErr: true,
+			field:   "email.from",
+		},
+		{
 			name: "email recipient invalid address",
 			mutate: func(s *Settings) {
 				s.Email.To = []string{"me@example.com", "bad@@example"}
+			},
+			wantErr: true,
+			field:   "email.to",
+		},
+		{
+			name: "email recipient display name with comma rejected",
+			mutate: func(s *Settings) {
+				s.Email.To = []string{`"Doe, John" <john@example.com>`}
 			},
 			wantErr: true,
 			field:   "email.to",

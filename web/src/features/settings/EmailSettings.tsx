@@ -219,9 +219,10 @@ export default function EmailSettings({
                         <Button
                             startIcon={<ForwardToInboxOutlinedIcon />}
                             disabled={
+                                dirty ||
                                 saving ||
                                 testing ||
-                                !enabled ||
+                                !settings.enabled ||
                                 !settings.host ||
                                 !settings.from ||
                                 settings.to.length === 0
