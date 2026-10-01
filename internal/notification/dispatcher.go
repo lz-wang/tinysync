@@ -38,13 +38,31 @@ type Dispatcher struct {
 	done    chan struct{}
 }
 
-// NewDispatcher 构造 Dispatcher；Start 前只是惰性对象。
-func NewDispatcher(service *Service) *Dispatcher {
-	return &Dispatcher{
+// NewDispatcher 构造 Dispatcher；Start 前只是惰性对象。opts 供测试
+// 注入假发送工厂，生产装配不传。
+func NewDispatcher(service *Service, opts ...DispatcherOption) *Dispatcher {
+	d := &Dispatcher{
 		service: service,
 		queue:   make(chan syncjob.RunCompletion, queueCapacity),
 		done:    make(chan struct{}),
 	}
+	for _, opt := range opts {
+		opt(d)
+	}
+	return d
+}
+
+// DispatcherOption 定制 Dispatcher 的可选依赖。
+type DispatcherOption func(*Dispatcher)
+
+// WithPushoverSender 覆盖 Pushover 发送器构造（测试注入假实现）。
+func WithPushoverSender(factory func(PushoverSettings) Sender) DispatcherOption {
+	return func(d *Dispatcher) { d.pushoverFactory = factory }
+}
+
+// WithEmailSender 覆盖 SMTP 发送器构造（测试注入假实现）。
+func WithEmailSender(factory func(EmailSettings) Sender) DispatcherOption {
+	return func(d *Dispatcher) { d.emailFactory = factory }
 }
 
 // Start 启动后台 worker。只应调用一次。

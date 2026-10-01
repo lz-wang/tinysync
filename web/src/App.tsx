@@ -39,6 +39,7 @@ export default function App() {
                     <Route path="history" element={<HistoryPage />} />
                     <Route path="history/:runId" element={<RunDetailPage />} />
                     <Route path="settings" element={<SettingsPage />} />
+                    <Route path="settings/notifications" element={<SettingsPage />} />
                     <Route path="settings/tokens" element={<SettingsPage />} />
                     <Route path="*" element={<Navigate to="/" replace />} />
                 </Route>

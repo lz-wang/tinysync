@@ -965,3 +965,97 @@ export function createAPIToken(input: CreateAPITokenInput): Promise<CreateAPITok
 export async function revokeAPIToken(id: string): Promise<void> {
     await requestJSON<void>('POST', `/api/v1/api-tokens/${id}/revoke`)
 }
+
+// ===== 通知（v0.13）=====
+
+// NotificationSecurity 是 SMTP 连接安全模式。
+export type NotificationSecurity = 'none' | 'starttls' | 'tls'
+
+// PushoverSettingsResponse 是 Pushover 渠道回显：secret 只以 configured
+// 布尔出现，任何响应都不回显明文。
+export interface PushoverSettingsResponse {
+    enabled: boolean
+    token_configured: boolean
+    user_key_configured: boolean
+}
+
+// EmailSettingsResponse 是邮件渠道回显；password 只以 configured 布尔
+// 出现。
+export interface EmailSettingsResponse {
+    enabled: boolean
+    host: string
+    port: number
+    security: NotificationSecurity
+    username: string
+    password_configured: boolean
+    from: string
+    to: string[]
+}
+
+// NotificationSettingsResponse 对应 GET /api/v1/notifications/settings。
+export interface NotificationSettingsResponse {
+    pushover: PushoverSettingsResponse
+    email: EmailSettingsResponse
+    updated_at?: string
+}
+
+// PushoverSettingsPatch 是 Pushover 渠道的部分更新：secret 三态
+//（不提供保留 / 提供替换 / clear 删除）。
+export interface PushoverSettingsPatch {
+    enabled?: boolean
+    token?: string
+    clear_token?: boolean
+    user_key?: string
+    clear_user_key?: boolean
+}
+
+// EmailSettingsPatch 是邮件渠道的部分更新；非 secret 字段不提供保留、
+// 提供即替换，to 整体替换，password 三态。
+export interface EmailSettingsPatch {
+    enabled?: boolean
+    host?: string
+    port?: number
+    security?: NotificationSecurity
+    username?: string
+    from?: string
+    to?: string[]
+    password?: string
+    clear_password?: boolean
+}
+
+// NotificationSettingsPatch 对应 PATCH /api/v1/notifications/settings。
+export interface NotificationSettingsPatch {
+    pushover?: PushoverSettingsPatch
+    email?: EmailSettingsPatch
+}
+
+// NotificationTestResponse 对应 POST /api/v1/notifications/test/:channel。
+// 发送失败也是一次成功的测试操作（ok=false 携带原因）。
+export interface NotificationTestResponse {
+    ok: boolean
+    error?: string
+}
+
+// fetchNotificationSettings 返回当前通知配置。
+export function fetchNotificationSettings(): Promise<NotificationSettingsResponse> {
+    return getJSON<NotificationSettingsResponse>('/api/v1/notifications/settings')
+}
+
+// updateNotificationSettings 应用部分更新并返回更新后的配置。
+export function updateNotificationSettings(
+    input: NotificationSettingsPatch,
+): Promise<NotificationSettingsResponse> {
+    return requestJSON<NotificationSettingsResponse>(
+        'PATCH',
+        '/api/v1/notifications/settings',
+        input,
+    )
+}
+
+// testNotification 用已保存的配置向指定渠道发送测试通知。
+export function testNotification(channel: 'pushover' | 'email'): Promise<NotificationTestResponse> {
+    return requestJSON<NotificationTestResponse>(
+        'POST',
+        `/api/v1/notifications/test/${channel}`,
+    )
+}

@@ -14,6 +14,7 @@ import (
 	"tinysync/internal/browser"
 	"tinysync/internal/buildinfo"
 	"tinysync/internal/credential"
+	"tinysync/internal/notification"
 	"tinysync/internal/share"
 	"tinysync/internal/source"
 	"tinysync/internal/syncjob"
@@ -56,6 +57,7 @@ func NewRouter(webFS fs.FS, deps Dependencies) *gin.Engine {
 		registerSourceRoutes(protected, deps.Sources, deps.Jobs, deps.Credentials)
 		registerCredentialRoutes(protected, deps.Credentials, deps.CredentialRefs)
 		registerJobRoutes(protected, deps.Jobs, deps.Runner)
+		registerNotificationRoutes(protected, deps.Notifications, deps.NotificationDispatch)
 		registerRemoteFileRoutes(protected, deps.Browser)
 		registerLocalFileRoutes(protected, deps.LocalFiles)
 		registerShareRoutes(protected, deps.Share)
@@ -92,6 +94,11 @@ type Dependencies struct {
 	Jobs *syncjob.Service
 	// Runner 是手动运行的运行时状态；为 nil 时 run / status 端点不注册。
 	Runner *syncjob.Runner
+	// Notifications 是通知配置应用服务；为 nil 时不注册通知端点。
+	Notifications *notification.Service
+	// NotificationDispatch 是通知发送器（完成事件队列 + 测试发送）；
+	// 为 nil 时配置端点仍可用，测试发送端点不注册。
+	NotificationDispatch *notification.Dispatcher
 	// Browser 是文件浏览应用服务；为 nil 时不注册文件端点。
 	Browser *browser.RemoteService
 	// LocalFiles 是本地文件浏览应用服务；为 nil 时不注册本地文件端点。

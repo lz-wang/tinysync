@@ -175,16 +175,18 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 	})
 
 	server := api.NewServer(cfg, webFS, api.Dependencies{
-		Auth:           authService,
-		Sources:        sources,
-		Credentials:    credentials,
-		CredentialRefs: sourceRepo,
-		Jobs:           jobs,
-		Runner:         runner,
-		Browser:        files,
-		LocalFiles:     localFiles,
-		Share:          shares,
-		MCP:            mcpHandler,
+		Auth:                 authService,
+		Sources:              sources,
+		Credentials:          credentials,
+		CredentialRefs:       sourceRepo,
+		Jobs:                 jobs,
+		Runner:               runner,
+		Notifications:        notifications,
+		NotificationDispatch: notificationDispatch,
+		Browser:              files,
+		LocalFiles:           localFiles,
+		Share:                shares,
+		MCP:                  mcpHandler,
 	})
 
 	serveErr := make(chan error, 1)
