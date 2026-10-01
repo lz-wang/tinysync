@@ -49,6 +49,7 @@ import {
 } from '../api'
 import { useToast } from '../app/toast'
 import { usePageTitle } from '../app/usePageTitle'
+import { localFilesPath } from '../features/files/routes'
 import { formatDateTime } from '../features/history/shared'
 import DeleteJobDialog from '../features/jobs/DeleteJobDialog'
 import JobDialog from '../features/jobs/JobDialog'
@@ -539,7 +540,17 @@ function JobTable({
                                             />
                                         </TableCell>
                                         <TableCell>
-                                            <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                                            <Typography
+                                                component={RouterLink}
+                                                to={localFilesPath(job.id)}
+                                                variant="body2"
+                                                sx={{
+                                                    fontWeight: 500,
+                                                    color: 'primary.main',
+                                                    textDecoration: 'none',
+                                                    '&:hover': { textDecoration: 'underline' },
+                                                }}
+                                            >
                                                 {job.name}
                                             </Typography>
                                         </TableCell>

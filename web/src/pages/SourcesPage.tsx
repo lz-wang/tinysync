@@ -31,6 +31,7 @@ import {
     Typography,
 } from '@mui/material'
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Link as RouterLink } from 'react-router-dom'
 import {
     deleteSource,
     type GitHubReleaseConfig,
@@ -44,6 +45,7 @@ import {
 } from '../api'
 import { useToast } from '../app/toast'
 import { usePageTitle } from '../app/usePageTitle'
+import { remoteFilesPath } from '../features/files/routes'
 import DeleteSourceDialog from '../features/sources/DeleteSourceDialog'
 import SourceDialog from '../features/sources/SourceDialog'
 
@@ -412,7 +414,17 @@ function SourceTable({
                                         />
                                     </TableCell>
                                     <TableCell>
-                                        <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                                        <Typography
+                                            component={RouterLink}
+                                            to={remoteFilesPath(source.id)}
+                                            variant="body2"
+                                            sx={{
+                                                fontWeight: 500,
+                                                color: 'primary.main',
+                                                textDecoration: 'none',
+                                                '&:hover': { textDecoration: 'underline' },
+                                            }}
+                                        >
                                             {source.name}
                                         </Typography>
                                     </TableCell>
