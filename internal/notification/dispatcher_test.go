@@ -213,6 +213,60 @@ func TestDispatcherOnRunCompletedDoesNotBlockWhenFull(t *testing.T) {
 	}
 }
 
+// Shutdown 的 drain 超时触发后必须强制取消 worker 并等它真正退出：
+// Shutdown 返回后绝不再访问 Service / SQLite / 网络。慢 sender 以
+// ctx.Done 为唯一退出条件，验证取消信号确实穿透到发送路径。
+func TestDispatcherShutdownCancelsStuckWorker(t *testing.T) {
+	sender := &ctxBlockSender{
+		entered:  make(chan struct{}),
+		released: make(chan struct{}),
+	}
+	// 只启用 pushover：ctxBlockSender 的 close 标记只能触发一次。
+	settings := enabledSettings()
+	settings.Email.Enabled = false
+	service := NewService(&fakeRepo{settings: settings})
+	dispatch := NewDispatcher(service,
+		WithPushoverSender(func(PushoverSettings) Sender { return sender }),
+		WithEmailSender(func(EmailSettings) Sender { return sender }),
+	)
+	dispatch.Start()
+	dispatch.OnRunCompleted(completedEvent())
+
+	// 等 sender 进入阻塞。
+	select {
+	case <-sender.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("sender 未开始发送")
+	}
+
+	// 已超时的 ctx：立即走强制取消路径。
+	expired, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	time.Sleep(2 * time.Millisecond)
+	if err := dispatch.Shutdown(expired); err == nil {
+		t.Fatal("Shutdown with expired ctx = nil, want deadline error")
+	}
+	// worker 被 cancel：sender 的 Send 因 ctx 取消返回。
+	select {
+	case <-sender.released:
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker cancel 未穿透到 sender，Shutdown 返回后仍在访问网络")
+	}
+}
+
+// ctxBlockSender 阻塞直到其 ctx 取消，标记 entered 与 released 时刻。
+type ctxBlockSender struct {
+	entered  chan struct{}
+	released chan struct{}
+}
+
+func (s *ctxBlockSender) Send(ctx context.Context, message Message) error {
+	close(s.entered)
+	<-ctx.Done()
+	close(s.released)
+	return ctx.Err()
+}
+
 func TestDispatcherSendTest(t *testing.T) {
 	env := newDispatcherEnv(t, enabledSettings())
 	if err := env.dispatch.SendTest(context.Background(), "pushover"); err != nil {

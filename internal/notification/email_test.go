@@ -7,9 +7,12 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
+	"net"
 	"net/smtp"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // fakeSMTPClient 记录发送路径的调用序列，可按脚本返回错误。
@@ -236,6 +239,59 @@ func TestEmailSendRcptFailureClosesConnection(t *testing.T) {
 	// 错误消息不得包含密码。
 	if strings.Contains(err.Error(), "s3cret-pass") {
 		t.Fatalf("错误消息泄漏密码：%v", err)
+	}
+}
+
+// 沉默 server：TCP 接受连接后不回 greeting。net/smtp 的同步调用不受
+// ctx 超时自动中断，socket deadline 必须覆盖拨号之后的整个会话——
+// 否则一个失联 server 会把通知 worker 永久占住。
+func TestEmailSendSilentServerHitsDeadline(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	var mu sync.Mutex
+	var held []net.Conn
+	t.Cleanup(func() {
+		_ = listener.Close()
+		mu.Lock()
+		defer mu.Unlock()
+		for _, conn := range held {
+			_ = conn.Close()
+		}
+	})
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			// 接受连接后保持沉默：不回 greeting，也不关闭，
+			// 迫使 client 的读取一直挂到 deadline。
+			mu.Lock()
+			held = append(held, conn)
+			mu.Unlock()
+		}
+	}()
+
+	port := listener.Addr().(*net.TCPAddr).Port
+	settings := emailFixture()
+	settings.Security = SecurityNone
+	settings.Username = ""
+	settings.Port = port
+
+	sender := &EmailSender{Settings: settings}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	err = sender.Send(ctx, Message{Title: "t", Body: "b"})
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatal("Send against silent server = nil, want deadline error")
+	}
+	// deadline 生效：远小于拨号超时（10s），略宽于 ctx 超时本身。
+	if elapsed > 5*time.Second {
+		t.Fatalf("Send 阻塞 %v，deadline 未覆盖 SMTP 会话", elapsed)
 	}
 }
 

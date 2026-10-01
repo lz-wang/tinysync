@@ -16,6 +16,11 @@ const queueCapacity = 64
 // sendTimeout 是单条通知内单个发送器的独立超时（ADR 0006）。
 const sendTimeout = 10 * time.Second
 
+// shutdownForceWait 是 Shutdown 的 drain 超时被触发、worker 已 cancel
+// 后的兜底等待：sender 受 socket deadline / HTTP ctx 约束必然在该
+// 时限内返回，此处只防御未知的挂死路径。
+const shutdownForceWait = 2*sendTimeout + 5*time.Second
+
 // Dispatcher 消费 syncjob.RunCompletion：实现 syncjob.RunCompletionHook，
 // OnRunCompleted 只 enqueue 立即返回；单 worker 逐条热读取配置并经
 // 已启用的渠道发送。worker 持有独立生命周期（不绑定应用主 ctx），
@@ -36,6 +41,11 @@ type Dispatcher struct {
 	closed  bool
 	started bool
 	done    chan struct{}
+	// workerCtx 是 worker 的生命周期根：drain 超时后由 Shutdown 取消，
+	// 使 dispatch 内的配置读取与发送（均从它派生）一并中断。关键不变
+	// 量：Shutdown 返回后 worker 绝不再访问 Service、SQLite 或网络。
+	workerCtx    context.Context
+	workerCancel context.CancelFunc
 }
 
 // NewDispatcher 构造 Dispatcher；Start 前只是惰性对象。opts 供测试
@@ -73,10 +83,22 @@ func (d *Dispatcher) Start() {
 		return
 	}
 	d.started = true
+	ctx, cancel := context.WithCancel(context.Background())
+	d.workerCtx = ctx
+	d.workerCancel = cancel
 	go func() {
 		defer close(d.done)
-		for run := range d.queue {
-			d.dispatch(run)
+		for {
+			select {
+			case <-ctx.Done():
+				// Shutdown 超时后的强制取消：放弃剩余事件，立即退出。
+				return
+			case run, ok := <-d.queue:
+				if !ok {
+					return
+				}
+				d.dispatch(ctx, run)
+			}
 		}
 	}()
 }
@@ -97,18 +119,22 @@ func (d *Dispatcher) OnRunCompleted(run syncjob.RunCompletion) {
 	}
 }
 
-// Shutdown 停止接收新事件，排空队列中已有的事件后返回；ctx 超时返回
-// ctx 错误，未发出的事件随进程退出丢弃。调用方（应用装配）保证这发生
-// 在 Runner.Shutdown 之后——不再有新事件产生，drain 是有限集。
+// Shutdown 停止接收新事件，排空队列中已有的事件后返回。drain 超时
+// （ctx 取消）时强制取消 worker 并等待它真正退出后才返回——Shutdown
+// 返回后绝不会再访问 notification Service、SQLite 或网络，主流程随
+// 后的 checkpoint / close DB 不与 worker 交叉。未发出的事件随进程
+// 退出丢弃。调用方（应用装配）保证这发生在 Runner.Shutdown 之后
+// ——不再有新事件产生，drain 是有限集。
 func (d *Dispatcher) Shutdown(ctx context.Context) error {
 	d.mu.Lock()
 	if !d.closed {
 		d.closed = true
 		close(d.queue)
 	}
-	// 从未 Start：没有 worker 会关闭 done，这里直接标记完成（队列
-	// 中未分发的事件随 Shutdown 丢弃，与「已 Start 但超时」同语义）。
+	// 从未 Start：没有 worker 会关闭 done，这里直接返回（队列中未
+	// 分发的事件随 Shutdown 丢弃，与「已 Start 但超时」同语义）。
 	started := d.started
+	cancel := d.workerCancel
 	d.mu.Unlock()
 	if !started {
 		return nil
@@ -117,19 +143,35 @@ func (d *Dispatcher) Shutdown(ctx context.Context) error {
 	case <-d.done:
 		return nil
 	case <-ctx.Done():
+		// drain 超时：cancel worker。正在发送的 sender 因派生 ctx
+		// 取消（Pushover 的 HTTP 请求）或 socket deadline（SMTP
+		// 同步调用）退出；队列中未处理的事件被放弃。
+		if cancel != nil {
+			cancel()
+		}
+		select {
+		case <-d.done:
+		case <-time.After(shutdownForceWait):
+			// 兜底：sender 理论上受 deadline 约束必然返回，这里只
+			// 防御未知挂死，不让 Shutdown 永不返回。
+		}
 		return ctx.Err()
 	}
 }
 
 // dispatch 处理一条完成事件：热读取当前配置 → 共享 formatter 格式化
 // 一次 → 逐个已启用渠道发送。任何失败只记结构化日志（绝不输出
-// secret），继续处理下一条。
-func (d *Dispatcher) dispatch(run syncjob.RunCompletion) {
+// secret），继续处理下一条。所有 I/O 的 ctx 从 worker 生命周期派生：
+// worker 被取消后，配置读取与发送同样立即失败，而不是继续访问
+// SQLite 与网络。
+func (d *Dispatcher) dispatch(workerCtx context.Context, run syncjob.RunCompletion) {
 	if run.State != syncjob.RunSucceeded && run.State != syncjob.RunFailed && run.State != syncjob.RunCanceled {
 		// 防御：skipped / running 不是完成事件，不发通知。
 		return
 	}
-	settings, err := d.service.Settings(context.Background())
+	ctx, cancel := context.WithTimeout(workerCtx, sendTimeout)
+	defer cancel()
+	settings, err := d.service.Settings(ctx)
 	if err != nil {
 		logging.Errorf("event=notification run_id=%s status=failed reason=load_settings error=%q", run.RunID, err)
 		return
@@ -139,17 +181,15 @@ func (d *Dispatcher) dispatch(run syncjob.RunCompletion) {
 	}
 	message := FormatRun(run)
 	if settings.Pushover.Enabled {
-		d.send("pushover", run.RunID, d.pushoverSender(settings.Pushover), message)
+		d.send(ctx, "pushover", run.RunID, d.pushoverSender(settings.Pushover), message)
 	}
 	if settings.Email.Enabled {
-		d.send("email", run.RunID, d.emailSender(settings.Email), message)
+		d.send(ctx, "email", run.RunID, d.emailSender(settings.Email), message)
 	}
 }
 
 // send 经单个渠道发送一条消息：独立超时，成功与失败都留结构化痕迹。
-func (d *Dispatcher) send(channel, runID string, sender Sender, message Message) {
-	ctx, cancel := context.WithTimeout(context.Background(), sendTimeout)
-	defer cancel()
+func (d *Dispatcher) send(ctx context.Context, channel, runID string, sender Sender, message Message) {
 	if err := sender.Send(ctx, message); err != nil {
 		logging.Errorf("event=notification channel=%s run_id=%s status=failed error=%q", channel, runID, err)
 		return

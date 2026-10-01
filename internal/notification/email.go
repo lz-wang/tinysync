@@ -40,10 +40,22 @@ type smtpDialer interface {
 type realDialer struct{}
 
 // Dial 实现 smtpDialer：按 Security 选路（ADR 0006：none → net.Dial，
-// starttls → net.Dial + 发送路径升级，tls → tls.Dial）。
+// starttls → net.Dial + 发送路径升级，tls → tls.Dial）。net/smtp 的
+// StartTLS / Auth / Mail / Rcpt / Data / Quit 全是同步调用，不会因
+// 传入的 ctx 超时自动中断——因此把 ctx 的 deadline 落到连接上，使
+// 整个 SMTP 会话（含 greeting 读取）受同一时限约束，恶意或失联
+// server 无法把通知 worker 永久占住。
 func (realDialer) Dial(ctx context.Context, host string, port int, security Security) (smtpClient, error) {
 	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 	dialer := &net.Dialer{Timeout: smtpDialTimeout}
+	// applyDeadline 把 ctx 的截止时刻设为连接的读写 deadline；无
+	// deadline 的 ctx 不设置（连接只受拨号超时与 TCP 栈约束）。
+	applyDeadline := func(conn net.Conn) net.Conn {
+		if deadline, ok := ctx.Deadline(); ok {
+			_ = conn.SetDeadline(deadline)
+		}
+		return conn
+	}
 	switch security {
 	case SecurityTLS:
 		conn, err := (&tls.Dialer{
@@ -53,7 +65,7 @@ func (realDialer) Dial(ctx context.Context, host string, port int, security Secu
 		if err != nil {
 			return nil, fmt.Errorf("dial smtp over tls: %w", err)
 		}
-		client, err := smtp.NewClient(conn, host)
+		client, err := smtp.NewClient(applyDeadline(conn), host)
 		if err != nil {
 			_ = conn.Close()
 			return nil, fmt.Errorf("smtp client over tls: %w", err)
@@ -66,7 +78,7 @@ func (realDialer) Dial(ctx context.Context, host string, port int, security Secu
 		if err != nil {
 			return nil, fmt.Errorf("dial smtp: %w", err)
 		}
-		client, err := smtp.NewClient(conn, host)
+		client, err := smtp.NewClient(applyDeadline(conn), host)
 		if err != nil {
 			_ = conn.Close()
 			return nil, fmt.Errorf("smtp client: %w", err)

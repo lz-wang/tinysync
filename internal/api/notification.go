@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"time"
@@ -182,6 +183,11 @@ func (h *notificationHandlers) testEmail(c *gin.Context) {
 	h.sendTest(c, "email")
 }
 
+// testSendTimeout 是测试发送端点的固定超时：HTTP request ctx 本身
+// 没有 deadline，不设上限时一个失联 SMTP server 会把请求无限挂住。
+// 与 dispatcher 的 sendTimeout 同量级。
+const testSendTimeout = 10 * time.Second
+
 // sendTest 经 dispatcher 用已保存配置发送测试消息。发送失败也是一次
 // 成功完成的操作：200 携带 ok=false 与错误摘要，不代表测试操作本身
 // 失败——与 Source 连接测试同一交互语义。
@@ -190,7 +196,9 @@ func (h *notificationHandlers) sendTest(c *gin.Context, channel string) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
-	if err := h.dispatcher.SendTest(c.Request.Context(), channel); err != nil {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), testSendTimeout)
+	defer cancel()
+	if err := h.dispatcher.SendTest(ctx, channel); err != nil {
 		if errors.Is(err, notification.ErrNotConfigured) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "channel is not enabled or not configured"})
 			return
