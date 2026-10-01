@@ -46,6 +46,8 @@ func (b *blockingRemote) Close() error {
 type memCreds struct {
 	source source.Source
 	remote source.Remote
+	// openErr 非 nil 时 OpenRemote 失败（模拟拨号 / 认证故障）。
+	openErr error
 }
 
 func (m *memCreds) Get(ctx context.Context, id string) (source.Source, error) {
@@ -58,6 +60,9 @@ func (m *memCreds) Get(ctx context.Context, id string) (source.Source, error) {
 func (m *memCreds) OpenRemote(ctx context.Context, id string) (source.Source, source.Remote, error) {
 	if m.source.ID != id {
 		return source.Source{}, nil, source.ErrNotFound
+	}
+	if m.openErr != nil {
+		return source.Source{}, nil, m.openErr
 	}
 	return m.source, m.remote, nil
 }
@@ -122,6 +127,8 @@ type memRunRepo struct {
 	prunes int
 	// insertErr 非 nil 时 Insert / PersistScheduledRun 失败（模拟持久化故障）。
 	insertErr error
+	// finalizeErr 非 nil 时 Finalize 失败（模拟终态落库故障）。
+	finalizeErr error
 	// hasErr 非 nil 时 HasRunFor 失败（模拟读取故障）。
 	hasErr error
 	// markOnce 模拟 PersistScheduledRun 事务内的 once 消费写入
@@ -165,6 +172,9 @@ func (m *memRunRepo) PersistScheduledRun(ctx context.Context, run RunRecord) err
 func (m *memRunRepo) Finalize(ctx context.Context, run RunRecord) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.finalizeErr != nil {
+		return m.finalizeErr
+	}
 	stored, ok := m.runs[run.ID]
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrRunUnknown, run.ID)

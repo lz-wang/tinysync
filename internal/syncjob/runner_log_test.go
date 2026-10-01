@@ -41,7 +41,7 @@ func TestFinalizeEmitsSyncRunEvent(t *testing.T) {
 		jobID:     "job_a",
 		startedAt: time.Now().Add(-1500 * time.Millisecond),
 	}
-	r.finalize(context.Background(), run, "src_a",
+	r.finalize(context.Background(), run, Job{ID: "job_a", Name: "photos", SourceID: "src_a"},
 		RunStats{FilesCreated: 1, BytesTransferred: 42}, errors.New("boom reason"))
 
 	log := readLog()
@@ -71,7 +71,7 @@ func TestFinalizeEmitsSuccessEvent(t *testing.T) {
 		jobID:     "job_ok",
 		startedAt: time.Now().Add(-100 * time.Millisecond),
 	}
-	r.finalize(context.Background(), run, "src_ok", RunStats{FilesUpdated: 2, BytesTransferred: 7}, nil)
+	r.finalize(context.Background(), run, Job{ID: "job_ok", Name: "docs", SourceID: "src_ok"}, RunStats{FilesUpdated: 2, BytesTransferred: 7}, nil)
 
 	log := readLog()
 	for _, want := range []string{"event=sync_run", "run_id=run_ok42", "status=succeeded", "bytes=7"} {

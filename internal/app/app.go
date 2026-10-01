@@ -21,6 +21,8 @@ import (
 	"tinysync/internal/instance"
 	"tinysync/internal/logging"
 	"tinysync/internal/mcp"
+	"tinysync/internal/notification"
+	notificationsqlite "tinysync/internal/notification/sqlite"
 	"tinysync/internal/share"
 	sharesqlite "tinysync/internal/share/sqlite"
 	"tinysync/internal/source"
@@ -142,6 +144,15 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 	runner.TransferTimeout = cfg.TransferTimeout
 	scheduler := syncjob.NewScheduler(jobRepo, runner, runs)
 
+	// 装配通知域（ADR 0006）：配置每次通知时从 SQLite 热读取（WebUI
+	// 保存即生效）；Runner 终态落库后经 CompletionHook 把完成事件投递
+	// 到内存队列，单 worker 异步经 Pushover / SMTP 发送——通知是旁路
+	// 副作用，任何失败只记日志，不改变 run 结果。
+	notifications := notification.NewService(notificationsqlite.New(db))
+	notificationDispatch := notification.NewDispatcher(notifications)
+	runner.CompletionHook = notificationDispatch
+	notificationDispatch.Start()
+
 	// 装配文件浏览：Remote 浏览复用 Source 服务的统一远端入口，
 	// 本地浏览以 Job.LocalRoot 为唯一 namespace，managed 标记来自
 	// managed_files 记录。
@@ -193,14 +204,23 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 	}
 
 	logging.Infof("shutting down")
-	// 优雅关闭顺序（v0.9 冻结契约）：停触发来源 → 取消在途运行并等待
-	// 终态落库 → 排空存量 HTTP 请求 → WAL checkpoint 收口 → 关闭 DB →
-	// 释放 datadir lock（后两步由 defer 完成）。异常退出不依赖
-	// checkpoint 保正确性，仍由 SQLite WAL recovery 保证。
+	// 优雅关闭顺序（v0.9 冻结契约 + v0.13 通知排空）：停触发来源 →
+	// 取消在途运行并等待终态落库（最后一批完成事件随之入队）→ 排空
+	// 通知队列（worker 持独立生命周期，不随主 ctx 取消提前退出）→
+	// 排空存量 HTTP 请求 → WAL checkpoint 收口 → 关闭 DB → 释放
+	// datadir lock（后两步由 defer 完成）。异常退出不依赖 checkpoint
+	// 保正确性，仍由 SQLite WAL recovery 保证。
 	scheduler.Stop()
 	if err := runner.Shutdown(context.Background()); err != nil {
 		return fmt.Errorf("shutdown sync runner: %w", err)
 	}
+	// 通知 drain 上限：队列有限（容量 64）且每个发送器自带 10s 超时，
+	// 正常情形秒级完成；超时只是放弃尚未发出的提醒，不影响退出正确性。
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := notificationDispatch.Shutdown(drainCtx); err != nil {
+		logging.Errorf("drain notifications: %v", err)
+	}
+	drainCancel()
 	if err := server.Shutdown(context.Background()); err != nil {
 		return err
 	}

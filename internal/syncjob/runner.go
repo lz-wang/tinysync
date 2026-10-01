@@ -132,6 +132,11 @@ type Runner struct {
 	// 由应用装配从运行配置注入。
 	TransferTimeout time.Duration
 
+	// CompletionHook 是运行终态成功落库后的旁路消费者（完成通知等）。
+	// nil 表示不发布；实现必须立即返回，任何下游耗时不得拖住终态收口
+	//（ADR 0006）。
+	CompletionHook RunCompletionHook
+
 	mu           sync.Mutex
 	active       map[string]*activeRun // jobID → 进行中的运行
 	occupancy    map[string]occupant   // jobID → 协调位占用者（run / mutation）
@@ -366,7 +371,7 @@ func (r *Runner) runOne(ctx context.Context, job Job, run *activeRun) {
 	run.progress.SetPhase(RunPhaseConnecting)
 	_, remote, err := r.sources.OpenRemote(ctx, job.SourceID)
 	if err != nil {
-		r.finalize(ctx, run, job.SourceID, RunStats{}, fmt.Errorf("create remote for source %s: %w", job.SourceID, err))
+		r.finalize(ctx, run, job, RunStats{}, fmt.Errorf("create remote for source %s: %w", job.SourceID, err))
 		return
 	}
 	// 运行结束释放 Remote 连接（有连接生命周期的协议如 SFTP 不遗留
@@ -382,7 +387,7 @@ func (r *Runner) runOne(ctx context.Context, job Job, run *activeRun) {
 		TransferTimeout: r.TransferTimeout,
 		Progress:        run.progress,
 	})
-	r.finalize(ctx, run, job.SourceID, stats, runErr)
+	r.finalize(ctx, run, job, stats, runErr)
 }
 
 // finalize 把终态落库；落库失败只记日志，不改变本轮结果。终态落库与
@@ -392,7 +397,7 @@ func (r *Runner) runOne(ctx context.Context, job Job, run *activeRun) {
 // 优雅关闭应在本进程内完成终态收敛。终态同时输出 event=sync_run
 // 结构化事件（v0.9 可观测性契约：job_id / run_id / source_id /
 // status / duration_ms / bytes / files_* / error）。
-func (r *Runner) finalize(ctx context.Context, run *activeRun, sourceID string, stats RunStats, runErr error) {
+func (r *Runner) finalize(ctx context.Context, run *activeRun, job Job, stats RunStats, runErr error) {
 	finishedAt := r.Now()
 	final := RunRecord{
 		ID:           run.runID,
@@ -418,15 +423,35 @@ func (r *Runner) finalize(ctx context.Context, run *activeRun, sourceID string, 
 		}
 	}
 	logging.Infof("event=sync_run job_id=%s run_id=%s source_id=%s status=%s duration_ms=%d bytes=%d files_created=%d files_updated=%d files_deleted=%d error=%q",
-		run.jobID, run.runID, sourceID, final.State,
+		run.jobID, run.runID, job.SourceID, final.State,
 		finishedAt.Sub(run.startedAt).Milliseconds(), final.Stats.BytesTransferred,
 		final.Stats.FilesCreated, final.Stats.FilesUpdated, final.Stats.FilesDeleted,
 		final.Error)
 	persistCtx := context.WithoutCancel(ctx)
-	if err := r.history.Finalize(persistCtx, final); err != nil {
-		logging.Errorf("finalize run %s: %v", run.runID, err)
+	finalizeErr := r.history.Finalize(persistCtx, final)
+	if finalizeErr != nil {
+		logging.Errorf("finalize run %s: %v", run.runID, finalizeErr)
 	}
 	r.pruneHistory(persistCtx)
+	// 完成事件只在终态成功落库后发布：落库失败时数据库仍显示
+	// running，此刻发出完成通知会造成两边事实不一致——宁可漏发
+	//（ADR 0006）。事件自带 JobName / SourceID 快照，消费者无需回读
+	// 可能已变更的 Job 配置。
+	if finalizeErr != nil || r.CompletionHook == nil {
+		return
+	}
+	r.CompletionHook.OnRunCompleted(RunCompletion{
+		RunID:      final.ID,
+		JobID:      final.JobID,
+		JobName:    job.Name,
+		SourceID:   job.SourceID,
+		Trigger:    final.Trigger,
+		State:      final.State,
+		StartedAt:  final.StartedAt,
+		FinishedAt: finishedAt,
+		Stats:      final.Stats,
+		Error:      final.Error,
+	})
 }
 
 // pruneHistory 在 run 终态落库后回收每 Job 的历史容量（保留最近
