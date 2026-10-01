@@ -80,11 +80,12 @@ jobs:
           name: backend
           fail_ci_if_error: false
 
-  # S3 integration gate：真实 MinIO 服务。实现在 integration.yml 可复用
-  # workflow 中，与 Release workflow 共用同一套装配与证据；ref 固定为
-  # 本 workflow 检出的 commit，保证被验证的就是被构建的代码。
+  # S3 integration gate：真实 S3 服务（Silo，MinIO fork）。实现在
+  # integration.yml 可复用 workflow 中，与 Release workflow 共用同一套
+  # 装配与证据；ref 固定为本 workflow 检出的 commit，保证被验证的就是
+  # 被构建的代码。
   integration:
-    name: S3 integration (MinIO)
+    name: S3 integration (Silo)
     needs: prepare
     uses: ./.github/workflows/integration.yml
     with:
