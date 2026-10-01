@@ -121,6 +121,22 @@ func TestSettingsValidate(t *testing.T) {
 			field:   "email.to",
 		},
 		{
+			name: "email from surrounding whitespace rejected",
+			mutate: func(s *Settings) {
+				s.Email.From = " notify@example.com "
+			},
+			wantErr: true,
+			field:   "email.from",
+		},
+		{
+			name: "email recipient surrounding whitespace rejected",
+			mutate: func(s *Settings) {
+				s.Email.To = []string{" me@example.com"}
+			},
+			wantErr: true,
+			field:   "email.to",
+		},
+		{
 			name: "email recipient empty string",
 			mutate: func(s *Settings) {
 				s.Email.To = []string{"  "}

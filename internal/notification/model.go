@@ -134,14 +134,21 @@ func (s Settings) Validate() error {
 	return nil
 }
 
-// validateMailbox 只接受纯 addr-spec（user@example.com）。mail.ParseAddress
-// 同时接受带 display name 的 RFC mailbox（如 `TinySync <a@b.com>`），但
-// 下游三处——SQLite 逗号序列化、SMTP MAIL FROM / RCPT TO envelope、
-// WebUI 逗号拆分——都按裸地址工作；display name 会破坏三者一致性
-// （逗号甚至可以合法出现在带引号的 display name 里），入口即拒绝。
+// validateMailbox 只接受纯 addr-spec（user@example.com），且不允许
+// 首尾空白：mail.ParseAddress 会把 " a@b.com " 宽容地解析为 a@b.com，
+// 但存储与 SMTP envelope 用的都是原始值——带空白的地址进入
+// MAIL FROM:<...> 后不再是纯 addr-spec。校验即拒绝而不是静默 trim，
+// 与 PATCH 的 strict 语义一致（用户输入不被静默修改）。
+// display name 形式（`TinySync <a@b.com>`）同样拒绝：下游三处——
+// SQLite 逗号序列化、SMTP envelope、WebUI 逗号拆分——都按裸地址
+// 工作，display name 会破坏三者一致性（逗号甚至可以合法出现在带
+// 引号的 display name 里）。
 func validateMailbox(field, value string) error {
+	if value != strings.TrimSpace(value) {
+		return &InvalidError{Field: field, Reason: "must not contain surrounding whitespace"}
+	}
 	parsed, err := mail.ParseAddress(value)
-	if err != nil || parsed.Address != strings.TrimSpace(value) {
+	if err != nil || parsed.Address != value {
 		return &InvalidError{Field: field, Reason: "must be a plain email address (user@example.com)"}
 	}
 	return nil

@@ -267,6 +267,67 @@ func (s *ctxBlockSender) Send(ctx context.Context, message Message) error {
 	return ctx.Err()
 }
 
+// 每渠道独立超时：Pushover 把自己的预算全部耗尽（阻塞到自身 ctx
+// 超时）后，Email 仍必须拿到接近完整的独立预算——一个渠道故障不能
+// 拖累另一个渠道（ADR 0006 契约）。该用例锁定回归：共享单一 10s
+// ctx 时 Email 的剩余预算会趋近于零。
+func TestDispatcherChannelsHaveIndependentTimeouts(t *testing.T) {
+	const budget = 400 * time.Millisecond
+
+	pushoverStarted := make(chan struct{})
+	emailRemaining := make(chan time.Duration, 1)
+	pushoverSender := SenderFunc(func(ctx context.Context, message Message) error {
+		close(pushoverStarted)
+		// 模拟卡死：直到自身 ctx 超时才返回。
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	emailSender := SenderFunc(func(ctx context.Context, message Message) error {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			close(emailRemaining)
+			return nil
+		}
+		emailRemaining <- time.Until(deadline)
+		return nil
+	})
+
+	service := NewService(&fakeRepo{settings: enabledSettings()})
+	dispatch := NewDispatcher(service,
+		WithPushoverSender(func(PushoverSettings) Sender { return pushoverSender }),
+		WithEmailSender(func(EmailSettings) Sender { return emailSender }),
+	)
+	dispatch.sendTimeout = budget
+	dispatch.Start()
+	t.Cleanup(func() { _ = dispatch.Shutdown(context.Background()) })
+
+	dispatch.OnRunCompleted(completedEvent())
+
+	// 等 Email 拿到自己的 ctx 并报告剩余预算（Pushover 卡满预算在先）。
+	var remaining time.Duration
+	select {
+	case d, ok := <-emailRemaining:
+		if !ok {
+			t.Fatal("Email ctx 无 deadline")
+		}
+		remaining = d
+	case <-time.After(5 * time.Second):
+		t.Fatal("Email 未被执行")
+	}
+	// 独立预算：Email 的剩余 ≈ budget（容忍调度开销），绝不接近 0。
+	if remaining < budget/2 {
+		t.Fatalf("Email 剩余预算 %v，远小于独立预算 %v——两渠道共享了同一个超时", remaining, budget)
+	}
+	// Pushover 确实先行卡满了自身预算（Email 在其后开始）。
+	<-pushoverStarted
+}
+
+// SenderFunc 把函数适配为 Sender，测试专用。
+type SenderFunc func(ctx context.Context, message Message) error
+
+// Send 实现 Sender。
+func (f SenderFunc) Send(ctx context.Context, message Message) error { return f(ctx, message) }
+
 func TestDispatcherSendTest(t *testing.T) {
 	env := newDispatcherEnv(t, enabledSettings())
 	if err := env.dispatch.SendTest(context.Background(), "pushover"); err != nil {

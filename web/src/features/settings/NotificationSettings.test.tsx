@@ -118,6 +118,21 @@ describe('NotificationSettings 保存与测试的状态一致性', () => {
         await waitFor(() => expect((pushoverTest as HTMLButtonElement).disabled).toBe(false))
     })
 
+    it('Email 修改 Host/Port/To 未保存时测试按钮同样禁用', async () => {
+        renderPage()
+        const emailTest = await screen.findByRole('button', { name: /发送测试邮件/ })
+        await waitFor(() => expect((emailTest as HTMLButtonElement).disabled).toBe(false))
+
+        // 修改 Host（未保存）：Email 卡进入 dirty，测试按钮禁用。
+        const hostField = await screen.findByLabelText('SMTP Host')
+        fireEvent.change(hostField, { target: { value: 'smtp2.example.com' } })
+        await waitFor(() => expect((emailTest as HTMLButtonElement).disabled).toBe(true))
+
+        // Email dirty 不影响 Pushover 的测试按钮（各卡独立判断）。
+        const pushoverTest = screen.getByRole('button', { name: /发送测试通知/ })
+        expect((pushoverTest as HTMLButtonElement).disabled).toBe(false)
+    })
+
     it('删除 Pushover 已配置 token 时自动关闭启用开关', async () => {
         renderPage()
         await screen.findByRole('button', { name: /发送测试通知/ })

@@ -13,13 +13,9 @@ import (
 // 此，溢出意味着下游长时间不可用——丢弃并记日志，不阻塞 finalize。
 const queueCapacity = 64
 
-// sendTimeout 是单条通知内单个发送器的独立超时（ADR 0006）。
+// sendTimeout 是单段 I/O（配置读取或单个渠道发送）的独立超时预算
+// （ADR 0006：每个发送器单独超时，一个渠道耗尽预算不拖累另一个）。
 const sendTimeout = 10 * time.Second
-
-// shutdownForceWait 是 Shutdown 的 drain 超时被触发、worker 已 cancel
-// 后的兜底等待：sender 受 socket deadline / HTTP ctx 约束必然在该
-// 时限内返回，此处只防御未知的挂死路径。
-const shutdownForceWait = 2*sendTimeout + 5*time.Second
 
 // Dispatcher 消费 syncjob.RunCompletion：实现 syncjob.RunCompletionHook，
 // OnRunCompleted 只 enqueue 立即返回；单 worker 逐条热读取配置并经
@@ -41,6 +37,9 @@ type Dispatcher struct {
 	closed  bool
 	started bool
 	done    chan struct{}
+	// sendTimeout 覆盖单段 I/O 的超时预算；0 用包级默认。测试注入
+	// 短值加速生命周期用例。
+	sendTimeout time.Duration
 	// workerCtx 是 worker 的生命周期根：drain 超时后由 Shutdown 取消，
 	// 使 dispatch 内的配置读取与发送（均从它派生）一并中断。关键不变
 	// 量：Shutdown 返回后 worker 绝不再访问 Service、SQLite 或网络。
@@ -143,18 +142,17 @@ func (d *Dispatcher) Shutdown(ctx context.Context) error {
 	case <-d.done:
 		return nil
 	case <-ctx.Done():
-		// drain 超时：cancel worker。正在发送的 sender 因派生 ctx
-		// 取消（Pushover 的 HTTP 请求）或 socket deadline（SMTP
-		// 同步调用）退出；队列中未处理的事件被放弃。
+		// drain 超时：cancel worker 后无限期等待它退出。这里不再设
+		// 第二层强制超时——全部 production sender 都有有界取消
+		//（Pushover 的 HTTP ctx、SMTP 的 socket deadline、SQLite 的
+		// ctx-aware query），worker 在 cancel 后必然退出；保留逃生
+		// 路径会重新打开「Shutdown 返回时 worker 仍在运行」的窗口，
+		// 破坏下方注释的不变量。Sender 不是开放给第三方的插件 API，
+		// 没有必要为假想的「无视 ctx 的 sender」牺牲确定性。
 		if cancel != nil {
 			cancel()
 		}
-		select {
-		case <-d.done:
-		case <-time.After(shutdownForceWait):
-			// 兜底：sender 理论上受 deadline 约束必然返回，这里只
-			// 防御未知挂死，不让 Shutdown 永不返回。
-		}
+		<-d.done
 		return ctx.Err()
 	}
 }
@@ -164,14 +162,18 @@ func (d *Dispatcher) Shutdown(ctx context.Context) error {
 // secret），继续处理下一条。所有 I/O 的 ctx 从 worker 生命周期派生：
 // worker 被取消后，配置读取与发送同样立即失败，而不是继续访问
 // SQLite 与网络。
+//
+// 超时预算是分段的——配置读取、Pushover、Email 各自持有独立的
+// sendTimeout：一个渠道把预算耗尽（甚至卡满整个 10s）不能拖累另一个
+// 渠道，这是「一个通知渠道故障不拖累另一个渠道」契约的直接体现。
 func (d *Dispatcher) dispatch(workerCtx context.Context, run syncjob.RunCompletion) {
 	if run.State != syncjob.RunSucceeded && run.State != syncjob.RunFailed && run.State != syncjob.RunCanceled {
 		// 防御：skipped / running 不是完成事件，不发通知。
 		return
 	}
-	ctx, cancel := context.WithTimeout(workerCtx, sendTimeout)
-	defer cancel()
-	settings, err := d.service.Settings(ctx)
+	settingsCtx, cancelSettings := context.WithTimeout(workerCtx, d.sendTimeoutBudget())
+	settings, err := d.service.Settings(settingsCtx)
+	cancelSettings()
 	if err != nil {
 		logging.Errorf("event=notification run_id=%s status=failed reason=load_settings error=%q", run.RunID, err)
 		return
@@ -181,20 +183,32 @@ func (d *Dispatcher) dispatch(workerCtx context.Context, run syncjob.RunCompleti
 	}
 	message := FormatRun(run)
 	if settings.Pushover.Enabled {
-		d.send(ctx, "pushover", run.RunID, d.pushoverSender(settings.Pushover), message)
+		d.send(workerCtx, "pushover", run.RunID, d.pushoverSender(settings.Pushover), message)
 	}
 	if settings.Email.Enabled {
-		d.send(ctx, "email", run.RunID, d.emailSender(settings.Email), message)
+		d.send(workerCtx, "email", run.RunID, d.emailSender(settings.Email), message)
 	}
 }
 
-// send 经单个渠道发送一条消息：独立超时，成功与失败都留结构化痕迹。
-func (d *Dispatcher) send(ctx context.Context, channel, runID string, sender Sender, message Message) {
+// send 经单个渠道发送一条消息：从 worker 生命周期派生本渠道的独立
+// 超时，成功与失败都留结构化痕迹。
+func (d *Dispatcher) send(parent context.Context, channel, runID string, sender Sender, message Message) {
+	ctx, cancel := context.WithTimeout(parent, d.sendTimeoutBudget())
+	defer cancel()
 	if err := sender.Send(ctx, message); err != nil {
 		logging.Errorf("event=notification channel=%s run_id=%s status=failed error=%q", channel, runID, err)
 		return
 	}
 	logging.Infof("event=notification channel=%s run_id=%s status=sent", channel, runID)
+}
+
+// sendTimeoutBudget 返回单段 I/O（配置读取或单渠道发送）的超时预算；
+// 测试可注入更短的值（sendTimeout 字段）加速生命周期用例。
+func (d *Dispatcher) sendTimeoutBudget() time.Duration {
+	if d.sendTimeout > 0 {
+		return d.sendTimeout
+	}
+	return sendTimeout
 }
 
 // pushoverSender 按配置构造 Pushover 发送器（工厂可注入）。
