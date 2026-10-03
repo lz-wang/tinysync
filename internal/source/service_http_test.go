@@ -5,6 +5,7 @@ package source_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -254,8 +255,7 @@ func createInputFor(auth source.HTTPAuthMethod, username string) source.CreateIn
 	}
 }
 
-// 与认证无关的更新（改名）也会顺手修复存量里的不变量缺口（遗留
-// dormant secret 被清除），且不改变当前方式的 secret。
+// 不变量修复发生在认证相关更新时；无关更新不应顺手重写存量 secret。
 func TestServiceUpdateHTTPPurgesLegacyDormantSecret(t *testing.T) {
 	svc, repo := newHTTPTestService(t)
 	ctx := context.Background()
@@ -268,9 +268,121 @@ func TestServiceUpdateHTTPPurgesLegacyDormantSecret(t *testing.T) {
 		t.Fatalf("repo.Update legacy: %v", err)
 	}
 
-	name := "renamed"
-	if _, err := svc.Update(ctx, src.ID, source.UpdateInput{Name: &name}); err != nil {
-		t.Fatalf("Update name: %v", err)
+	if _, err := svc.Update(ctx, src.ID, source.UpdateInput{
+		Credentials: &source.CredentialsUpdate{HTTP: &source.HTTPCredentialsUpdate{Password: httpPw("keep_me")}},
+	}); err != nil {
+		t.Fatalf("Update password: %v", err)
 	}
 	assertHTTPSecrets(t, repo, src.ID, "keep_me", "")
+}
+
+// HTTP 归一化不能吞掉外协议组，包含 HTTP 的混合输入也必须拒绝。
+func TestServiceUpdateHTTPRejectsForeignCredentials(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		patch source.CredentialsUpdate
+	}{
+		{"webdav", source.CredentialsUpdate{WebDAV: &source.WebDAVCredentialsUpdate{}}},
+		{"s3", source.CredentialsUpdate{S3: &source.S3CredentialsUpdate{}}},
+		{"sftp", source.CredentialsUpdate{SFTP: &source.SFTPCredentialsUpdate{}}},
+		{"smb", source.CredentialsUpdate{SMB: &source.SMBCredentialsUpdate{Password: httpPw("foreign")}}},
+		{"github_release", source.CredentialsUpdate{GitHubRelease: &source.GitHubReleaseCredentialsUpdate{}}},
+		{"mixed http and smb", source.CredentialsUpdate{
+			HTTP: &source.HTTPCredentialsUpdate{Password: httpPw("new_pw")},
+			SMB:  &source.SMBCredentialsUpdate{Password: httpPw("foreign")},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, repo := newHTTPTestService(t)
+			src := createHTTPSource(t, svc, source.HTTPAuthBasic, "old_pw", "")
+			name := "must not persist"
+			_, err := svc.Update(context.Background(), src.ID, source.UpdateInput{Name: &name, Credentials: &tc.patch})
+			if !errors.Is(err, source.ErrInvalid) {
+				t.Fatalf("foreign credentials error = %v, want ErrInvalid", err)
+			}
+			assertHTTPSecrets(t, repo, src.ID, "old_pw", "")
+			got, err := svc.Get(context.Background(), src.ID)
+			if err != nil || got.Name != src.Name {
+				t.Fatalf("rejected update changed source: name = %q, err = %v", got.Name, err)
+			}
+		})
+	}
+}
+
+type httpCredentialUpdateRepository struct {
+	source.Repository
+	credentialReads  int
+	credentialWrites int
+	beforeUpdate     func()
+}
+
+func (r *httpCredentialUpdateRepository) GetCredentials(ctx context.Context, id string) (source.Credentials, error) {
+	r.credentialReads++
+	return r.Repository.GetCredentials(ctx, id)
+}
+
+func (r *httpCredentialUpdateRepository) Update(ctx context.Context, src source.Source, patch *source.CredentialsUpdate) error {
+	if r.beforeUpdate != nil {
+		r.beforeUpdate()
+	}
+	if patch != nil {
+		r.credentialWrites++
+	}
+	return r.Repository.Update(ctx, src, patch)
+}
+
+// 模拟在无关更新落库前凭据轮换已提交：改名/启停/安全配置/空 patch
+// 必须保留新凭据，且不得读取旧 secret 再全量写回。
+func TestServiceUpdateHTTPUnrelatedUpdatePreservesRotation(t *testing.T) {
+	for _, operation := range []string{"rename", "enabled", "file_limit", "same auth config", "empty credentials", "empty http group"} {
+		t.Run(operation, func(t *testing.T) {
+			baseService, repo := newHTTPTestService(t)
+			src := createHTTPSource(t, baseService, source.HTTPAuthBasic, "old_pw", "")
+			ctx := context.Background()
+			tracking := &httpCredentialUpdateRepository{Repository: repo}
+			tracking.beforeUpdate = func() {
+				if err := repo.Update(ctx, src, &source.CredentialsUpdate{
+					HTTP: &source.HTTPCredentialsUpdate{Password: httpPw("rotated_pw")},
+				}); err != nil {
+					t.Fatalf("concurrent rotation: %v", err)
+				}
+			}
+			svc := source.NewService(tracking, &stubFactory{remote: &stubRemote{}})
+			input := source.UpdateInput{}
+			switch operation {
+			case "rename":
+				input.Name = httpPw("renamed")
+			case "enabled":
+				enabled := false
+				input.Enabled = &enabled
+			case "file_limit", "same auth config":
+				cfg := *src.Config.HTTP
+				if operation == "file_limit" {
+					cfg.CaddyFileLimit++
+				}
+				input.Config = &source.Config{HTTP: &cfg}
+			case "empty credentials":
+				input.Credentials = &source.CredentialsUpdate{}
+			case "empty http group":
+				input.Credentials = &source.CredentialsUpdate{HTTP: &source.HTTPCredentialsUpdate{}}
+			}
+			updated, err := svc.Update(ctx, src.ID, input)
+			if err != nil {
+				t.Fatalf("unrelated update: %v", err)
+			}
+			if input.Name != nil && updated.Name != *input.Name {
+				t.Error("name change was not applied")
+			}
+			if input.Enabled != nil && updated.Enabled != *input.Enabled {
+				t.Error("enabled change was not applied")
+			}
+			if input.Config != nil && *updated.Config.HTTP != *input.Config.HTTP {
+				t.Error("config change was not applied")
+			}
+			if tracking.credentialReads != 0 || tracking.credentialWrites != 0 {
+				t.Errorf("unrelated update read/wrote credentials (%d/%d), want neither", tracking.credentialReads, tracking.credentialWrites)
+			}
+			assertHTTPSecrets(t, repo, src.ID, "rotated_pw", "")
+		})
+	}
 }

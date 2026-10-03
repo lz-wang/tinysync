@@ -94,6 +94,12 @@ func (s *Service) Update(ctx context.Context, id string, input UpdateInput) (Sou
 		return Source{}, err
 	}
 
+	// 先验证调用方的原始组选择，再进行协议专属的凭据归一化；否则
+	// HTTP 全量更新会覆盖原输入，静默吞掉 SMB 等外协议凭据组。
+	if err := ValidateCredentialsUpdate(current.Type, input.Credentials); err != nil {
+		return Source{}, err
+	}
+
 	updated := current
 	if input.Name != nil {
 		name := strings.TrimSpace(*input.Name)
@@ -124,11 +130,20 @@ func (s *Service) Update(ctx context.Context, id string, input UpdateInput) (Sou
 	// Source 保存成功却无法打开 Remote。不变量由后端保证，WebUI 的
 	// 联动清除只是显示层优化。
 	if updated.Type == TypeHTTP {
-		effective, err := s.effectiveHTTPCredentials(ctx, id, updated.Config, input.Credentials)
-		if err != nil {
-			return Source{}, err
+		authChanged := current.Config.HTTP == nil || updated.Config.HTTP == nil ||
+			current.Config.HTTP.AuthMethod != updated.Config.HTTP.AuthMethod
+		secretChanged := input.Credentials != nil && input.Credentials.HTTP != nil &&
+			(input.Credentials.HTTP.Password != nil || input.Credentials.HTTP.BearerToken != nil)
+		if authChanged || secretChanged {
+			effective, err := s.effectiveHTTPCredentials(ctx, id, updated.Config, input.Credentials)
+			if err != nil {
+				return Source{}, err
+			}
+			input.Credentials = effective
+		} else {
+			// 无关更新和空 patch 不读写 secret，避免以旧快照覆盖并发轮换。
+			input.Credentials = nil
 		}
-		input.Credentials = effective
 	}
 
 	// 引用态源不接受内联 secret 写入：无论本次是否变更 config，只要
@@ -139,9 +154,6 @@ func (s *Service) Update(ctx context.Context, id string, input UpdateInput) (Sou
 		input.Credentials = clearInlineSFTPUpdate(input.Credentials)
 	}
 	if input.Credentials != nil {
-		if err := ValidateCredentialsUpdate(updated.Type, input.Credentials); err != nil {
-			return Source{}, err
-		}
 		updated.CredentialState = applyCredentialsUpdate(updated.Type, updated.CredentialState, input.Credentials)
 	}
 	if input.Enabled != nil {
