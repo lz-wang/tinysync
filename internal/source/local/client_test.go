@@ -76,3 +76,32 @@ func TestOpenCancellation(t *testing.T) {
 		t.Fatalf("read after cancel=%v", err)
 	}
 }
+
+func TestFactoryRejectsCredentials(t *testing.T) {
+	cfg, err := source.PrepareConfig(source.TypeLocal, source.Config{Local: &source.LocalConfig{Root: t.TempDir()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := source.Source{Type: source.TypeLocal, Config: cfg}
+	for _, tc := range []struct {
+		name  string
+		creds source.Credentials
+	}{
+		{"webdav", source.Credentials{WebDAV: &source.WebDAVCredentials{}}},
+		{"s3", source.Credentials{S3: &source.S3Credentials{}}},
+		{"sftp", source.Credentials{SFTP: &source.SFTPCredentials{}}},
+		{"smb", source.Credentials{SMB: &source.SMBCredentials{}}},
+		{"github_release", source.Credentials{GitHubRelease: &source.GitHubReleaseCredentials{}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			remote, err := NewFactory().Create(context.Background(), src, tc.creds)
+			if remote != nil {
+				_ = remote.Close()
+				t.Fatal("returned a remote for credentials-bearing local source")
+			}
+			if !errors.Is(err, source.ErrInvalid) {
+				t.Fatalf("Create = %v; want ErrInvalid", err)
+			}
+		})
+	}
+}

@@ -20,7 +20,7 @@ func NewFactory() *Factory { return &Factory{} }
 
 func (*Factory) Type() source.Type { return source.TypeLocal }
 
-func (*Factory) Create(ctx context.Context, src source.Source, _ source.Credentials) (source.Remote, error) {
+func (*Factory) Create(ctx context.Context, src source.Source, creds source.Credentials) (source.Remote, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -28,6 +28,9 @@ func (*Factory) Create(ctx context.Context, src source.Source, _ source.Credenti
 		return nil, fmt.Errorf("%w: %s", source.ErrUnsupportedType, src.Type)
 	}
 	if err := source.ValidateConfig(src.Type, src.Config); err != nil {
+		return nil, err
+	}
+	if err := source.ValidateCredentials(src.Type, src.Config, creds); err != nil {
 		return nil, err
 	}
 	r := &Remote{root: src.Config.Local.Root}
