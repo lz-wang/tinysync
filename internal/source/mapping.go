@@ -29,7 +29,11 @@ func ValidateJobMapping(src Source, remoteRoot, localRoot string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("%w: local destination is not a directory", ErrInvalid)
 	}
-	if filesafe.PathsOverlap(effective, destination) {
+	overlap, err := filesafe.ExistingDirectoriesOverlap(effective, destination)
+	if err != nil {
+		return fmt.Errorf("%w: compare local source and destination: %w", ErrInvalid, err)
+	}
+	if overlap {
 		return fmt.Errorf("%w: local source subtree %s overlaps destination %s", ErrInvalid, effective, destination)
 	}
 	return nil

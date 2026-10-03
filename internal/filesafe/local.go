@@ -41,6 +41,49 @@ func PathsOverlap(a, b string) bool {
 	return sameOrUnder(a, b) || sameOrUnder(b, a)
 }
 
+// ExistingDirectoriesOverlap 根据文件系统身份判断已存在目录是否相同或
+// 互相包含，不假设操作系统或卷的大小写规则。解析符号链接后沿祖先链
+// 比较 SameFile；任何解析或 Stat 失败都返回错误，不能作为不重叠处理。
+func ExistingDirectoriesOverlap(a, b string) (bool, error) {
+	a, err := CanonicalExistingDir(a)
+	if err != nil {
+		return false, fmt.Errorf("resolve directory: %w", err)
+	}
+	b, err = CanonicalExistingDir(b)
+	if err != nil {
+		return false, fmt.Errorf("resolve directory: %w", err)
+	}
+	aInfo, err := os.Stat(a)
+	if err != nil {
+		return false, err
+	}
+	bInfo, err := os.Stat(b)
+	if err != nil {
+		return false, err
+	}
+	if overlap, err := ancestorMatches(a, bInfo); err != nil || overlap {
+		return overlap, err
+	}
+	return ancestorMatches(b, aInfo)
+}
+
+func ancestorMatches(dir string, target os.FileInfo) (bool, error) {
+	for {
+		info, err := os.Stat(dir)
+		if err != nil {
+			return false, fmt.Errorf("stat directory ancestor %s: %w", dir, err)
+		}
+		if os.SameFile(info, target) {
+			return true, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false, nil
+		}
+		dir = parent
+	}
+}
+
 func sameOrUnder(parent, child string) bool {
 	rel, err := filepath.Rel(parent, child)
 	return err == nil && (rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))))

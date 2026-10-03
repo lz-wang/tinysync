@@ -86,3 +86,88 @@ func TestResolveNoSymlink(t *testing.T) {
 		t.Errorf("root: %v", err)
 	}
 }
+
+func TestExistingDirectoriesOverlap(t *testing.T) {
+	base := t.TempDir()
+	for _, dir := range []string{"data/sub", "database", "backup"} {
+		if err := os.MkdirAll(filepath.Join(base, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		a, b string
+		want bool
+	}{
+		{"data", "data", true},
+		{"data", "data/sub", true},
+		{"data", "database", false},
+		{"data/sub", "backup", false},
+	} {
+		t.Run(tc.a+"-"+tc.b, func(t *testing.T) {
+			a, b := filepath.Join(base, tc.a), filepath.Join(base, tc.b)
+			for _, pair := range [][2]string{{a, b}, {b, a}} {
+				got, err := ExistingDirectoriesOverlap(pair[0], pair[1])
+				if err != nil || got != tc.want {
+					t.Fatalf("overlap(%q, %q) = %v, %v; want %v", pair[0], pair[1], got, err, tc.want)
+				}
+			}
+		})
+	}
+	file := filepath.Join(base, "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range []string{filepath.Join(base, "missing"), file} {
+		for _, pair := range [][2]string{{base, invalid}, {invalid, base}} {
+			if _, err := ExistingDirectoriesOverlap(pair[0], pair[1]); err == nil {
+				t.Fatalf("accepted invalid directory %q", invalid)
+			}
+		}
+	}
+}
+
+func TestExistingDirectoriesOverlapSymlinkAlias(t *testing.T) {
+	base := t.TempDir()
+	dir := filepath.Join(base, "data")
+	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(base, "alias")
+	if err := os.Symlink(dir, alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	for _, target := range []string{alias, filepath.Join(alias, "sub")} {
+		got, err := ExistingDirectoriesOverlap(dir, target)
+		if err != nil || !got {
+			t.Fatalf("alias overlap = %v, %v", got, err)
+		}
+	}
+}
+
+func TestExistingDirectoriesOverlapCaseInsensitive(t *testing.T) {
+	base := t.TempDir()
+	dir := filepath.Join(base, "Data")
+	if err := os.MkdirAll(filepath.Join(dir, "Sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(base, "data")
+	info, err := os.Stat(alias)
+	if os.IsNotExist(err) {
+		t.Skip("test volume is case-sensitive")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, err := os.Stat(dir)
+	if err != nil || !os.SameFile(original, info) {
+		t.Fatalf("case alias is not the same directory: %v", err)
+	}
+	for _, target := range []string{alias, filepath.Join(alias, "sub")} {
+		for _, pair := range [][2]string{{dir, target}, {target, dir}} {
+			got, err := ExistingDirectoriesOverlap(pair[0], pair[1])
+			if err != nil || !got {
+				t.Fatalf("case overlap(%q, %q) = %v, %v", pair[0], pair[1], got, err)
+			}
+		}
+	}
+}
