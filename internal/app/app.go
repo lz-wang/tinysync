@@ -27,6 +27,7 @@ import (
 	sharesqlite "tinysync/internal/share/sqlite"
 	"tinysync/internal/source"
 	githubrelease "tinysync/internal/source/githubrelease"
+	localadapter "tinysync/internal/source/local"
 	s3adapter "tinysync/internal/source/s3"
 	sftpadapter "tinysync/internal/source/sftp"
 	smbadapter "tinysync/internal/source/smb"
@@ -120,7 +121,7 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 	// 装配 Source 领域：SQLite 仓库 + 协议注册表 + 应用服务。协议
 	// dispatch 只发生在 registry 一处，业务层不出现协议分支；
 	// REST / Web UI / MCP 共用该服务层。
-	remotes, err := source.NewRemoteRegistry(webdav.NewFactory(), s3adapter.NewFactory(), sftpadapter.NewFactory(), smbadapter.NewFactory(), githubrelease.NewFactory())
+	remotes, err := source.NewRemoteRegistry(webdav.NewFactory(), s3adapter.NewFactory(), sftpadapter.NewFactory(), smbadapter.NewFactory(), githubrelease.NewFactory(), localadapter.NewFactory())
 	if err != nil {
 		return fmt.Errorf("assemble remote registry: %w", err)
 	}

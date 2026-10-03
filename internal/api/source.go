@@ -104,6 +104,8 @@ func toSourceDTO(s source.Source) (sourceDTO, error) {
 func marshalConfigForResponse(t source.Type, c source.Config) (json.RawMessage, error) {
 	var data any
 	switch t {
+	case source.TypeLocal:
+		data = c.Local
 	case source.TypeWebDAV:
 		data = c.WebDAV
 	case source.TypeS3:
@@ -139,11 +141,11 @@ type createSourceRequest struct {
 // config 替换；credentials 组内 secret 三态（缺省保留、空串清除、
 // 非空替换）。
 type updateSourceRequest struct {
-	Name        *string          `json:"name"`
-	Type        *string          `json:"type"`
-	Enabled     *bool            `json:"enabled"`
-	Config      json.RawMessage  `json:"config"`
-	Credentials *json.RawMessage `json:"credentials"`
+	Name        *string         `json:"name"`
+	Type        *string         `json:"type"`
+	Enabled     *bool           `json:"enabled"`
+	Config      json.RawMessage `json:"config"`
+	Credentials json.RawMessage `json:"credentials"`
 }
 
 // testResultDTO 是连接测试结果。连接失败也是成功完成的测试操作，
@@ -175,6 +177,12 @@ func strictDecode(raw json.RawMessage, target any) error {
 // decodeConfigPayload 按 type 严格解码 config 子对象。
 func decodeConfigPayload(t source.Type, raw json.RawMessage) (source.Config, error) {
 	switch t {
+	case source.TypeLocal:
+		var c source.LocalConfig
+		if err := strictDecode(raw, &c); err != nil {
+			return source.Config{}, fmt.Errorf("invalid local config: %v", err)
+		}
+		return source.Config{Local: &c}, nil
 	case source.TypeWebDAV:
 		var c source.WebDAVConfig
 		if err := strictDecode(raw, &c); err != nil {
@@ -214,6 +222,8 @@ func decodeConfigPayload(t source.Type, raw json.RawMessage) (source.Config, err
 // 完整凭据集合（创建用：字段为值语义）。
 func decodeCredentialsPayload(t source.Type, raw json.RawMessage) (source.Credentials, error) {
 	switch t {
+	case source.TypeLocal:
+		return source.Credentials{}, fmt.Errorf("local source does not accept credentials")
 	case source.TypeWebDAV:
 		var p struct {
 			Password *string `json:"password"`
@@ -291,6 +301,8 @@ func decodeCredentialsPayload(t source.Type, raw json.RawMessage) (source.Creden
 // 为三态更新：nil 保留、空串清除、非空替换。
 func decodeCredentialsUpdatePayload(t source.Type, raw json.RawMessage) (*source.CredentialsUpdate, error) {
 	switch t {
+	case source.TypeLocal:
+		return nil, fmt.Errorf("local source does not accept credentials")
 	case source.TypeWebDAV:
 		var p struct {
 			Password *string `json:"password"`
@@ -473,6 +485,11 @@ func (h *sourceHandlers) update(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+		config, err = source.PrepareConfig(current.Type, config)
+		if err != nil {
+			handleSourceError(c, err)
+			return
+		}
 		// Remote identity 保护：身份字段按协议判定
 		// （source.RemoteIdentityEqual），被 Job 引用时拒绝。
 		if h.refGuard != nil {
@@ -490,7 +507,7 @@ func (h *sourceHandlers) update(c *gin.Context) {
 		input.Config = &config
 	}
 	if req.Credentials != nil {
-		credsUpdate, err := decodeCredentialsUpdatePayload(current.Type, *req.Credentials)
+		credsUpdate, err := decodeCredentialsUpdatePayload(current.Type, req.Credentials)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return

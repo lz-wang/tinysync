@@ -35,6 +35,8 @@ type listSourcesResult struct {
 func toSourceSummary(s source.Source) (sourceSummary, error) {
 	var config any
 	switch s.Type {
+	case source.TypeLocal:
+		config = s.Config.Local
 	case source.TypeWebDAV:
 		config = s.Config.WebDAV
 	case source.TypeS3:
