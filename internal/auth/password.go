@@ -17,7 +17,7 @@ import (
 // benchmark 后可适度提高，变更需同步修订实现契约文档。
 const (
 	// minPasswordChars 是密码最小字符数。
-	minPasswordChars = 12
+	minPasswordChars = 6
 	// maxPasswordBytes 是密码最大输入字节数，避免超长输入造成
 	// 密码 KDF DoS。
 	maxPasswordBytes = 1024
@@ -40,7 +40,7 @@ const phcAlgo = "argon2id"
 // ErrPasswordHash 表示 PHC hash 格式损坏或参数不被支持。
 var ErrPasswordHash = errors.New("auth: malformed password hash")
 
-// ValidatePassword 校验密码策略：至少 12 字符且不超过 1024 字节。
+// ValidatePassword 校验密码策略：至少 6 字符且不超过 1024 字节。
 func ValidatePassword(password string) error {
 	if chars := utf8.RuneCountInString(password); chars < minPasswordChars {
 		return fmt.Errorf("%w: password must be at least %d characters", ErrInvalidInput, minPasswordChars)

@@ -78,7 +78,7 @@ export default function AccountSettings() {
         }
     }
     const changePassword = async () => {
-        if (!current || !next || next !== confirm || [...next].length < 12) return
+        if (!current || !next || next !== confirm || [...next].length < 6) return
         setSaving(true)
         try {
             await updateProfile({ current_password: current, new_password: next })
@@ -196,11 +196,11 @@ export default function AccountSettings() {
                             type="password"
                             autoComplete="new-password"
                             value={next}
-                            error={next !== '' && [...next].length < 12}
+                            error={next !== '' && [...next].length < 6}
                             helperText={
-                                next !== '' && [...next].length < 12
-                                    ? '新密码至少需要 12 个字符'
-                                    : '至少 12 个字符'
+                                next !== '' && [...next].length < 6
+                                    ? '新密码至少需要 6 个字符'
+                                    : '至少 6 个字符'
                             }
                             onChange={event => setNext(event.target.value)}
                         />
@@ -222,7 +222,7 @@ export default function AccountSettings() {
                     <Button
                         variant="contained"
                         disabled={
-                            saving || !current || !next || next !== confirm || [...next].length < 12
+                            saving || !current || !next || next !== confirm || [...next].length < 6
                         }
                         onClick={() => void changePassword()}
                     >

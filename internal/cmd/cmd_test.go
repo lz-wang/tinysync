@@ -11,8 +11,11 @@ import (
 
 	"github.com/urfave/cli/v3"
 
+	"tinysync/internal/auth"
+	authsqlite "tinysync/internal/auth/sqlite"
 	"tinysync/internal/buildinfo"
 	"tinysync/internal/config"
+	"tinysync/internal/storage"
 )
 
 // TestNewCommand 验证 CLI 收敛：serve（主）、auth set-password 与
@@ -102,7 +105,7 @@ func TestNewCommand(t *testing.T) {
 	}
 }
 
-// --password-stdin 从管道读取密码完成 bootstrap；密码过短被拒绝。
+// --password-stdin 支持用 6 字符密码完成 bootstrap 与重置。
 func TestRunSetPasswordFromStdin(t *testing.T) {
 	dataDir := t.TempDir()
 	ctx := context.Background()
@@ -114,18 +117,28 @@ func TestRunSetPasswordFromStdin(t *testing.T) {
 		}, strings.NewReader(password), io.Discard, io.Discard)
 	}
 
-	// 过短密码被策略拒绝，且不留任何凭据。
 	if err := run("short\n"); err == nil {
-		t.Fatal("set-password with short password = nil, want policy error")
+		t.Fatal("set-password with 5-character password = nil, want policy error")
 	}
-
-	if err := run("automation-secret-42\n"); err != nil {
+	if err := run("short1\n"); err != nil {
 		t.Fatalf("set-password from stdin: %v", err)
 	}
 
-	// rotation：再次执行成功并替换密码。
-	if err := run("automation-secret-43\n"); err != nil {
+	// rotation：6 字符密码可替换已保存的密码。
+	if err := run("abc123\n"); err != nil {
 		t.Fatalf("set-password rotation: %v", err)
+	}
+	db, err := storage.Open(dataDir)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	svc := auth.NewService(authsqlite.NewRepository(db))
+	if _, _, err := svc.Login(ctx, "abc123"); err != nil {
+		t.Fatalf("login after 6-character password reset: %v", err)
+	}
+	if _, _, err := svc.Login(ctx, "short1"); err == nil {
+		t.Fatal("old password still accepted after reset")
 	}
 
 	// 空 stdin 报错。

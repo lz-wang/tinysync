@@ -140,7 +140,7 @@ func (f *fakeRepo) TouchAPITokenLastUsed(_ context.Context, id string, now time.
 	return nil
 }
 
-// validPassword 满足最小策略的测试密码。
+// validPassword 是测试使用的非空密码。
 const validPassword = "correct-horse-battery"
 
 // fixedClock 构造注入固定时钟的 service。
@@ -333,7 +333,7 @@ func TestPasswordResetInvalidatesSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	newPassword := "rotated-password-42"
+	newPassword := "abc123"
 	if err := svc.SetAdminPassword(ctx, newPassword); err != nil {
 		t.Fatalf("SetAdminPassword (reset): %v", err)
 	}
@@ -363,20 +363,25 @@ func TestValidatePasswordPolicy(t *testing.T) {
 		wantErr  bool
 	}{
 		{"12 chars ok", "abcdefghijkl", false},
-		{"11 chars rejected", "abcdefghijk", true},
+		{"11 chars ok", "abcdefghijk", false},
+		{"6 chars ok", "abc123", false},
+		{"5 chars rejected", "short", true},
+		{"6 Unicode chars ok", "一二三四五六", false},
+		{"5 Unicode chars rejected", "一二三四五", true},
 		{"empty rejected", "", true},
 		{"1024 bytes ok", strings.Repeat("a", 1024), false},
 		{"1025 bytes rejected", strings.Repeat("a", 1025), true},
 	}
 	for _, tc := range cases {
-		err := ValidatePassword(tc.password)
-		if (err != nil) != tc.wantErr {
-			t.Errorf("%s: err = %v, wantErr %v", tc.name, err, tc.wantErr)
-		}
-	}
-	// 策略错误是 ErrInvalidInput。
-	if err := ValidatePassword("short"); !errors.Is(err, ErrInvalidInput) {
-		t.Errorf("short password err = %v, want ErrInvalidInput", err)
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidatePassword(tc.password)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if tc.wantErr && !errors.Is(err, ErrInvalidInput) {
+				t.Errorf("err = %v, want ErrInvalidInput", err)
+			}
+		})
 	}
 }
 
