@@ -24,11 +24,10 @@ import (
 // 直接构造 *smb2.FileStat，与 go-smb2 从服务器响应解码出的类型一致，
 // toFileInfo 的 reparse point 断言因此走真实类型路径。
 
-// FILE_ATTRIBUTE_DIRECTORY / FILE_ATTRIBUTE_REPARSE_POINT 的 MS
-// 固定数值（go-smb2 的常量在 internal 包，外部不可引用）。
+// FILE_ATTRIBUTE_DIRECTORY 的 MS 固定数值与 IO_REPARSE_TAG_SYMLINK
+// （REPARSE_POINT 属性位由生产代码的 fileAttributeReparsePoint 提供）。
 const (
 	faDirectory      uint32 = 0x10
-	faReparsePoint   uint32 = 0x400
 	ioReparseSymlink uint32 = 0xA000000C
 )
 
@@ -51,7 +50,7 @@ func (e fakeEntry) stat() *smb2.FileStat {
 		st.FileAttributes |= faDirectory
 	}
 	if e.reparse {
-		st.FileAttributes |= faReparsePoint
+		st.FileAttributes |= fileAttributeReparsePoint
 		st.ReparsePointTag = ioReparseSymlink
 	}
 	return st
@@ -486,6 +485,24 @@ func TestReparsePointRejected(t *testing.T) {
 	}
 	if _, err := r.List(ctx, "/", source.ListOptions{}); !errors.Is(err, source.ErrInvalid) {
 		t.Errorf("List with reparse entry = %v, want ErrInvalid", err)
+	}
+}
+
+// attrs-only reparse（真实 Samba 的 Lstat 形态：CREATE 响应不带
+// ReparsePointTag，但 FileAttributes 含 REPARSE_POINT）同样拒绝。
+func TestReparseAttributeOnlyRejected(t *testing.T) {
+	attrsOnly := &smb2.FileStat{
+		FileName:       "link.txt",
+		FileAttributes: fileAttributeReparsePoint,
+	}
+	if _, err := toFileInfo("/link.txt", attrsOnly); !errors.Is(err, source.ErrInvalid) {
+		t.Errorf("toFileInfo attrs-only reparse = %v, want ErrInvalid", err)
+	}
+	// 普通文件不受影响。
+	plain := &smb2.FileStat{FileName: "a.txt", EndOfFile: 3}
+	fi, err := toFileInfo("/a.txt", plain)
+	if err != nil || fi.IsDir || fi.Fingerprint.Size != 3 {
+		t.Errorf("toFileInfo plain = %+v, %v; want plain file", fi, err)
 	}
 }
 

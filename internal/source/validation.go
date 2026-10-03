@@ -196,7 +196,7 @@ func validateSFTPConfig(c SFTPConfig) error {
 // validateSMBConfig 校验 SMB 配置：host / share / username 必填；
 // host 只接受裸主机名 / IP（拒绝 smb:// scheme、\\server\share UNC
 // 形态与附带路径——share 由独立字段表达）；share 是单个名称段
-//（不含路径分隔符与 dot segment，允许 Unicode 与隐藏 share 的 $
+// （不含路径分隔符与 dot segment，允许 Unicode 与隐藏 share 的 $
 // 后缀）；remote_root 留空归一为 "/"，有值时必须是 clean 的 POSIX
 // 风格绝对路径（tinysync 内部不出现反斜杠路径）；signing 留空归一
 // 为 required。port 留空归一为 445，有值时限定 1..65535。不支持

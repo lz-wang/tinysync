@@ -69,7 +69,7 @@ const (
 type SMBSigningPolicy string
 
 // SMB 消息签名策略：required 要求服务器启用签名，协商失败即失败
-//（默认）；auto 跟随服务器协商结果。
+// （默认）；auto 跟随服务器协商结果。
 const (
 	SMBSigningRequired SMBSigningPolicy = "required"
 	SMBSigningAuto     SMBSigningPolicy = "auto"

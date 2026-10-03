@@ -6,7 +6,7 @@
 
 .PHONY: \
 	build build-all build-os package-os dist \
-	test coverage check format setup clean version help ci integration hardening benchmark \
+	test coverage check format setup clean version help ci integration integration-smb hardening benchmark \
 	benchmark-record benchmark-compare _install-benchstat \
 	web-install web-ci-install web-lint web-typecheck web-test web-build web-format \
 	_build-platform _package-platform _check-platform \
@@ -228,9 +228,32 @@ integration:
 		TINYSYNC_IT_S3_BUCKET="$(TINYSYNC_IT_S3_BUCKET)" \
 		TINYSYNC_IT_S3_PREFIX="$(TINYSYNC_IT_S3_PREFIX)" \
 		TINYSYNC_IT_S3_PATH_STYLE="$(TINYSYNC_IT_S3_PATH_STYLE)" \
+		TINYSYNC_IT_SMB_HOST="$(TINYSYNC_IT_SMB_HOST)" \
+		TINYSYNC_IT_SMB_PORT="$(TINYSYNC_IT_SMB_PORT)" \
+		TINYSYNC_IT_SMB_SHARE="$(TINYSYNC_IT_SMB_SHARE)" \
+		TINYSYNC_IT_SMB_USERNAME="$(TINYSYNC_IT_SMB_USERNAME)" \
+		TINYSYNC_IT_SMB_PASSWORD="$(TINYSYNC_IT_SMB_PASSWORD)" \
+		TINYSYNC_IT_SMB_DOMAIN="$(TINYSYNC_IT_SMB_DOMAIN)" \
 		TINYSYNC_IT_GITHUB_REPO="$(TINYSYNC_IT_GITHUB_REPO)" \
 		TINYSYNC_IT_GITHUB_TOKEN="$(TINYSYNC_IT_GITHUB_TOKEN)" \
 		$(GO) test -timeout 300s -v -run 'TestIntegration' ./internal/e2e/
+
+## Run SMB integration tests against a real Samba service (real TCP +
+## SMB2/3 negotiate + NTLMv2). Usage: make integration-smb \
+##          TINYSYNC_IT_SMB_HOST=127.0.0.1 TINYSYNC_IT_SMB_PORT=445 \
+##          TINYSYNC_IT_SMB_SHARE=tinysync TINYSYNC_IT_SMB_USERNAME=tinysync \
+##          TINYSYNC_IT_SMB_PASSWORD=... [TINYSYNC_IT_SMB_DOMAIN=WORKGROUP]
+## 未设置 HOST 时自动跳过；同时运行协议矩阵中的 SMB fixture。
+integration-smb:
+	@echo "[tinysync] SMB integration"
+	@$(GOENV) \
+		TINYSYNC_IT_SMB_HOST="$(TINYSYNC_IT_SMB_HOST)" \
+		TINYSYNC_IT_SMB_PORT="$(TINYSYNC_IT_SMB_PORT)" \
+		TINYSYNC_IT_SMB_SHARE="$(TINYSYNC_IT_SMB_SHARE)" \
+		TINYSYNC_IT_SMB_USERNAME="$(TINYSYNC_IT_SMB_USERNAME)" \
+		TINYSYNC_IT_SMB_PASSWORD="$(TINYSYNC_IT_SMB_PASSWORD)" \
+		TINYSYNC_IT_SMB_DOMAIN="$(TINYSYNC_IT_SMB_DOMAIN)" \
+		$(GO) test -timeout 300s -v -run 'TestIntegrationSMB|TestSyncAcrossProtocols/smb' ./internal/e2e/
 
 ## Generate backend coverage files for Codecov and local inspection.
 coverage:
@@ -423,7 +446,8 @@ help:
 	@echo "  make coverage       Generate coverage (coverage/backend.*)"
 	@echo "  make ci             Deterministic install + all checks"
 	@echo "  make hardening      Hardening quality gate + short fuzz"
-	@echo "  make integration    Protocol integration (real S3, env-gated)"
+	@echo "  make integration      Protocol integration (real S3/Samba/GitHub, env-gated)"
+	@echo "  make integration-smb  SMB integration (real Samba, env-gated)"
 	@echo "  make benchmark      Run performance benchmarks"
 	@echo "  make benchmark-record NAME=x  Record results + metadata"
 	@echo "  make benchmark-compare BASE= NEW=  benchstat comparison"

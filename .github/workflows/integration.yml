@@ -1,18 +1,21 @@
-name: S3 Integration
+name: Protocol Integration
 
-# 可复用的 S3 integration gate：真实 S3 服务（Silo 容器，MinIO fork），
-# 验证 S3 adapter 与同一 Sync Engine 的真实端到端行为。Build 与 Release
-# workflow 共用本 workflow，避免维护两份 MinIO 装配；远端发布门禁
-# 因此与 main 的持续集成使用同一套 integration 证据。SFTP / WebDAV
-# 的真实协议栈测试由 in-process server 覆盖、随 make check 运行，
-# 不在本 gate 内。
+# 可复用的协议 integration gate：真实服务容器（S3 job 用 Silo 容器
+# （MinIO fork），SMB job 用 Samba 容器），验证各协议 adapter 与同一
+# Sync Engine 的真实端到端行为。Build 与 Release workflow 共用本
+# workflow，避免维护两份装配；远端发布门禁因此与 main 的持续集成
+# 使用同一套 integration 证据。SFTP / WebDAV 的真实协议栈测试由
+# in-process server 覆盖、随 make check 运行，不在本 gate 内。
 #
 # ref 为必填输入：可复用 workflow 的 github context 始终跟随调用方
 # 事件，checkout 不显式指定 ref 时会检出触发调用方的 commit。Build
 # 传入 github.sha，Release 传入发布 tag，保证"被验证的 commit ==
 # 被发布的 commit"。
 #
-# S3 服务以 step 容器启动而不是 service container：service container
+# S3 与 SMB 拆成独立 job：Samba image / network 故障不会被误认为
+# S3 regression（反之亦然）。
+#
+# 服务以 step 容器启动而不是 service container：service container
 # 拉取失败无法重试，会让 gate 在未运行任何测试的情况下变红；step
 # 方式允许 pull 重试。MinIO 社区版已停止分发容器镜像（仓库 2026-02
 # 归档、Docker Hub 仓库 2026-04 删除、quay.io/minio/minio 自
@@ -34,7 +37,7 @@ env:
   CGO_ENABLED: "0"
 
 jobs:
-  integration:
+  s3:
     name: S3 integration (Silo)
     runs-on: ubuntu-latest
     steps:
@@ -101,3 +104,73 @@ jobs:
       - name: Stop S3 service
         if: always()
         run: docker rm -f minio
+
+  smb:
+    name: SMB integration (Samba)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+
+      # 真实 Samba（smbd-only variant）：真实 TCP + SMB2/3 negotiate +
+      # NTLMv2 + 真实文件系统。pull 重试语义与 S3 job 相同。
+      - name: Start Samba service
+        run: |
+          image="ghcr.io/servercontainers/samba:smbd-only-latest"
+          pulled=false
+          for attempt in 1 2 3; do
+            if docker pull "$image"; then
+              pulled=true
+              break
+            fi
+            echo "pull attempt ${attempt} failed, retrying..."
+            sleep $((attempt * 10))
+          done
+          if [ "${pulled}" != "true" ]; then
+            echo "Failed to pull ${image} after retries"
+            exit 1
+          fi
+          mkdir -p /tmp/tinysync-smb-it
+          docker run -d --name samba \
+            -p 127.0.0.1:445:445 \
+            -e "ACCOUNT_tinysync=integration-secret" \
+            -e "SAMBA_VOLUME_CONFIG_it=[it]; path = /shares/it; valid users = tinysync; read only = no" \
+            -v /tmp/tinysync-smb-it:/shares/it \
+            "$image"
+
+      # smbd-only variant 没有 healthcheck 端点：轮询 445 端口就绪。
+      - name: Wait for Samba listening on 445
+        timeout-minutes: 3
+        run: |
+          for _ in $(seq 1 30); do
+            if (echo > /dev/tcp/127.0.0.1/445) 2>/dev/null; then
+              echo "samba is listening on 445"
+              # smbd 端口已开但初始化可能仍在进行，再给一次探测间隔。
+              sleep 2
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs samba
+          exit 1
+
+      - name: Run SMB integration tests
+        env:
+          TINYSYNC_IT_SMB_HOST: 127.0.0.1
+          TINYSYNC_IT_SMB_PORT: "445"
+          TINYSYNC_IT_SMB_SHARE: it
+          TINYSYNC_IT_SMB_USERNAME: tinysync
+          TINYSYNC_IT_SMB_PASSWORD: integration-secret
+          TINYSYNC_IT_SMB_DOMAIN: WORKGROUP
+        run: make integration-smb
+
+      - name: Stop Samba service
+        if: always()
+        run: docker rm -f samba

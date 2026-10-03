@@ -17,11 +17,16 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"time"
 
 	smb2 "github.com/cloudsoda/go-smb2"
 
 	"tinysync/internal/source"
 )
+
+// fileAttributeReparsePoint 是 MS-FSCC 的 FILE_ATTRIBUTE_REPARSE_POINT
+// 固定数值（go-smb2 的常量在 internal 包，外部不可引用）。
+const fileAttributeReparsePoint uint32 = 0x400
 
 // Factory 实现 source.RemoteFactory，按 Source 配置建立 SMB 连接。
 type Factory struct{}
@@ -73,12 +78,21 @@ func (c *smb2Conn) mkdir(ctx context.Context, name string) error {
 	return c.share.WithContext(ctx).Mkdir(name, 0o755)
 }
 
-// close 拆除 tree 与 session。显式用 background ctx：调用方 ctx 往往
-// 已取消（run 结束 / 用户停止），带取消 ctx 的关闭请求会立即失败，
-// 连接只等 TCP 超时回收。
+// closeTimeout 是优雅拆除（Umount + Logoff）的有界期限。Close 位于
+// Runner 的 defer 路径：连接停摆 / 对端无响应时优雅拆除的响应永远
+// 等不到，绝不能无限阻塞——超时后放弃优雅路径（句柄与 session 由
+// 服务器在连接超时或进程退出时回收）。
+const closeTimeout = 5 * time.Second
+
+// close 拆除 tree 与 session。ctx 用独立的带超时 background 派生：
+// 调用方 ctx 往往已取消（run 结束 / 用户停止），直接使用会让关闭
+// 请求立即失败、连接只等 TCP 超时回收；无界 background 又会在对端
+// 停摆时永久阻塞 Close（真实 Samba 集成测试发现的死锁形态）。
 func (c *smb2Conn) close() error {
-	err := c.share.WithContext(context.Background()).Umount()
-	if logoffErr := c.session.WithContext(context.Background()).Logoff(); err == nil {
+	ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
+	defer cancel()
+	err := c.share.WithContext(ctx).Umount()
+	if logoffErr := c.session.WithContext(ctx).Logoff(); err == nil {
 		err = logoffErr
 	}
 	return err
@@ -368,9 +382,16 @@ func (r *remote) Close() error {
 // → 整轮 scan fail 保持一致）。SMB 不提供 ETag，Fingerprint 走
 // Size + ModifiedAt。不依赖 receiver 状态：walkDirectory 注入 fake
 // readDir 时复用同一规则。
+//
+// reparse 判定覆盖两个信号（真实 Samba 集成实测）：QUERY_DIRECTORY
+// 响应携带 ReparsePointTag（ReadDir 路径，Windows 与 Samba 一致）；
+// Lstat（FILE_OPEN_REPARSE_POINT 的 CREATE 响应）不携带 tag，但
+// FileAttributes 仍含 REPARSE_POINT。任一命中即 fail-closed。
 func toFileInfo(logical string, info os.FileInfo) (source.FileInfo, error) {
-	if st, ok := info.(*smb2.FileStat); ok && st.ReparsePointTag != 0 {
-		return source.FileInfo{}, fmt.Errorf("%w: SMB reparse point %q is unsupported", source.ErrInvalid, logical)
+	if st, ok := info.(*smb2.FileStat); ok {
+		if st.ReparsePointTag != 0 || st.FileAttributes&fileAttributeReparsePoint != 0 {
+			return source.FileInfo{}, fmt.Errorf("%w: SMB reparse point %q is unsupported", source.ErrInvalid, logical)
+		}
 	}
 	return source.FileInfo{
 		Path:  logical,

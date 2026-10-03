@@ -23,6 +23,7 @@ import (
 	"tinysync/internal/source"
 	s3adapter "tinysync/internal/source/s3"
 	sftpadapter "tinysync/internal/source/sftp"
+	smbadapter "tinysync/internal/source/smb"
 	sourcesqlite "tinysync/internal/source/sqlite"
 	"tinysync/internal/source/webdav"
 	"tinysync/internal/syncjob"
@@ -57,6 +58,7 @@ func protocolFixtures() []protocolCase {
 		{name: "webdav", fixture: newWebDAVFixture},
 		{name: "s3", fixture: newS3Fixture},
 		{name: "sftp", fixture: newSFTPFixture},
+		{name: "smb", fixture: newSMBFixture},
 	}
 }
 
@@ -274,6 +276,31 @@ func newS3Fixture(t *testing.T) matrixRemote {
 		},
 		openRemote: func() (source.Remote, error) {
 			return s3adapter.NewRemoteWithAPI(f, "matrix-bucket", ""), nil
+		},
+	}
+}
+
+// --- SMB fixture：真实 Samba 服务（env-gated 集成；未设置
+// TINYSYNC_IT_SMB_HOST 时该矩阵条目跳过，其余协议照常运行）。
+
+// newSMBFixture 构造接真实 Samba 的矩阵 fixture；与生产语义一致，
+// 每次 openRemote 经 Factory 建立独立连接。
+func newSMBFixture(t *testing.T) matrixRemote {
+	cfg := smbITLoad(t)
+	space := smbITNewSpace(t, cfg)
+	factory := smbadapter.NewFactory()
+	srcCfg := cfg.sourceConfig(space.remoteRoot)
+	creds := source.Credentials{SMB: &source.SMBCredentials{Password: cfg.password}}
+	return matrixRemote{
+		name:   "smb",
+		put:    space.put,
+		remove: space.remove,
+		openRemote: func() (source.Remote, error) {
+			return factory.Create(context.Background(), source.Source{
+				Name:   "matrix",
+				Type:   source.TypeSMB,
+				Config: source.Config{SMB: &srcCfg},
+			}, creds)
 		},
 	}
 }
