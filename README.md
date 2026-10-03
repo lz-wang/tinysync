@@ -1,147 +1,88 @@
 # TinySync
 
-[![codecov](https://codecov.io/gh/lz-wang/tinysync/graph/badge.svg?token=2dXeeuTCQq)](https://codecov.io/gh/lz-wang/tinysync)
+TinySync 是面向 HomeLab 的文件同步服务，将 WebDAV、S3、SFTP、SMB、GitHub Release 或运行主机上的文件单向同步到本地。内置中文 Web 界面，支持定时同步、运行进度与历史、完成通知，以及通过公开链接分享本地文件。
 
-TinySync 是一个面向 HomeLab 的文件同步服务：单一 Go 二进制，内嵌 React Web UI，
-通过 REST API 管理同步源（Sources）与同步任务（Jobs）。
+## 安装与开始使用
 
-> 当前开发版提供：持久化的多协议 Source 管理（WebDAV / S3 / SFTP /
-> SMB / GitHub Release / Local，创建、编辑、删除与访问测试），以及源端 → 本地单向
-> 同步 Job——Copy / Mirror 模式、include / exclude 过滤、原子下载
-> 与本地文件归属保护（Mirror 只删除本 Job 管理的文件）。六种类型
-> 共用同一个同步引擎。Job 支持自动调度（once / interval / cron，重叠自动
-> 跳过）、受控并发（`--max-concurrent-jobs` /
-> `--max-concurrent-transfers`）与持久化运行历史（每轮运行与
-> 文件级变更明细经 Web UI 与 REST 可查，重启不丢）。文件访问与
-> 共享：源端与目标本地文件浏览、文件下载与把本地文件或目录（含任务
-> 本地根）显式共享为受控 HTTP URL 与公开浏览页。GitHub Release
-> Source 把一个仓库的 Releases 转换为版本目录树（latest / 指定
-> Tag / 最近 N 个 / 全部四种选择策略，完整 Link 分页、ETag 条件
-> 请求缓存、302 重定向剥离 Token、Asset 摘要可用的 SHA-256 流式
-> 校验）。
->
-> **认证**：REST API 与 Web UI 全面 default-deny——除 health /
-> version / 登录与带唯一 slug 的 `/shared/<slug>` 公开共享外，所有端点都需要认证。
-> 单一 Local Admin 经密码登录建立 Web Session（HttpOnly Cookie），
-> 自动化脚本使用 scoped API Token（`Authorization: Bearer`）。
-> 首次启动时 `serve` 会生成高熵管理员密码并仅打印到当前终端一次；
-> 请立即保存并在首次登录后于 Web UI 的「用户设置」中修改。
->
-> **部署提示**：认证凭据应经 HTTPS 传输——反向代理场景请设置
-> `X-Forwarded-Proto: https`，会话 Cookie 会自动附加 `Secure`；
-> 纯 HTTP 部署仅建议用于本机或完全可信的网络。
-
-## 技术栈
-
-- 后端：Go + Gin，单二进制，无 CGO；SQLite（pure-Go driver）
-- 前端：React + MUI，构建产物嵌入二进制
-- 平台：Linux / macOS / Windows × amd64 / arm64
-
-## 安装
-
-从 [Releases](https://github.com/lz-wang/tinysync/releases) 下载对应平台的
-压缩包（linux/darwin/windows × amd64/arm64），解压即用，无需任何运行时依赖。
-以 systemd 服务常驻运行在 Linux 主机的完整步骤见[部署（systemd）](docs/guides/deployment.md)。
-
-## 快速开始
+从 [Releases](https://github.com/lz-wang/tinysync/releases) 下载适合 Linux、macOS 或 Windows 的发行包（amd64 / arm64），解压即可运行，无需安装其他运行时。Linux 常驻服务配置见[部署指南](docs/guides/deployment.md)。
 
 ```bash
-# 1. 启动服务（首次启动会在终端打印初始管理员密码）
 ./tinysync serve --datadir ./data --port 9466
 ```
 
-启动后打开 `http://127.0.0.1:9466`，用管理员密码登录 Web UI。
+打开 `http://127.0.0.1:9466`，使用首次启动时终端输出的管理员密码登录，并在「用户设置」中修改密码。
+
+1. 在「同步源」中添加文件来源，填写连接信息并测试访问。
+2. 在「同步任务」中选择同步源、源端路径和本地目标目录，设置同步模式与计划。
+3. 手动运行一次，查看进度与运行结果；之后按计划自动同步。
+
+本地目标目录位于运行 TinySync 的主机上，服务用户需要具有写入权限。通过其他设备访问时使用主机地址；对外部署请配置 HTTPS，反向代理需转发 `X-Forwarded-Proto: https`。
+
+## 同步源
+
+| 类型 | 配置与用途 |
+| --- | --- |
+| WebDAV | 服务地址、根目录、用户名与密码，适用于 NAS 等 WebDAV 服务 |
+| S3 / MinIO | 服务地址、区域、存储桶、路径前缀与访问密钥；支持 path-style |
+| SFTP | 主机、端口、用户名与根目录，支持密码或 SSH 私钥认证、主机密钥指纹校验 |
+| SMB / CIFS | 主机、共享名、共享内路径、用户名与密码，可填写域 |
+| GitHub Release | 仓库地址，选择最新版本、指定 Tag、最近 N 个或全部版本；私有仓库需提供 Token |
+| 本地文件 | 运行主机上的源根目录，无需凭据，可在界面中浏览、选择或创建目录 |
+
+SFTP 可在保存前检查连接与目录权限。SSH 私钥可保存到「凭据」中供多个同步源引用，更新一条凭据后，引用它的源在下一轮同步使用新私钥。GitHub Release 支持「测试并预览」版本和制品，预发布版本默认排除。
+
+本地文件源可同步整个目录或其中的子目录。例如源根目录为 `/data/media`、源端路径为 `/photos`、目标为 `/backup/photos`，实际同步的是 `/data/media/photos → /backup/photos`。源目录与目标目录不能相同或互相包含；只同步普通文件和目录，发现符号链接、特殊文件或目录读取失败时，本轮同步失败。
+
+## 同步任务
+
+- **Copy**：新增和更新文件，保留目标目录中多出的文件。
+- **Mirror**：在 Copy 的基础上，删除源端已消失且由当前任务管理的文件；目标目录中原有的其他文件不会因此被删除。
+
+任务支持手动运行、单次定时、固定间隔和 Cron 计划，可通过 include / exclude 规则筛选文件。计划时间默认使用运行主机的时区；同一任务仍在运行时，新的计划触发会跳过。
+
+运行中可查看阶段、文件进度和传输量，并手动停止。运行历史保留结果、耗时与文件变更明细，重启后仍可查询。
+
+在「设置 → 通知」中配置 Pushover 或 SMTP 邮件，任务成功、失败或取消后会发送结果摘要。填写配置后先保存，再发送测试通知或测试邮件。
+
+## 文件浏览与共享
+
+点击同步源或任务名称可直接打开文件管理，也可在「源端文件」和「本地文件」之间切换，浏览目录与下载文件。
+
+在本地文件页可共享单个文件、目录或整个任务目标目录。共享名称可自定义，也可自动生成；在「共享管理」中设置过期时间或禁用链接。
+
+- 浏览链接：`https://tinysync.example/shared/<共享名称>`
+- 文件直链：`https://tinysync.example/shared/<共享名称>/<文件路径>`
+
+持有链接的人无需登录即可访问。共享目录会公开其下的文件，包括并非由 TinySync 同步的文件；公开页面隐藏点文件和符号链接。更改共享名称会更改 URL，旧链接随即失效。
+
+## 服务配置
+
+命令行参数优先于环境变量。默认数据目录为 `./data`，端口为 `9466`。
+
+| 参数 | 环境变量 | 默认值 / 用途 |
+| --- | --- | --- |
+| `--datadir` | `TINYSYNC_DATADIR` | `./data`，保存配置、运行历史、备份与日志 |
+| `--port` | `TINYSYNC_PORT` | `9466`，Web 界面与 API 端口 |
+| `--max-concurrent-jobs` | `TINYSYNC_MAX_CONCURRENT_JOBS` | `1`，同时运行的任务数 |
+| `--max-concurrent-transfers` | `TINYSYNC_MAX_CONCURRENT_TRANSFERS` | `4`，同时传输的文件数 |
+| `--transfer-timeout` | `TINYSYNC_TRANSFER_TIMEOUT` | `0`，不限制单文件单次传输耗时；可设为 `30m`、`1h` 等 |
+
+## API 与 MCP 接入
+
+在 Web 界面的「API Tokens」中创建令牌，完整令牌只显示一次，可设置有效期并随时撤销。脚本通过 `Authorization: Bearer <令牌>` 访问 REST API。
+
+| 权限 | 能力 |
+| --- | --- |
+| `read` | 查询同步源、任务、运行记录与文件，下载文件 |
+| `run` | 手动触发任务，不包含查询权限 |
+| `admin` | 全部权限，包括修改配置与管理令牌 |
 
 ```bash
-tinysync serve            # 启动服务（默认 :9466，数据目录 ./data）
-tinysync auth set-password  # 初始化 / 重置管理员密码
-tinysync db check         # 数据库完整性检查
-tinysync db backup        # 数据库一致性备份
-tinysync db restore       # 从备份离线恢复（需 --force）
-tinysync version          # 打印版本号（同 --version）
-tinysync --version        # 打印版本号
-```
-
-环境变量 `TINYSYNC_DATADIR`、`TINYSYNC_PORT`、`TINYSYNC_MAX_CONCURRENT_JOBS`、
-`TINYSYNC_MAX_CONCURRENT_TRANSFERS`、`TINYSYNC_TRANSFER_TIMEOUT`
-可作为 `--datadir`、`--port`、`--max-concurrent-jobs`（同时运行的
-同步 Job 数上限，默认 1）、`--max-concurrent-transfers`（同时进行
-的远端文件下载上限，默认 4）、`--transfer-timeout`（单文件单次传输
-尝试的超时，默认 0 = 不启用；超时的尝试会自动重试）的默认值；
-命令行参数优先。
-
-## 认证与 API Token
-
-REST API 与 Web UI 默认拒绝匿名访问（401）；公开端点只有
-`GET /api/v1/health`、`GET /api/v1/version`、`POST /api/v1/auth/login`
-与带唯一 slug 的 `/shared/<slug>` 公开共享（浏览页、文件直链与
-`/api/v1/public/shares/:slug/entries` 目录浏览 API）。
-
-Web UI 使用 HttpOnly Session Cookie（7 天绝对过期、`SameSite=Strict`、
-HTTPS 下自动 `Secure`）；凭据绝不进入 URL，跨源变更请求一律拒绝。
-用户可在 Web UI 的「用户设置」中验证当前密码后修改；忘记密码时，
-operator 仍可在服务器执行 `tinysync auth set-password --datadir ...`
-重置（同时立即废弃全部已有会话）。不提供匿名 Web setup 或认证绕过开关。
-
-自动化脚本使用 API Token（`Authorization: Bearer`，唯一 machine
-credential 入口），在 Web UI 的 API Tokens 页创建：
-
-```bash
-# 登录换取会话（Web UI 即此流程）
-curl -i -X POST http://127.0.0.1:9466/api/v1/auth/login \
-  -H 'Content-Type: application/json' \
-  -d '{"password": "..."}'
-
-# 创建只读 token（raw token 仅此一次返回，之后不可查询）
-curl -X POST http://127.0.0.1:9466/api/v1/api-tokens \
-  -H "Authorization: Bearer $TINYSYNC_ADMIN_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"name": "automation", "scopes": ["read"], "expires_at": "2026-12-31T00:00:00Z"}'
-
-# 用 token 访问 API
 curl -H "Authorization: Bearer $TINYSYNC_TOKEN" \
   http://127.0.0.1:9466/api/v1/sources
 ```
 
-Scope 语义（创建后不可变，变更需撤销重建）：
-
-| Scope | 权限 |
-| --- | --- |
-| `read` | 查询 Source / Job / Run / File / Share metadata，下载文件 |
-| `run` | 手动触发 Job（不含 read） |
-| `admin` | 全部权限（read + run + 配置修改 + Token 管理） |
-
-Token 可设过期时刻；撤销幂等且立即生效；`last_used_at` 以 1 分钟
-阈值节流记录。`GET /api-tokens` 只返回 `prefix` 前缀等元数据，
-raw token 与 SHA-256 摘要绝不出现。
-
-### v0.6 → v0.7 升级
-
-```text
-1. 停止 v0.6 服务
-2. 安装 v0.7 二进制
-3. tinysync auth set-password --datadir <datadir>   # migration 0007 自动完成
-4. 启动 v0.7：未初始化管理员密码时 serve 会拒绝启动
-5. Web 登录；为既有脚本逐一创建 API Token
-```
-
-v0.6 的匿名脚本访问自 v0.7 起必须携带 Bearer Token；
-`/published/*path` 公开端点已在 v0.10 被 `/shared` 取代（见「Files」
-章节）。
-
-## MCP（Agent / LLM 接入）
-
-TinySync 提供 MCP（Model Context Protocol）Streamable HTTP 端点，
-Agent / LLM 可以发现同步源、查询任务、触发同步、检索同步文件并
-读取小型文本。MCP 复用应用服务与 API Token 认证，不提供任何配置
-修改能力。
-
-```text
-Endpoint:  https://tinysync.example/mcp
-Auth:      Authorization: Bearer ts_xxx（API Token，Web Session 无效）
-```
-
-通用客户端配置示例：
+Agent 可通过 MCP 查询同步源与任务、触发同步、搜索已同步文件和读取小型文本。使用 Streamable HTTP 连接 `/mcp`，建议创建同时具有 `read` 和 `run` 权限的令牌：
 
 ```json
 {
@@ -152,341 +93,21 @@ Auth:      Authorization: Bearer ts_xxx（API Token，Web Session 无效）
 }
 ```
 
-推荐给普通 Agent 使用 `read` + `run`（双 scope）token。
+## 备份与维护
 
-Scope 与 MCP 能力的对应：
-
-| Scope | MCP 能力 |
-| --- | --- |
-| `read` | 查询资源与文件、读取小型文本 resource、下载文件 |
-| `run` | 触发同步（`run_sync`，不含 read） |
-| `read` + `run` | 推荐：普通 Agent 完整工作流 |
-| `admin` | MCP v0.8 没有 admin-only tool |
-
-提供 7 个只读/执行 tools：`list_sources`、`list_jobs`、`get_job`、
-`run_sync`（只接受已配置的 `job_id`；mirror Job 可能删除远端已
-消失的本地文件）、`get_sync_run`、`search_files`（Job 命名空间内
-的已同步文件检索）、`get_file_info`。
-
-小型文本以 resource 形式内联读取（≤ 256 KiB、UTF-8、仅普通文件）：
-
-```text
-tinysync://jobs/{job_id}/files/{path}
-```
-
-binary 与大文件不经 MCP 搬运：`get_file_info` 返回 relative
-`download_url`，客户端携带同一 Bearer token 请求现有
-`/api/v1/jobs/:id/files/download`（支持 Range 断点）。
-
-## Operations：运维与恢复
-
-### 数据目录单实例
-
-`serve` 在整个运行生命周期持有 `<datadir>/tinysync.lock` 独占锁
-（POSIX flock / Windows LockFileEx，纯 Go）。同一数据目录的第二个
-实例启动立即失败并说明占用情况；进程异常退出后由操作系统自动释放
-锁，锁文件本身保留无害。不同数据目录的实例可并存。
-
-```text
-同一 datadir = 同一时刻至多一个 TinySync 进程
-```
-
-`tinysync db check|backup|restore` 与 `serve` 使用同一把锁：维护
-操作执行期间不会有并发写入者；serve 运行中执行 db 命令会被拒绝。
-
-### 备份与恢复
+同一数据目录只能运行一个实例。执行数据库检查、备份或恢复前，请先停止服务：
 
 ```bash
-# 一致性备份（VACUUM INTO 快照，非裸复制；写入 <datadir>/backups/）
-tinysync db backup --datadir ./data
-
-# 完整性检查（quick_check / 外键 / schema 版本）
-tinysync db check --datadir ./data
-
-# 离线恢复（破坏性，必须 --force；恢复前自动生成当前库 safety backup）
-tinysync db restore --datadir ./data --from ./data/backups/tinysync-manual-XXXX.db --force
+./tinysync db check --datadir ./data
+./tinysync db backup --datadir ./data
+./tinysync db restore --datadir ./data --from "./data/backups/<备份文件>.db" --force
 ```
 
-restore 流程：校验备份（非法 / 损坏 / schema 较新的备份在改动前
-拒绝）→ 备份当前库 → 原子替换 → 清理遗留 WAL → 重开并复验。
+备份保存在 `<数据目录>/backups/`，包含登录与同步源凭据，请妥善保存；同步文件所在目录需要单独备份。恢复会覆盖当前数据库，执行前会自动备份当前库。
 
-> `backups/*.db` 包含 Source credentials 与认证数据，应按与主数据库
-> 相同的敏感级别保护（备份文件权限已收敛为 0600，POSIX 生效）。
+忘记管理员密码时，可在运行主机执行 `./tinysync auth set-password --datadir ./data` 重置，已有登录会话随即失效。使用 `./tinysync version` 查看版本；运行日志位于 `<数据目录>/logs/tinysync.log`。
 
-### 损坏处理与升级
-
-- 数据库 schema 升级前自动执行完整性检查并生成一致性备份
-  （`<datadir>/backups/tinysync-v<版本>-*.db`）；quick_check 或外键
-  校验失败的数据库拒绝继续迁移，不会在坏数据上继续写 schema 版本。
-- 优雅关闭按「停止调度 → 运行终态落库 → 排空请求 → WAL checkpoint
-  截断 → 关闭数据库 → 释放锁」收口；干净退出后不遗留膨胀的 WAL 文件。
-- 升级：直接替换二进制重启，migration 自动完成（先备份、后迁移）。
-- 降级限制：不支持降级迁移——schema 高于当前二进制的数据库拒绝启动；
-  低版本备份经 `db restore` 恢复后，由新版二进制的 `serve` 正常向前
-  迁移。
-
-### 日志与 crash 恢复
-
-- 日志位置：`<datadir>/logs/tinysync.log`（50 MB 轮转、保留 7 份、
-  gzip 压缩；stderr 仅 INFO 及以上）。每个 HTTP 请求携带
-  `X-Request-ID` 响应头并与 access log 关联；每轮同步输出
-  `event=sync_run` 事件。
-- 进程 crash 后的重启收敛自动完成：遗留的 running 运行记录收敛为
-  failed、crash 遗留的下载临时文件（`.tinysync-part-*`）被安全清理、
-  未完成的传输经 pending metadata 在下一轮继续收敛；数据正确性由
-  SQLite WAL recovery 保证，不依赖任何清理逻辑。
-
-## Sources：多协议同步源
-
-Source 配置按协议分为非敏感 `config` 与 secret `credentials` 两组；
-响应只回显 `credential_state` 布尔集合，任何 secret 永不回显。
-本地文件 Source 无凭据，省略 `credentials`，状态回显 `{}`。Type 创建后不可变。
-
-WebDAV：
-
-```bash
-curl -X POST http://127.0.0.1:9466/api/v1/sources \
-  -H "Authorization: Bearer $TINYSYNC_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "name": "NAS",
-    "type": "webdav",
-    "config": {"endpoint": "https://nas.example.com:5006/dav", "username": "user"},
-    "credentials": {"password": "..."}
-  }'
-```
-
-S3 / MinIO（自建 S3 用显式 endpoint 与 path-style；凭据只用 Source 自身的
-static access key / secret key，不使用宿主机 ambient credential chain）：
-
-```bash
-curl -X POST http://127.0.0.1:9466/api/v1/sources \
-  -H "Authorization: Bearer $TINYSYNC_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "name": "backup-s3",
-    "type": "s3",
-    "config": {
-      "endpoint": "https://s3.example.com",
-      "region": "us-east-1",
-      "bucket": "backup",
-      "prefix": "tinysync",
-      "path_style": true,
-      "access_key": "AKID..."
-    },
-    "credentials": {"secret_key": "..."}
-  }'
-```
-
-SFTP（`host_key_fingerprint` 可选；填写时以 SHA256 fingerprint 严格校验，
-留空则跳过主机密钥校验；symlink 不跟随，发现即失败）：
-
-```bash
-curl -X POST http://127.0.0.1:9466/api/v1/sources \
-  -H "Authorization: Bearer $TINYSYNC_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "name": "nas-sftp",
-    "type": "sftp",
-    "config": {
-      "host": "nas.example.com",
-      "port": 22,
-      "username": "user",
-      "remote_root": "/srv/backups",
-      "auth_method": "private_key",
-      "host_key_fingerprint": "SHA256:UC1Dk4I9LLQOV3B8eZ5FlrUUcbbNie4INffe2TDTz3k"
-    },
-    "credentials": {"private_key": "...PEM...", "private_key_passphrase": "..."}
-  }'
-```
-
-SFTP 表单的「检查」使用当前连接配置与根目录，在保存前验证认证、目录
-存在性及读取权限；根目录留空时检查登录用户 Home。对应接口
-`POST /api/v1/sources/check`（需 `admin`）接受 SFTP `config` 与可选
-`credentials`，编辑时可传 `source_id` 沿用未修改的内联凭据，显式 secret
-临时覆盖、空串清除，`credential_id` 按当前配置解析。检查最多 10 秒，
-不保存任何表单值；远端连接或目录检查失败返回 `ok=false` 与 `error`，
-请求配置无效返回 400。
-
-SMB / CIFS（SMB2/SMB3 + NTLMv2 用户名密码；`host` 是裸主机名 / IP，
-`share` 与 `remote_root` 分离，`remote_root` 是 share 内的 `/` 风格
-路径；消息签名默认 `required`，可显式放宽为 `auto`；symlink /
-junction 等 reparse point 不跟随、发现即失败。需要 TCP 445 出站
-可达（`port` 可配置）。创建 SMB Source 后不支持无损降级到不认识
-SMB 的旧版本，降级前请先删除 SMB Source）：
-
-```bash
-curl -X POST http://127.0.0.1:9466/api/v1/sources \
-  -H "Authorization: Bearer $TINYSYNC_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "name": "nas-smb",
-    "type": "smb",
-    "config": {
-      "host": "192.168.2.10",
-      "port": 445,
-      "share": "backup",
-      "remote_root": "/photos",
-      "username": "tinysync",
-      "domain": "WORKGROUP",
-      "signing": "required"
-    },
-    "credentials": {"password": "..."}
-  }'
-```
-
-GitHub Release（把一个仓库的 Releases 转换为版本目录树；`repository`
-接受 owner/repo 或完整 GitHub 仓库 URL；Token 可选，公开仓库匿名）：
-
-```bash
-curl -X POST http://127.0.0.1:9466/api/v1/sources \
-  -H "Authorization: Bearer $TINYSYNC_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "name": "gitea-releases",
-    "type": "github_release",
-    "config": {
-      "repository": "gitea/gitea",
-      "release_policy": "recent",
-      "recent_count": 3,
-      "include_prereleases": false,
-      "verify_sha256": "if_available"
-    },
-    "credentials": {"token": "..."}
-  }'
-```
-
-版本目录名为 `encode(tag)__<release_id>`（如 `/v1.2.0__123456789/`，
-tag 中 `/` 等字符 percent-encode），Job 的远端根目录在动态版本策略
-下固定为 `/`。`release_policy` 支持 `latest` / `tag` / `recent` /
-`all`；`verify_sha256` 支持 `if_available`（默认，GitHub 提供 digest
-时强制校验）与 `required`（全部 Asset 必须带有效摘要）。创建前可用
-`POST /api/v1/sources/inspect` 以表单配置（或已保存 Source 的 ID）
-预览版本发现结果，不持久化任何配置。
-
-Local（运行 TinySync 的主机目录，单向同步到另一个本地目录）：
-
-```bash
-curl -X POST http://127.0.0.1:9466/api/v1/sources \
-  -H "Authorization: Bearer $TINYSYNC_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "name": "本地媒体",
-    "type": "local",
-    "config": {"root": "/data/media"},
-    "enabled": true
-  }'
-```
-
-- `root` 是主机上已存在的目录，创建/编辑时规范为 canonical native 绝对路径
-  后保存（如 macOS 的 `/var` 别名会解析为 `/private/var`）。Windows 使用
-  `D:\Media` 一类原生路径；Source 内部路径仍为 `/photos/2026`。
-- 无用户名、密码、私钥或凭据引用；API 显式携带 `credentials` 返回 400。
-  Web UI 选择「本地文件」，可直接填写源根目录或复用主机目录选择器浏览、建目录。
-  「测试本地目录」验证源根目录访问；文件管理「源端文件」可浏览和下载，
-  任务的源端路径选择器支持新建子目录。MCP `list_sources` 可查询该类型与 root。
-- Job 的 `remote_root` 选择源子树。例如 `root=/data/media`、
-  `remote_root=/photos`、`local_root=/backup/photos` 表示
-  `/data/media/photos → /backup/photos`。源子树与目标相同或互相包含都拒绝；
-  `/data/photos → /data/videos` 这样的 sibling 目录允许。创建、编辑以及每轮运行
-  前均检查映射；运行前拒绝危险映射会记录 failed run，不改本地文件和 managed 记录。
-- 只读取普通文件和目录，symlink（即使指向根内）和 FIFO/socket/device 等特殊文件
-  均拒绝，任何局部扫描失败都会中止本轮，Mirror 不据此删除本地文件。
-- 变更检测使用 size + mtime，不提供 checksum 扫描、文件系统 snapshot 或双向冲突
-  解决；多个 Job 之间不检测循环。自行挂载的目录经 OS 文件接口访问，TinySync
-  不管理挂载，也不为挂载协议增加特殊保证。
-- 不新增数据库迁移。**数据库保存 `type=local` 后，不应降级到不认识 Local 的旧版**。
-  降级前备份并删除 Local Source 及其引用 Job，或恢复添加 Local 之前的数据库备份。
-  设计边界见 [ADR 0008](docs/adr/0008-local-source.md)。
-
-被 Sync Job 引用的 Source 拒绝修改 remote identity（WebDAV 的
-endpoint + username、S3 的 endpoint / region / bucket / prefix /
-path-style、SFTP 的 host / port / username / remote_root / host key
-fingerprint、SMB 的 host / port / share / remote_root / username /
-domain、GitHub Release 的 repository / release_policy / tag /
-recent_count / include_prereleases、Local 的 canonical root），防止 Mirror 把既有本地文件误判
-为远端消失而删除；secret 轮换、SMB 的 signing 与 GitHub Release 的
-verify_sha256 调整始终允许。更换源端的正确路径是新建 Source 后切换
-Job 的 source_id。
-
-## Files：文件浏览与共享
-
-源端浏览（所有 Source 类型，含 Local）经 `GET /api/v1/sources/:id/files`（分页查询参数
-`path` / `limit` / `cursor`，limit 默认 100、上限 500）分页浏览源端
-目录；`.../files/stat` 与 `.../files/download` 提供元信息与流式下载。
-目标本地文件浏览以 Job 为唯一入口：`GET /api/v1/jobs/:id/files` 只能访问该
-Job 的 LocalRoot 之下的内容，条目携带 `managed` 标记（TinySync 当前
-管理 vs 目录原有 / 已 relinquish 的文件）；本地下载支持 Range / HEAD。
-
-共享策略把本地文件或目录（含整个任务本地根）显式暴露为受控
-URL：
-
-```bash
-curl -X POST http://127.0.0.1:9466/api/v1/shares \
-  -H "Authorization: Bearer $TINYSYNC_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "job_id": "job_xxx",
-    "path": "/photos",
-    "name": "album",
-    "enabled": true
-  }'
-```
-
-- 目标可以是该 Job LocalRoot 内的普通文件、目录或本地根（`"/"`）；
-  创建时目标必须已存在；路径逃逸与 symlink 一律拒绝。**共享目录
-  即整棵公开**（含未同步文件，见 `docs/adr/0002`）；公开浏览始终
-  隐藏点文件且不展示 symlink 条目。`local_path` 创建后不可变，要换
-  目标就新建共享。
-- 共享名称可选且即 URL slug（`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`），
-  留空生成 10 字符随机标识；改名会同步改写 URL（旧链接立即失效）。
-- 共享与 Job 生命周期解耦：Job 修改 LocalRoot 不会隐式改写既有
-  URL；Mirror 删除文件后直链自然 404。
-- 公开访问仅限带唯一 slug 的 URL：裸 `/shared` 不提供索引并重定向到
-  主页；
-  `/shared/<slug>` 浏览页支持目录下钻、分页、下载与复制链接（单文件
-  共享为单行列表）；
-  文件直链 `/shared/<slug>/<path>` 支持 Range / HEAD。禁用、过期或
-  目标缺失统一返回 404，不区分原因；响应固定
-  `Cache-Control: no-store`，页面与直链带 `X-Robots-Tag: noindex`。
-- 无认证公开 API：`GET /api/v1/public/shares/:slug/entries?path=&limit=&cursor=`（目录
-  分页浏览；文件共享的根返回恰含自身的单条目）。
-
-### v0.9 → v0.10 升级（破坏性）
-
-```text
-1. 停止 v0.9 服务
-2. 安装 v0.10 二进制
-3. 启动：migration 0009/0010 自动完成——published_files 表被废弃
-   且旧发布策略不迁移，升级后共享列表为空，按需重建
-```
-
-v0.6 的「发布」端点（`/api/v1/published-files`、`/published/*path`）
-自 v0.10 起整体移除，不留兼容别名。
-
-## 版本机制
-
-版本号只有一个事实来源：Git。
-
-- HEAD 位于 `vX.Y.Z` tag 时，版本为 `X.Y.Z`；
-- 普通开发提交为 `dev-<commit日期>-<commit7>`（日期取 commit date，构建可重复）。
-
-由 Makefile 解析并通过 `-ldflags` 注入 `tinysync/internal/buildinfo.Version`，
-`make version` 可查看当前解析结果。
-
-## 开发
-
-```bash
-make setup     # 安装开发工具与依赖
-make build     # 构建当前平台二进制（含 Web UI）
-make serve     # 构建并启动
-make test      # 运行测试
-make check     # 静态检查、前端组件测试与全量 Go 测试
-make help      # 查看全部 target
-```
-
-发布流程：更新 `CHANGELOG.md` 对应版本段 → 提交 → 打 `vX.Y.Z` tag 并推送，
-Release workflow 自动完成构建、验证与 GitHub Release 发布。
+版本变化见[更新日志](CHANGELOG.md)。
 
 ## License
 
