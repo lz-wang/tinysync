@@ -43,6 +43,7 @@ BENCH_TIME ?= 1s
 BENCH_DIR := benchmarks
 BENCH_PACKAGES := \
 	./internal/browser/ \
+	./internal/source/local/ \
 	./internal/source/webdav/ \
 	./internal/source/sftp/ \
 	./internal/source/smb/ \

@@ -34,7 +34,12 @@ import (
 // OpenRemote 的统一入口经它获得 fixture 提供的真实协议栈 Remote。
 type bridgedFactory struct{ fixture matrixRemote }
 
-func (f bridgedFactory) Type() source.Type { return source.TypeWebDAV }
+func (f bridgedFactory) Type() source.Type {
+	if f.fixture.src.Type != "" {
+		return f.fixture.src.Type
+	}
+	return source.TypeWebDAV
+}
 
 func (f bridgedFactory) Create(ctx context.Context, s source.Source, credentials source.Credentials) (source.Remote, error) {
 	return f.fixture.openRemote()
@@ -64,16 +69,8 @@ func newBrowserEnv(t *testing.T, fixture matrixRemote) *browserEnv {
 
 	now := time.Unix(1757879400, 0).UTC()
 	srcRepo := sourcesqlite.New(db)
-	if err := srcRepo.Create(context.Background(), source.Source{
-		ID:              "src_browser",
-		Name:            "browser",
-		Type:            source.TypeWebDAV,
-		Config:          source.Config{WebDAV: &source.WebDAVConfig{Endpoint: "https://browser.invalid/dav"}},
-		CredentialState: source.CredentialState{WebDAV: &source.WebDAVCredentialState{}},
-		Enabled:         true,
-		CreatedAt:       now,
-		UpdatedAt:       now,
-	}, source.Credentials{}); err != nil {
+	src := matrixSource(fixture, "src_browser", "browser", now)
+	if err := srcRepo.Create(context.Background(), src, source.Credentials{}); err != nil {
 		t.Fatalf("create source row: %v", err)
 	}
 
@@ -82,7 +79,7 @@ func newBrowserEnv(t *testing.T, fixture matrixRemote) *browserEnv {
 	sources := source.NewService(srcRepo, bridgedFactory{fixture: fixture})
 	jobs := syncjob.NewService(jobRepo, sources, dataDir)
 	runner := syncjob.NewRunner(jobRepo, managed, matrixGateway{
-		src:        source.Source{ID: "src_browser", Name: "browser", Type: source.TypeWebDAV, Enabled: true},
+		src:        src,
 		openRemote: fixture.openRemote,
 	}, jobsqlite.NewRunRepository(db))
 

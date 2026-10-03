@@ -20,7 +20,9 @@ import (
 	"golang.org/x/crypto/ssh"
 	xnetdav "golang.org/x/net/webdav"
 
+	"tinysync/internal/filesafe"
 	"tinysync/internal/source"
+	localadapter "tinysync/internal/source/local"
 	s3adapter "tinysync/internal/source/s3"
 	sftpadapter "tinysync/internal/source/sftp"
 	smbadapter "tinysync/internal/source/smb"
@@ -30,7 +32,7 @@ import (
 	jobsqlite "tinysync/internal/syncjob/sqlite"
 )
 
-// 协议矩阵：三种协议经过同一个 Remote → Scanner → Selector → Planner
+// 协议矩阵：网络协议与本地文件源经过同一个 Remote → Scanner → Selector → Planner
 // → Engine → Local Files 链路运行完全相同的同步场景。scenario 内禁止
 // 出现任何协议分支——协议差异全部封装在本文件的 fixture 中。
 // S3 fixture 为进程内协议模拟（真实 S3 服务由 integration gate /
@@ -41,6 +43,7 @@ import (
 // 获得独立连接，用毕 Close；fixture 不得共享单个 Remote 实例
 // （有连接生命周期的协议在首轮结束后会被正确关闭）。
 type matrixRemote struct {
+	src        source.Source // 配置型 fixture 可提供真实源身份；其余沿用测试占位源。
 	name       string
 	put        func(t *testing.T, logical, content string)
 	remove     func(t *testing.T, logical string)
@@ -59,6 +62,7 @@ func protocolFixtures() []protocolCase {
 		{name: "s3", fixture: newS3Fixture},
 		{name: "sftp", fixture: newSFTPFixture},
 		{name: "smb", fixture: newSMBFixture},
+		{name: "local", fixture: newLocalFixture},
 	}
 }
 
@@ -359,21 +363,11 @@ func newMatrixEnv(t *testing.T, fixture matrixRemote) *matrixEnv {
 	// Source（协议无关——Runner 只消费 gateway 提供的 Remote）。
 	srcRepo := sourcesqlite.New(db)
 	now := time.Unix(1757879400, 0).UTC()
-	if err := srcRepo.Create(context.Background(), source.Source{
-		ID:              "src_matrix",
-		Name:            "matrix",
-		Type:            source.TypeWebDAV,
-		Config:          source.Config{WebDAV: &source.WebDAVConfig{Endpoint: "https://matrix.invalid/dav"}},
-		CredentialState: source.CredentialState{WebDAV: &source.WebDAVCredentialState{}},
-		Enabled:         true,
-		CreatedAt:       now,
-		UpdatedAt:       now,
-	}, source.Credentials{}); err != nil {
+	src := matrixSource(fixture, "src_matrix", "matrix", now)
+	if err := srcRepo.Create(context.Background(), src, source.Credentials{}); err != nil {
 		t.Fatalf("create matrix source row: %v", err)
 	}
-	gw := matrixGateway{src: source.Source{
-		ID: "src_matrix", Name: "matrix", Type: source.TypeWebDAV, Enabled: true,
-	}, openRemote: fixture.openRemote}
+	gw := matrixGateway{src: src, openRemote: fixture.openRemote}
 	env := &matrixEnv{
 		dataDir: dataDir,
 		jobRepo: jobsqlite.NewRepository(db),
@@ -386,6 +380,11 @@ func newMatrixEnv(t *testing.T, fixture matrixRemote) *matrixEnv {
 
 func newMatrixJob(t *testing.T, e *matrixEnv, localRoot, mode string) syncjob.Job {
 	t.Helper()
+	canonical, err := filesafe.CanonicalExistingDir(localRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	localRoot = canonical
 	id, err := syncjob.NewID()
 	if err != nil {
 		t.Fatalf("new job id: %v", err)
@@ -695,5 +694,63 @@ func matrixSeed(t *testing.T, root, logical, content string) {
 	}
 	if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
 		t.Fatalf("write %s: %v", logical, err)
+	}
+}
+
+// matrixSource 用 fixture 身份装配真实持久化与 Runner 配置。
+func matrixSource(fixture matrixRemote, id, name string, now time.Time) source.Source {
+	src := fixture.src
+	if src.Type == "" {
+		src.Type = source.TypeWebDAV
+		src.Config = source.Config{WebDAV: &source.WebDAVConfig{Endpoint: "https://matrix.invalid/dav"}}
+	}
+	src.ID, src.Name, src.Enabled = id, name, true
+	src.CreatedAt, src.UpdatedAt = now, now
+	return src
+}
+
+func newLocalFixture(t *testing.T) matrixRemote {
+	t.Helper()
+	return newLocalFixtureAt(t, t.TempDir())
+}
+
+func newLocalFixtureAt(t *testing.T, root string) matrixRemote {
+	t.Helper()
+	root, err := filesafe.CanonicalExistingDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := source.Source{Type: source.TypeLocal, Config: source.Config{Local: &source.LocalConfig{Root: root}}}
+	if err := os.Mkdir(filepath.Join(root, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return matrixRemote{
+		name: "local", src: src,
+		put: func(t *testing.T, logical, content string) {
+			t.Helper()
+			native, err := filesafe.ResolveWithinRoot(root, logical)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Dir(native), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(native, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+		remove: func(t *testing.T, logical string) {
+			t.Helper()
+			native, err := filesafe.ResolveWithinRoot(root, logical)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(native); err != nil {
+				t.Fatal(err)
+			}
+		},
+		openRemote: func() (source.Remote, error) {
+			return localadapter.NewFactory().Create(context.Background(), src, source.Credentials{})
+		},
 	}
 }
