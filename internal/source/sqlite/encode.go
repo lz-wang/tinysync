@@ -21,6 +21,8 @@ func encodeConfig(t source.Type, c source.Config) (string, error) {
 		data = c.S3
 	case source.TypeSFTP:
 		data = c.SFTP
+	case source.TypeSMB:
+		data = c.SMB
 	case source.TypeGitHubRelease:
 		data = c.GitHubRelease
 	default:
@@ -57,6 +59,12 @@ func decodeConfig(t source.Type, raw string) (source.Config, error) {
 			return source.Config{}, fmt.Errorf("decode sftp config: %w", err)
 		}
 		return source.Config{SFTP: c}, nil
+	case source.TypeSMB:
+		c := &source.SMBConfig{}
+		if err := json.Unmarshal([]byte(raw), c); err != nil {
+			return source.Config{}, fmt.Errorf("decode smb config: %w", err)
+		}
+		return source.Config{SMB: c}, nil
 	case source.TypeGitHubRelease:
 		c := &source.GitHubReleaseConfig{}
 		if err := json.Unmarshal([]byte(raw), c); err != nil {
@@ -96,6 +104,12 @@ func encodeCredentials(t source.Type, c source.Credentials) (string, error) {
 			raw.PrivateKey = strPtr(c.SFTP.PrivateKey)
 			raw.PrivateKeyPassphrase = strPtr(c.SFTP.PrivateKeyPassphrase)
 		}
+	case source.TypeSMB:
+		// password 键复用 webdav / sftp 的同名键：type 列已承载判别符，
+		// 扁平 JSON 不需要协议前缀。
+		if c.SMB != nil {
+			raw.Password = strPtr(c.SMB.Password)
+		}
 	case source.TypeGitHubRelease:
 		if c.GitHubRelease != nil {
 			raw.Token = strPtr(c.GitHubRelease.Token)
@@ -131,6 +145,10 @@ func decodeCredentials(t source.Type, raw string) (source.Credentials, error) {
 			Password:             derefStr(data.Password),
 			PrivateKey:           derefStr(data.PrivateKey),
 			PrivateKeyPassphrase: derefStr(data.PrivateKeyPassphrase),
+		}}, nil
+	case source.TypeSMB:
+		return source.Credentials{SMB: &source.SMBCredentials{
+			Password: derefStr(data.Password),
 		}}, nil
 	case source.TypeGitHubRelease:
 		return source.Credentials{GitHubRelease: &source.GitHubReleaseCredentials{

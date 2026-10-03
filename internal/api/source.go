@@ -109,6 +109,8 @@ func marshalConfigForResponse(t source.Type, c source.Config) (json.RawMessage, 
 		data = c.S3
 	case source.TypeSFTP:
 		data = c.SFTP
+	case source.TypeSMB:
+		data = c.SMB
 	case source.TypeGitHubRelease:
 		data = c.GitHubRelease
 	default:
@@ -190,6 +192,12 @@ func decodeConfigPayload(t source.Type, raw json.RawMessage) (source.Config, err
 			return source.Config{}, fmt.Errorf("invalid sftp config: %v", err)
 		}
 		return source.Config{SFTP: &c}, nil
+	case source.TypeSMB:
+		var c source.SMBConfig
+		if err := strictDecode(raw, &c); err != nil {
+			return source.Config{}, fmt.Errorf("invalid smb config: %v", err)
+		}
+		return source.Config{SMB: &c}, nil
 	case source.TypeGitHubRelease:
 		var c source.GitHubReleaseConfig
 		if err := strictDecode(raw, &c); err != nil {
@@ -249,6 +257,18 @@ func decodeCredentialsPayload(t source.Type, raw json.RawMessage) (source.Creden
 			creds.SFTP.PrivateKeyPassphrase = *p.PrivateKeyPassphrase
 		}
 		return creds, nil
+	case source.TypeSMB:
+		var p struct {
+			Password *string `json:"password"`
+		}
+		if err := strictDecode(raw, &p); err != nil {
+			return source.Credentials{}, fmt.Errorf("invalid smb credentials: %v", err)
+		}
+		creds := source.Credentials{SMB: &source.SMBCredentials{}}
+		if p.Password != nil {
+			creds.SMB.Password = *p.Password
+		}
+		return creds, nil
 	case source.TypeGitHubRelease:
 		var p struct {
 			Token *string `json:"token"`
@@ -299,6 +319,16 @@ func decodeCredentialsUpdatePayload(t source.Type, raw json.RawMessage) (*source
 			Password:             p.Password,
 			PrivateKey:           p.PrivateKey,
 			PrivateKeyPassphrase: p.PrivateKeyPassphrase,
+		}}, nil
+	case source.TypeSMB:
+		var p struct {
+			Password *string `json:"password"`
+		}
+		if err := strictDecode(raw, &p); err != nil {
+			return nil, fmt.Errorf("invalid smb credentials: %v", err)
+		}
+		return &source.CredentialsUpdate{SMB: &source.SMBCredentialsUpdate{
+			Password: p.Password,
 		}}, nil
 	case source.TypeGitHubRelease:
 		var p struct {

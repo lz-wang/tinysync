@@ -42,6 +42,8 @@ const credentialStateExpr = `CASE type
 			OR (COALESCE(` + CredentialIDExpr + `, '') != ''
 				AND EXISTS (SELECT 1 FROM credentials c WHERE c.id = ` + CredentialIDExpr + ` AND c.has_passphrase = 1))
 			THEN json('true') ELSE json('false') END))
+	WHEN 'smb' THEN json_object('smb', json_object(
+		'password_set', CASE WHEN COALESCE(json_extract(credentials_json, '$.password'), '') != '' THEN json('true') ELSE json('false') END))
 	WHEN 'github_release' THEN json_object('github_release', json_object(
 		'token_set', CASE WHEN COALESCE(json_extract(credentials_json, '$.token'), '') != '' THEN json('true') ELSE json('false') END))
 	ELSE '{}'
@@ -226,6 +228,12 @@ func mergeCredentials(t source.Type, oldRaw string, update *source.CredentialsUp
 		if update.SFTP.PrivateKeyPassphrase != nil {
 			old.SFTP.PrivateKeyPassphrase = *update.SFTP.PrivateKeyPassphrase
 		}
+		return old, nil
+	case source.TypeSMB:
+		if update.SMB == nil || update.SMB.Password == nil {
+			return old, nil
+		}
+		old.SMB.Password = *update.SMB.Password
 		return old, nil
 	case source.TypeGitHubRelease:
 		if update.GitHubRelease == nil || update.GitHubRelease.Token == nil {
