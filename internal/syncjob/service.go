@@ -70,7 +70,18 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Job, error) {
 	if err != nil {
 		return Job{}, err
 	}
-	localRoot, err := s.canonicalLocalRoot(input.LocalRoot, true)
+	// 先解析已有前缀并预检，拒绝的映射不因 MkdirAll 留下新目录。
+	candidate, _, err := filesafe.CanonicalDirectoryCandidate(input.LocalRoot)
+	if err != nil {
+		return Job{}, fmt.Errorf("%w: resolve local root candidate: %w", ErrInvalid, err)
+	}
+	if err := s.checkRootAvailable(ctx, candidate, ""); err != nil {
+		return Job{}, err
+	}
+	if err := source.ValidateJobMappingCandidate(src, remoteRoot, candidate); err != nil {
+		return Job{}, fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
+	localRoot, err := s.canonicalLocalRoot(candidate, true)
 	if err != nil {
 		return Job{}, err
 	}
@@ -287,14 +298,22 @@ func (s *Service) checkRootAvailable(ctx context.Context, localRoot, skipID stri
 	if err != nil {
 		return err
 	}
-	if filesafe.PathsOverlap(localRoot, dataDir) {
+	overlap, err := filesafe.DirectoryCandidatesOverlap(localRoot, dataDir)
+	if err != nil {
+		return fmt.Errorf("%w: compare local root with data dir: %w", ErrInvalid, err)
+	}
+	if overlap {
 		return fmt.Errorf("%w: %s overlaps tinysync data dir %s", ErrRootOverlap, localRoot, dataDir)
 	}
 	for _, job := range jobs {
 		if job.ID == skipID {
 			continue
 		}
-		if filesafe.PathsOverlap(localRoot, job.LocalRoot) {
+		overlap, err := filesafe.DirectoryCandidatesOverlap(localRoot, job.LocalRoot)
+		if err != nil {
+			return fmt.Errorf("%w: compare local root with job %q: %w", ErrInvalid, job.Name, err)
+		}
+		if overlap {
 			return fmt.Errorf("%w: %s overlaps %q local root %s", ErrRootOverlap, localRoot, job.Name, job.LocalRoot)
 		}
 	}
@@ -303,12 +322,9 @@ func (s *Service) checkRootAvailable(ctx context.Context, localRoot, skipID stri
 
 // canonicalDataDir 返回归一化的数据目录绝对路径。
 func (s *Service) canonicalDataDir() (string, error) {
-	abs, err := filepath.Abs(s.dataDir)
+	candidate, _, err := filesafe.CanonicalDirectoryCandidate(s.dataDir)
 	if err != nil {
 		return "", fmt.Errorf("resolve data dir %s: %w", s.dataDir, err)
 	}
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		return resolved, nil
-	}
-	return abs, nil
+	return candidate, nil
 }

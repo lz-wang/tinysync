@@ -32,6 +32,84 @@ func CanonicalExistingDir(p string) (string, error) {
 	return resolved, nil
 }
 
+// CanonicalDirectoryCandidate 不创建目录，解析候选路径及最近的已存在目录。
+// 已有前缀解析 symlink，缺失的后缀原样拼回；文件、悬空链接与访问错误均拒绝。
+func CanonicalDirectoryCandidate(p string) (candidate, ancestor string, err error) {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return "", "", fmt.Errorf("directory path is empty")
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", "", err
+	}
+	current := abs
+	for {
+		if _, err := os.Lstat(current); err == nil {
+			ancestor, err = CanonicalExistingDir(current)
+			if err != nil {
+				return "", "", err
+			}
+			suffix, err := filepath.Rel(current, abs)
+			if err != nil {
+				return "", "", err
+			}
+			return filepath.Join(ancestor, suffix), ancestor, nil
+		} else if !os.IsNotExist(err) {
+			return "", "", err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", "", fmt.Errorf("no existing directory ancestor for %s", p)
+		}
+		current = parent
+	}
+}
+
+// DirectoryCandidatesOverlap 支持尚未创建或暂时缺失的目录。已有路径用
+// 文件系统身份比较；两者都缺失时只比较同一物理祖先下的后缀，并保守
+// 拒绝后缀的大小写别名，避免猜测未知卷的大小写规则。
+func DirectoryCandidatesOverlap(a, b string) (bool, error) {
+	a, aAncestor, err := CanonicalDirectoryCandidate(a)
+	if err != nil {
+		return false, fmt.Errorf("resolve directory candidate: %w", err)
+	}
+	b, bAncestor, err := CanonicalDirectoryCandidate(b)
+	if err != nil {
+		return false, fmt.Errorf("resolve directory candidate: %w", err)
+	}
+	if a == aAncestor && b == bAncestor {
+		return ExistingDirectoriesOverlap(a, b)
+	}
+	aInfo, err := os.Stat(aAncestor)
+	if err != nil {
+		return false, err
+	}
+	bInfo, err := os.Stat(bAncestor)
+	if err != nil {
+		return false, err
+	}
+	if a == aAncestor {
+		return ancestorMatches(bAncestor, aInfo)
+	}
+	if b == bAncestor {
+		return ancestorMatches(aAncestor, bInfo)
+	}
+	if !os.SameFile(aInfo, bInfo) {
+		return false, nil
+	}
+	aSuffix, err := filepath.Rel(aAncestor, a)
+	if err != nil {
+		return false, err
+	}
+	bSuffix, err := filepath.Rel(bAncestor, b)
+	if err != nil {
+		return false, err
+	}
+	return sameOrUnder(strings.ToLower(aSuffix), strings.ToLower(bSuffix)) ||
+		sameOrUnder(strings.ToLower(bSuffix), strings.ToLower(aSuffix)), nil
+}
+
 // PathsOverlap 判断 canonical native 路径是否相同或互相包含。
 func PathsOverlap(a, b string) bool {
 	if runtime.GOOS == "windows" {

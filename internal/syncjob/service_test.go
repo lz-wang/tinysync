@@ -689,3 +689,77 @@ func managedCount(t *testing.T, env *testEnv, jobID string) int {
 	}
 	return len(list)
 }
+
+func TestRejectedJobCreateDoesNotCreateOverlappingRoot(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+	first := env.validInput(t, "first")
+	if _, err := env.service.Create(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	for _, root := range []string{first.LocalRoot, env.dataDir} {
+		destination := filepath.Join(root, "new", "nested")
+		input := env.validInput(t, "rejected")
+		input.LocalRoot = destination
+		if _, err := env.service.Create(ctx, input); !errors.Is(err, syncjob.ErrRootOverlap) {
+			t.Fatalf("Create = %v; want ErrRootOverlap", err)
+		}
+		if _, err := os.Stat(filepath.Join(root, "new")); !os.IsNotExist(err) {
+			t.Fatalf("rejected create left directories: %v", err)
+		}
+	}
+}
+
+func TestCreateRejectsCaseInsensitiveReservedRoot(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+	base := t.TempDir()
+	root := filepath.Join(base, "Data")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(base, "data")
+	if _, err := os.Stat(alias); os.IsNotExist(err) {
+		t.Skip("test volume is case-sensitive")
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	first := env.validInput(t, "first")
+	first.LocalRoot = root
+	if _, err := env.service.Create(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range []string{alias, filepath.Join(alias, "new", "nested")} {
+		input := env.validInput(t, "rejected")
+		input.LocalRoot = candidate
+		if _, err := env.service.Create(ctx, input); !errors.Is(err, syncjob.ErrRootOverlap) {
+			t.Fatalf("Create = %v; want ErrRootOverlap", err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "new")); !os.IsNotExist(err) {
+		t.Fatalf("rejected case alias created directories: %v", err)
+	}
+}
+
+func TestMissingJobRootKeepsReservation(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+	base := t.TempDir()
+	first := env.validInput(t, "first")
+	first.LocalRoot = filepath.Join(base, "reserved")
+	if _, err := env.service.Create(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(first.LocalRoot); err != nil {
+		t.Fatal(err)
+	}
+	input := env.validInput(t, "overlap")
+	input.LocalRoot = filepath.Join(first.LocalRoot, "child")
+	if _, err := env.service.Create(ctx, input); !errors.Is(err, syncjob.ErrRootOverlap) {
+		t.Fatalf("Create = %v; want ErrRootOverlap", err)
+	}
+	input.LocalRoot = filepath.Join(base, "unrelated")
+	if _, err := env.service.Create(ctx, input); err != nil {
+		t.Fatalf("missing reserved root blocks unrelated job: %v", err)
+	}
+}

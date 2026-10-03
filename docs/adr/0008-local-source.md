@@ -61,13 +61,19 @@ managed metadata、重试、进度、取消、历史与通知链路。
 相同目录、源包含目标、目标包含源全部拒绝。不能只比较 Source 根：例如根为
 `/data`、源端路径 `/photos`、目标 `/data/videos` 时，两棵 sibling 子树允许同步。
 
-`source.ValidateJobMapping` 集中维护协议差异；Job Create 在路径准备后校验，
+`source.ValidateJobMapping` 集中维护协议差异；Job Create 先解析候选目标的已有
+目录前缀，经 `ValidateJobMappingCandidate` 和目录归属检查后才创建目录，创建后
+再以 `ValidateJobMapping` 和目录归属检查重验文件系统身份。预检拒绝不创建目录，
+预检与创建之间的文件系统变化仍由创建后复验拒绝，不删除失败后目录作为补救。
 Update 按合并后的 SourceID / RemoteRoot / LocalRoot 校验一次，任何字段更新都
 无法跳过。Runner 每轮在读取 Source 后、OpenRemote 前再校验；失败记 failed run，
 不进入扫描，不改 managed metadata，也不执行 Mirror 删除。
 
-`filesafe.CanonicalExistingDir`、`PathsOverlap` 与 `ResolveNoSymlink` 为共享原语，
-路径重叠规则兼容文件系统根路径及 Windows 大小写语义。
+`filesafe.CanonicalExistingDir`、`CanonicalDirectoryCandidate`、
+`ExistingDirectoriesOverlap`、`DirectoryCandidatesOverlap` 与 `ResolveNoSymlink`
+为共享原语。已有目录及祖先以 `os.SameFile` 比较身份，不按 GOOS 猜测卷的
+大小写规则；双方都缺失时保留归属保护，对同一物理祖先下后缀的大小写别名
+保守拒绝。Local mapping 的运行复验仍要求源子树和目标真实存在。
 
 ### 无凭据、无迁移、无新依赖
 

@@ -171,3 +171,72 @@ func TestExistingDirectoriesOverlapCaseInsensitive(t *testing.T) {
 		}
 	}
 }
+
+func TestDirectoryCandidatesOverlap(t *testing.T) {
+	base := t.TempDir()
+	for _, dir := range []string{"Data/Sub", "backup"} {
+		if err := os.MkdirAll(filepath.Join(base, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		a, b string
+		want bool
+	}{
+		{"Data", "Data/new/a/b", true},
+		{"Data", "new/a/b", false},
+		{"Data/Sub", "Data/new", false},
+		{"new", "new/sub", true},
+		{"new", "other/sub", false},
+		{"New", "new/sub", true},
+		{"Data/new", "backup/new", false},
+	} {
+		t.Run(tc.a+"-"+tc.b, func(t *testing.T) {
+			a, b := filepath.Join(base, tc.a), filepath.Join(base, tc.b)
+			for _, pair := range [][2]string{{a, b}, {b, a}} {
+				got, err := DirectoryCandidatesOverlap(pair[0], pair[1])
+				if err != nil || got != tc.want {
+					t.Fatalf("candidate overlap(%q, %q) = %v, %v; want %v", pair[0], pair[1], got, err, tc.want)
+				}
+			}
+		})
+	}
+	if _, err := os.Stat(filepath.Join(base, "new")); !os.IsNotExist(err) {
+		t.Fatalf("candidate resolution created a directory: %v", err)
+	}
+}
+
+func TestCanonicalDirectoryCandidate(t *testing.T) {
+	base := t.TempDir()
+	canonical, err := CanonicalExistingDir(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, ancestor, err := CanonicalDirectoryCandidate(filepath.Join(base, "new", "sub"))
+	if err != nil || candidate != filepath.Join(canonical, "new", "sub") || ancestor != canonical {
+		t.Fatalf("candidate = %q, ancestor = %q, err = %v", candidate, ancestor, err)
+	}
+	file := filepath.Join(base, "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range []string{"", file, filepath.Join(file, "child")} {
+		if _, _, err := CanonicalDirectoryCandidate(invalid); err == nil {
+			t.Fatalf("accepted %q", invalid)
+		}
+	}
+	alias := filepath.Join(base, "alias")
+	if err := os.Symlink(canonical, alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	candidate, ancestor, err = CanonicalDirectoryCandidate(filepath.Join(alias, "new"))
+	if err != nil || candidate != filepath.Join(canonical, "new") || ancestor != canonical {
+		t.Fatalf("alias candidate = %q, ancestor = %q, err = %v", candidate, ancestor, err)
+	}
+	if err := os.Symlink(filepath.Join(base, "missing"), filepath.Join(base, "dangling")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := CanonicalDirectoryCandidate(filepath.Join(base, "dangling", "child")); err == nil {
+		t.Fatal("accepted dangling symlink ancestor")
+	}
+}
