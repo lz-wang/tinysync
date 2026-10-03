@@ -84,23 +84,39 @@ func (c *smb2Conn) mkdir(ctx context.Context, name string) error {
 // 服务器在连接超时或进程退出时回收）。
 const closeTimeout = 5 * time.Second
 
-// close 拆除 tree 与 session。ctx 用独立的带超时 background 派生：
-// 调用方 ctx 往往已取消（run 结束 / 用户停止），直接使用会让关闭
-// 请求立即失败、连接只等 TCP 超时回收；无界 background 又会在对端
-// 停摆时永久阻塞 Close（真实 Samba 集成测试发现的死锁形态）。
+// boundedLogoff 在 closeTimeout 期限内拆除 SMB session。所有 session
+// 清理路径——正常 Close 的收尾、连接半建立时的回退（失败的 Mount）——
+// 共用这一种有界生命周期语义：不占用调用方 ctx（往往已取消，直接
+// 使用会让关闭请求立即失败、连接只等 TCP 超时回收），也不用无界
+// background（对端停摆时永久阻塞——真实 Samba 集成测试发现的死锁
+// 形态）。超时后放弃优雅路径，句柄与 session 由服务器在连接超时或
+// 进程退出时回收。
+func boundedLogoff(session *smb2.Session) error {
+	ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
+	defer cancel()
+	return session.WithContext(ctx).Logoff()
+}
+
+// close 拆除 tree 与 session：Umount 与 Logoff 各自有界（见
+// boundedLogoff）。
 func (c *smb2Conn) close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
 	defer cancel()
 	err := c.share.WithContext(ctx).Umount()
-	if logoffErr := c.session.WithContext(ctx).Logoff(); err == nil {
+	if logoffErr := boundedLogoff(c.session); err == nil {
 		err = logoffErr
 	}
 	return err
 }
 
 // dial 建立 TCP 连接、协商 SMB2/3、NTLMv2 认证并 mount share。
-// signing=required 时通过 Negotiator.RequireMessageSigning 强制
-// 签名，服务器不支持即失败（fail-closed）；auto 跟随服务器协商。
+// 全阶段绑定调用方 ctx：TCP dial / 协商 / NTLM 认证由 Dial 透传，
+// TREE_CONNECT 必须显式绑定——go-smb2 的 Dial 返回的 Session 内部
+// 持有 context.Background()，Mount 不绑定时服务器在 tree connect
+// 阶段停摆会让 Create 无限阻塞（TestConnection 的超时、Runner 的
+// 取消都无法触及）。signing=required 时通过 Negotiator.
+// RequireMessageSigning 强制签名，服务器不支持即失败（fail-closed）；
+// auto 跟随服务器协商。
 func dial(ctx context.Context, cfg source.SMBConfig, password string) (conn, error) {
 	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
 	dialer := &smb2.Dialer{
@@ -110,16 +126,20 @@ func dial(ctx context.Context, cfg source.SMBConfig, password string) (conn, err
 			Domain:   cfg.Domain,
 		},
 		Negotiator: smb2.Negotiator{
-			RequireMessageSigning: cfg.Signing == source.SMBSigningRequired,
+			// 防御纵深：signing 的安全默认是 required，归一化漏过
+			// （绕过 Service 直连 Factory、Signing 为空值）时同样
+			// fail-closed，只有显式 auto 才跟随服务器协商。
+			RequireMessageSigning: cfg.Signing != source.SMBSigningAuto,
 		},
 	}
 	session, err := dialer.Dial(ctx, addr)
 	if err != nil {
 		return nil, normalizeCtxErr(ctx, classifyError(fmt.Errorf("smb dial %s: %w", addr, err)))
 	}
-	share, err := session.Mount(cfg.Share)
+	share, err := session.WithContext(ctx).Mount(cfg.Share)
 	if err != nil {
-		_ = session.WithContext(context.Background()).Logoff()
+		// Mount 失败的回退清理与正常 Close 同一种有界语义。
+		_ = boundedLogoff(session)
 		return nil, normalizeCtxErr(ctx, classifyError(fmt.Errorf("smb mount share %q on %s: %w", cfg.Share, addr, err)))
 	}
 	return &smb2Conn{session: session, share: share}, nil
@@ -130,9 +150,11 @@ func dial(ctx context.Context, cfg source.SMBConfig, password string) (conn, err
 // session 自动重连——同一轮 run 内 Downloader 的重试因此建立新
 // SMB 连接，而不是反复使用坏连接。
 type remote struct {
-	cfg      source.SMBConfig
-	password string
+	cfg source.SMBConfig
 	// connect 建立新一届连接；生产路径是本包 dial，测试注入 fake。
+	// cfg 与密码在 Create 时冻结成值副本由闭包捕获：一个 Remote 的
+	// 连接身份自创建起不可变，不随调用方后续修改 Source /
+	// Credentials 对象漂移。
 	connect func(ctx context.Context) (conn, error)
 
 	mu     sync.RWMutex
@@ -148,7 +170,8 @@ var (
 )
 
 // Create 实现 source.RemoteFactory：校验类型与凭据，建立首条连接
-// （ctx 可取消，阻塞中的 TCP dial / 协商 / NTLM 认证随取消退出）。
+// （ctx 可取消，阻塞中的 TCP dial / 协商 / NTLM 认证 / tree connect
+// 随取消退出）。
 func (f *Factory) Create(ctx context.Context, s source.Source, credentials source.Credentials) (source.Remote, error) {
 	if s.Type != source.TypeSMB || s.Config.SMB == nil {
 		return nil, fmt.Errorf("%w: %q", source.ErrUnsupportedType, s.Type)
@@ -156,11 +179,14 @@ func (f *Factory) Create(ctx context.Context, s source.Source, credentials sourc
 	if credentials.SMB == nil || credentials.SMB.Password == "" {
 		return nil, fmt.Errorf("%w: smb password is required (guest access is not supported)", source.ErrInvalid)
 	}
+	// 冻结配置与密码的值副本供 reconnect 闭包使用：连接身份自创建
+	// 起不可变。
+	cfg := *s.Config.SMB
+	password := credentials.SMB.Password
 	r := &remote{
-		cfg:      *s.Config.SMB,
-		password: credentials.SMB.Password,
+		cfg: *s.Config.SMB,
 		connect: func(ctx context.Context) (conn, error) {
-			return dial(ctx, *s.Config.SMB, credentials.SMB.Password)
+			return dial(ctx, cfg, password)
 		},
 	}
 	r.mu.Lock()

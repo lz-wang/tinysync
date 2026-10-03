@@ -227,8 +227,7 @@ func newFakeRemote(t testing.TB, connect func(ctx context.Context) (conn, error)
 			Host: "nas.example.com", Port: 445, Share: "backup",
 			RemoteRoot: "/", Username: "tinysync", Signing: source.SMBSigningRequired,
 		},
-		password: "secret",
-		connect:  connect,
+		connect: connect,
 	}
 	return r
 }

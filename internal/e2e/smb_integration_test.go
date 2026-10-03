@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -440,14 +441,19 @@ func TestIntegrationSMBReparse(t *testing.T) {
 // stallProxy 是一次性客户端方向的 TCP 代理：正常阶段双向转发；
 // freeze 后吞掉 服务端→客户端 方向的数据（模拟无响应停摆）；
 // sever 主动关闭当前连接（模拟连接被 reset）。
+// freezeOnTreeConnect 开启协议感知模式：观察到 client→server 方向的
+// SMB2 TREE_CONNECT 请求即自动 freeze——negotiate / NTLM 认证正常
+// 完成、只在 tree connect 响应处停摆，把「服务器停摆在 TREE_CONNECT
+// 阶段」变成确定性测试装置（真实 Samba 无法直接制造这种停摆）。
 type stallProxy struct {
 	ln     net.Listener
 	target string
 
-	mu      sync.Mutex
-	conns   map[net.Conn]struct{}
-	frozen  atomic.Bool
-	severed atomic.Bool
+	mu                  sync.Mutex
+	conns               map[net.Conn]struct{}
+	frozen              atomic.Bool
+	severed             atomic.Bool
+	freezeOnTreeConnect atomic.Bool
 }
 
 func newStallProxy(t *testing.T, target string) *stallProxy {
@@ -495,10 +501,27 @@ func (p *stallProxy) handle(client net.Conn) {
 	}()
 
 	done := make(chan struct{}, 2)
-	// client → upstream 恒转发。
+	// client → upstream 恒转发；协议感知模式下观察到 TREE_CONNECT
+	// 请求即 freeze（请求仍转发给服务器，只是响应被吞——等价于
+	// 服务器收到请求后不再响应）。
 	go func() {
-		_, _ = io.Copy(upstream, client)
-		done <- struct{}{}
+		buf := make([]byte, 32*1024)
+		for {
+			n, rerr := client.Read(buf)
+			if n > 0 {
+				if p.freezeOnTreeConnect.Load() && isTreeConnectRequest(buf[:n]) {
+					p.frozen.Store(true)
+				}
+				if _, werr := upstream.Write(buf[:n]); werr != nil {
+					done <- struct{}{}
+					return
+				}
+			}
+			if rerr != nil {
+				done <- struct{}{}
+				return
+			}
+		}
 	}()
 	// upstream → client：frozen 时丢弃（吞掉响应模拟停摆）。
 	go func() {
@@ -535,6 +558,67 @@ func (p *stallProxy) severAll() {
 
 // addr 返回代理监听地址。
 func (p *stallProxy) addr() string { return p.ln.Addr().String() }
+
+// isTreeConnectRequest 判断一段 client→server 方向数据是否是 SMB2
+// TREE_CONNECT 请求：64 字节标准 header，ProtocolId 0xFE534D42，
+// Command 字段位于 header offset 12（LE）。go-smb2 的 direct TCP
+// framing 是 [4 字节 BE 长度前缀 + SMB2 消息] 两次独立 Write，TCP
+// 上可能合成一个 segment（消息在 buffer offset 4）也可能拆开（消息
+// 在 offset 0），两种形态都匹配；消息签名只覆盖 header 尾部的
+// Signature 字段，不影响 Command 的明文可读。
+func isTreeConnectRequest(b []byte) bool {
+	const smb2HeaderSize = 64
+	const smb2TreeConnect = 0x0003
+	for off := 0; off <= 4 && off+smb2HeaderSize <= len(b); off += 4 {
+		if b[off] == 0xFE && b[off+1] == 0x53 && b[off+2] == 0x4D && b[off+3] == 0x42 &&
+			binary.LittleEndian.Uint16(b[off+12:off+14]) == smb2TreeConnect {
+			return true
+		}
+	}
+	return false
+}
+
+// TestIntegrationSMBCancelDuringTreeConnect：connecting 阶段的 ctx
+// 取消必须覆盖 TREE_CONNECT。协议感知 proxy 让 negotiate / NTLM 认证
+// 正常完成、只在 tree connect 响应处停摆，Mount 因此阻塞在等待响应；
+// attempt ctx 到期后 Create 必须返回 ctx 错误而非无限等待（回归
+// go-smb2 Session 默认携带 context.Background()、Mount 未绑定调用方
+// ctx 的漏洞），且 Mount 失败的回退 Logoff 同样有界。
+func TestIntegrationSMBCancelDuringTreeConnect(t *testing.T) {
+	cfg := smbITLoad(t)
+
+	proxy := newStallProxy(t, cfg.addr())
+	proxy.freezeOnTreeConnect.Store(true)
+	proxiedCfg := cfg.sourceConfig("/")
+	host, portStr, _ := net.SplitHostPort(proxy.addr())
+	port, _ := strconv.Atoi(portStr)
+	proxiedCfg.Host, proxiedCfg.Port = host, port
+
+	factory := smbadapter.NewFactory()
+	attemptCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	start := time.Now()
+	_, err := factory.Create(attemptCtx, source.Source{
+		Name:   "integration-smb-tree-connect",
+		Type:   source.TypeSMB,
+		Config: source.Config{SMB: &proxiedCfg},
+	}, source.Credentials{SMB: &source.SMBCredentials{Password: cfg.password}})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("Create through stalled tree connect = nil, want error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Create error = %v, want context.DeadlineExceeded", err)
+	}
+	// Mount 未绑定 ctx 的旧形态会让 Create 永远不返回；修复后总时长
+	// 有界：ctx 期限 + 回退 Logoff 的 closeTimeout（走同一停摆连接，
+	// 必然吃满期限）。
+	if elapsed > 10*time.Second {
+		t.Errorf("Create blocked %v, want bounded by ctx deadline + bounded logoff", elapsed)
+	}
+}
 
 // TestIntegrationSMBCancelInterruptsStalledRead：服务端停摆后
 // attempt ctx 取消必须真正中断阻塞中的 SMB Read（go-smb2 请求级取消
