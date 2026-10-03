@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"tinysync/internal/source"
@@ -268,23 +269,24 @@ func openRemoteAt(t *testing.T, ts *httptest.Server, mode source.HTTPListingMode
 	return remote
 }
 
-// 显式 caddy + 空数组 []：按配置形态解释为空目录（空形态对两种
-// JSON parser 语义等价）。
-func TestExplicitCaddyEmptyArrayAccepted(t *testing.T) {
-	ts := newFixedListingServer(t, `[]`)
-	remote := openRemoteAt(t, ts, source.HTTPListingCaddy)
-	entries, err := remote.List(context.Background(), "/", source.ListOptions{Limit: source.MaxListLimit})
-	if err != nil {
-		t.Fatalf("List empty array with explicit caddy: %v", err)
-	}
-	if len(entries.Entries) != 0 {
-		t.Errorf("entries = %+v, want empty", entries.Entries)
+// 只有显式 nginx / caddy 配置能将 [] 解释为空目录。
+func TestExplicitJSONEmptyArrayAccepted(t *testing.T) {
+	for _, mode := range []source.HTTPListingMode{source.HTTPListingCaddy, source.HTTPListingNginx} {
+		t.Run(string(mode), func(t *testing.T) {
+			ts := newFixedListingServer(t, `[]`)
+			remote := openRemoteAt(t, ts, mode)
+			entries, err := remote.List(context.Background(), "/", source.ListOptions{Limit: source.MaxListLimit})
+			if err != nil {
+				t.Fatalf("List empty array with explicit %s: %v", mode, err)
+			}
+			if len(entries.Entries) != 0 {
+				t.Errorf("entries = %+v, want empty", entries.Entries)
+			}
+		})
 	}
 }
 
-// 显式 caddy + 非空 nginx JSON：permanent 形态不匹配。isEmptyJSONArray
-// 必须真正解析——非空数组若被误判为空数组，会按 caddy 形态重解释并
-// 送进 caddy decoder，目录条目（无 is_dir 字段）被误判为文件。
+// 显式 caddy + 非空 nginx JSON：permanent 形态不匹配，不能按空数组重解释。
 func TestExplicitCaddyNonEmptyNginxMismatch(t *testing.T) {
 	ts := newFixedListingServer(t, `[{"name":"d/","type":"directory","mtime":"Wed, 21 Oct 2026 07:28:00 GMT"}]`)
 	remote := openRemoteAt(t, ts, source.HTTPListingCaddy)
@@ -298,6 +300,35 @@ func TestExplicitCaddyNonEmptyNginxMismatch(t *testing.T) {
 	}
 	if source.IsRetryable(err) {
 		t.Error("listing mismatch should be permanent")
+	}
+}
+
+// 已成功识别过 profile 也不能授权后续 [] 快照；每次扫描独立证明完整性。
+func TestAutoEmptyArrayFailClosed(t *testing.T) {
+	for _, initial := range []string{"", caddyJSONFixture, `[{"name":"a","type":"file","mtime":"Wed, 21 Oct 2026 07:28:00 GMT","size":1}]`} {
+		t.Run(initial, func(t *testing.T) {
+			var empty atomic.Bool
+			empty.Store(initial == "")
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if empty.Load() {
+					_, _ = w.Write([]byte(`[]`))
+					return
+				}
+				_, _ = w.Write([]byte(initial))
+			}))
+			t.Cleanup(ts.Close)
+			remote := openRemoteAt(t, ts, source.HTTPListingAuto)
+			if initial != "" {
+				if _, err := remote.Stat(context.Background(), "/"); err != nil {
+					t.Fatalf("initial profile detection: %v", err)
+				}
+				empty.Store(true)
+			}
+			_, err := remote.Stat(context.Background(), "/")
+			if err == nil || source.IsRetryable(err) || !strings.Contains(err.Error(), "set listing_mode explicitly") {
+				t.Fatalf("empty array error = %v, want permanent ambiguous profile failure", err)
+			}
+		})
 	}
 }
 

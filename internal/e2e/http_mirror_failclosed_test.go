@@ -10,13 +10,26 @@ import (
 	"tinysync/internal/syncjob"
 )
 
-// Mirror 的 fail-closed 同步级反例（HTTP）：先完成一次 Mirror，然后让
-// 服务器从合法 Caddy listing 切换为 `200 {"status":"error"}`（反向代理
-// 把文件服务异常吞成 JSON 状态页的形态）。这类响应无法证明快照完整性，
-// 扫描必须整轮失败，本地 managed files 一个都不删除——否则「任意
-// JSON object 被解释成空 Caddy 目录」会让 Planner 认为全部远端文件
-// 已消失并授权 Mirror 删除。
+// Mirror 的 fail-closed 同步级反例：先同步 managed files，再注入
+// 无法证明完整性的 200 响应；运行必须失败，根文件与目录后代均不删除。
 func TestHTTPMirrorUnprovableSnapshotFailClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"status object", `{"status":"error"}`},
+		{"ambiguous empty array", `[]`},
+		{"ordinary html marker", `<html><body><script>const className = "entry-type-file";</script></body></html>`},
+		{"malformed later caddy directory", `[{"name":"a.txt","size":2,"url":"a.txt","mod_time":"2026-10-01T00:00:00Z","is_dir":false,"is_symlink":false},{"name":"docs","size":4096,"mod_time":"2026-10-01T00:00:00Z"}]`},
+		{"unknown miniserve row", `<table><tr class="entry-type-file"><td><a class="file" href="a.txt">a</a></td></tr><tr class="entry-type-special"><td><a class="directory" href="docs/">docs</a></td></tr></table>`},
+		{"conflicting miniserve directory", `<table><tr class="entry-type-file"><td><a class="file" href="a.txt">a</a></td></tr><tr class="entry-type-file"><td><a class="directory" href="docs/">docs</a></td></tr></table>`},
+	} {
+		t.Run(tc.name, func(t *testing.T) { testHTTPMirrorUnprovableSnapshot(t, tc.body) })
+	}
+}
+
+func testHTTPMirrorUnprovableSnapshot(t *testing.T, body string) {
+	t.Helper()
 	srv := newHTTPMatrixServer(t)
 	srv.put("/a.txt", "v1")
 	srv.put("/docs/b.txt", "b1")
@@ -56,8 +69,8 @@ func TestHTTPMirrorUnprovableSnapshotFailClosed(t *testing.T) {
 	assertLocalFile(t, localRoot, filepath.Join("docs", "b.txt"), "b1")
 	assertLocalFile(t, localRoot, filepath.Join("docs", "photo.jpg"), "jpeg")
 
-	// 2. listing 变成 `200 {"status":"error"}`：本轮运行必须失败。
-	srv.degrade(`{"status":"error"}`)
+	// 2. listing 变成无法证明完整性的响应：本轮运行必须失败。
+	srv.degrade(body)
 	runID, err := e.runner.Start(context.Background(), job.ID)
 	if err != nil {
 		t.Fatalf("Start: %v", err)

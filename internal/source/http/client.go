@@ -7,7 +7,6 @@ package http
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
@@ -185,7 +184,7 @@ func (c *Client) fetchDir(ctx context.Context, dir string) ([]rawEntry, error) {
 	if kind == listingUnknown {
 		return nil, unsupportedListingError("")
 	}
-	kind, err = c.resolveKind(kind, body)
+	kind, err = c.resolveKind(kind)
 	if err != nil {
 		return nil, err
 	}
@@ -206,8 +205,15 @@ func (c *Client) fetchDir(ctx context.Context, dir string) ([]rawEntry, error) {
 
 // resolveKind 把探测到的形态与配置的 listing_mode 对齐：显式 profile
 // 只接受自己（nginx 含 JSON / HTML 两种子形态）的形态；空数组对
-// nginx / caddy 语义等价（零条目），按配置形态解释。
-func (c *Client) resolveKind(detected listingKind, body []byte) (listingKind, error) {
+// nginx / caddy 只在显式配置时可解释为空目录，auto 必须拒绝歧义。
+func (c *Client) resolveKind(detected listingKind) (listingKind, error) {
+	if detected == listingEmptyJSON {
+		if c.mode == source.HTTPListingNginx || c.mode == source.HTTPListingCaddy {
+			return kindOfMode(c.mode), nil
+		}
+		return listingUnknown, source.MarkPermanent(fmt.Errorf(
+			"empty JSON array cannot identify the HTTP directory listing profile; set listing_mode explicitly to nginx or caddy"))
+	}
 	if c.mode == source.HTTPListingAuto {
 		return detected, nil
 	}
@@ -220,11 +226,6 @@ func (c *Client) resolveKind(detected listingKind, body []byte) (listingKind, er
 		if detected == k {
 			return detected, nil
 		}
-	}
-	if detected == listingNginxJSON && isEmptyJSONArray(body) &&
-		(c.mode == source.HTTPListingCaddy || c.mode == source.HTTPListingNginx) {
-		// 空数组：按配置形态解释（parser 对空形态语义一致）。
-		return kindOfMode(c.mode), nil
 	}
 	return listingUnknown, source.MarkPermanent(fmt.Errorf(
 		"detected %s listing does not match configured listing_mode=%s", detected, c.mode))
@@ -374,15 +375,4 @@ func (c *Client) hydrationPool(ctx context.Context, dir string, entries []rawEnt
 		return firstErr
 	}
 	return ctx.Err()
-}
-
-// isEmptyJSONArray 报告 body 是否为空 JSON 数组（空目录的形态等价）。
-// 必须真正解析并数元素：只看首个非空白字符是否为 '[' 会把任意非空
-// 数组也判成空数组，让显式 profile 下的形态不匹配静默通过。
-func isEmptyJSONArray(body []byte) bool {
-	var entries []json.RawMessage
-	if err := json.Unmarshal(body, &entries); err != nil {
-		return false
-	}
-	return len(entries) == 0
 }

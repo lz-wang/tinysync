@@ -17,17 +17,7 @@ func detectListing(body []byte) listingKind {
 	if len(trimmed) > 0 && (trimmed[0] == '[' || trimmed[0] == '{') {
 		return detectJSONListing(trimmed)
 	}
-	if bytes.Contains(trimmed, []byte("entry-type-directory")) ||
-		bytes.Contains(trimmed, []byte("entry-type-file")) {
-		return listingMiniserveHTML
-	}
-	// 空目录的 miniserve raw 页没有条目行，只剩表头结构标记。完整
-	// 签名要求 name / size / date 三列表头同时存在（真实 miniserve
-	// 的 raw 表头恒为这三列）：只认 th.name 会让恰好含该标记的普通
-	// HTML 页被误判，解析零条目后得到「合法空目录」快照。
-	if bytes.Contains(trimmed, []byte(`<th class="name">`)) &&
-		bytes.Contains(trimmed, []byte(`<th class="size">`)) &&
-		bytes.Contains(trimmed, []byte(`<th class="date">`)) {
+	if detectMiniserveHTML(trimmed) {
 		return listingMiniserveHTML
 	}
 	// nginx autoindex HTML 的稳定结构标记：标题「Index of /」。
@@ -42,32 +32,47 @@ func detectListing(body []byte) listingKind {
 // 条目含 is_dir/is_symlink/mod_time）。只接受正式的顶层数组：顶层
 // JSON object 一律 unknown——`{}`、`{"status":"ok"}` 这类响应无法与
 // 「字段全部缺失的包装形态」区分，把字段缺失当作空数组会授权 Mirror
-// 删除全部 managed files（fail-closed）。空数组按 nginx 形态处理
-// （空目录对两种 parser 语义等价，形态再解释由 resolveKind 按配置
-// 约束）。
+// 删除全部 managed files（fail-closed）。空数组无法证明 profile，只
+// 能由显式配置解释；非空数组的每个条目都必须满足同一 profile。
 func detectJSONListing(b []byte) listingKind {
 	var arr []map[string]json.RawMessage
-	if err := json.Unmarshal(b, &arr); err != nil {
+	if err := json.Unmarshal(b, &arr); err != nil || arr == nil {
 		return listingUnknown
 	}
 	if len(arr) == 0 {
-		return listingNginxJSON
+		return listingEmptyJSON
 	}
-	return sniffEntryFields(arr[0])
+	kind := sniffEntryFields(arr[0])
+	for _, entry := range arr[1:] {
+		if sniffEntryFields(entry) != kind {
+			return listingUnknown
+		}
+	}
+	return kind
 }
 
-// sniffEntryFields 按首条目的字段集判定形态。
+// sniffEntryFields 要求必填字段存在且非 null，避免缺失 bool 被解释为 false。
 func sniffEntryFields(entry map[string]json.RawMessage) listingKind {
-	_, isDir := entry["is_dir"]
-	_, isSymlink := entry["is_symlink"]
-	_, modTime := entry["mod_time"]
-	_, typ := entry["type"]
-	_, mtime := entry["mtime"]
-	if isDir && isSymlink && modTime {
+	caddy := hasRequiredFields(entry, caddyRequiredFields...)
+	nginx := hasRequiredFields(entry, "name", "type", "mtime")
+	if nginx && !bytes.Equal(bytes.TrimSpace(entry["type"]), []byte(`"directory"`)) {
+		nginx = hasRequiredFields(entry, "size")
+	}
+	if caddy && !nginx {
 		return listingCaddyJSON
 	}
-	if typ && mtime {
+	if nginx && !caddy {
 		return listingNginxJSON
 	}
 	return listingUnknown
+}
+
+func hasRequiredFields(entry map[string]json.RawMessage, fields ...string) bool {
+	for _, field := range fields {
+		value, ok := entry[field]
+		if !ok || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return false
+		}
+	}
+	return true
 }

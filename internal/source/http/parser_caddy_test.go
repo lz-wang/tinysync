@@ -1,6 +1,7 @@
 package http
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -90,8 +91,10 @@ func TestParseCaddyJSONMalformed(t *testing.T) {
 		want string
 	}{
 		{"invalid json", `[{"name":`, "invalid caddy JSON"},
-		{"duplicate", `[{"name":"a","is_dir":false,"is_symlink":false},{"name":"a","is_dir":true,"is_symlink":false}]`, "duplicate entry"},
-		{"nested name", `[{"name":"a/b","is_dir":false,"is_symlink":false}]`, "not a single clean path segment"},
+		{"duplicate", `[{"name":"a","size":1,"url":"a","mod_time":"2026-10-01T12:00:00Z","is_dir":false,"is_symlink":false},{"name":"a","size":4096,"url":"a/","mod_time":"2026-10-01T12:00:00Z","is_dir":true,"is_symlink":false}]`, "duplicate entry"},
+		{"nested name", `[{"name":"a/b","size":1,"url":"a/b","mod_time":"2026-10-01T12:00:00Z","is_dir":false,"is_symlink":false}]`, "not a single clean path segment"},
+		{"null array", `null`, "invalid caddy JSON"},
+		{"null entry", `[null]`, "required field"},
 		{"negative size", `[{"name":"a","size":-1,"url":"a","mod_time":"2026-10-01T12:00:00Z","is_dir":false,"is_symlink":false}]`, "negative size"},
 	}
 	for _, tc := range cases {
@@ -102,6 +105,45 @@ func TestParseCaddyJSONMalformed(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: error = %v, want containing %q", tc.name, err, tc.want)
+		}
+	}
+}
+
+// 第一条合法不能掩盖后续畸形目录：任何必填字段缺失、null 或类型错误
+// 都让整个 listing 失败，不得返回部分条目或把目录解释成文件。
+func TestParseCaddyJSONRequiredFields(t *testing.T) {
+	m := newRootMapper(t)
+	for _, field := range []string{"name", "size", "url", "mod_time", "is_dir", "is_symlink"} {
+		for _, mutation := range []string{"missing", "null", "wrong type"} {
+			t.Run(field+"/"+mutation, func(t *testing.T) {
+				valid := map[string]any{
+					"name": "a.txt", "size": 1, "url": "./a.txt",
+					"mod_time": "2026-10-01T12:00:00Z", "is_dir": false, "is_symlink": false,
+				}
+				directory := map[string]any{
+					"name": "docs/", "size": 4096, "url": "./docs/",
+					"mod_time": "2026-10-01T12:00:00Z", "is_dir": true, "is_symlink": false,
+				}
+				switch mutation {
+				case "missing":
+					delete(directory, field)
+				case "null":
+					directory[field] = nil
+				case "wrong type":
+					directory[field] = []string{"invalid"}
+				}
+				body, err := json.Marshal([]map[string]any{valid, directory})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if mutation != "wrong type" && detectListing(body) != listingUnknown {
+					t.Error("malformed later entry accepted by detector")
+				}
+				entries, err := parseCaddyJSON(m, "/", body)
+				if err == nil || source.IsRetryable(err) || entries != nil {
+					t.Fatalf("entries = %+v, err = %v; want no partial entries and permanent failure", entries, err)
+				}
+			})
 		}
 	}
 }

@@ -66,6 +66,7 @@ adapter 自己控制（如 miniserve 的 `?raw=true`）。
   DOM）。无法识别的 HTML 明确失败（`unsupported HTTP directory
   listing`），绝不加入 generic HTML crawler 作为静默 fallback——
   普通网页的 `<a href>` 不是目录索引。
+- **每次 listing 必须独立证明结构完整**：`auto` 下裸 `[]` 无法区分 nginx / Caddy 与普通 JSON API，返回永久错误并提示显式配置；仅显式 nginx / caddy 接受空数组。非空 JSON 所有条目必须满足同一 profile 的必填字段，Caddy 要求 `name` / `size` / `url` / `mod_time` / `is_dir` / `is_symlink` 存在且非 null。miniserve 由 DOM 中的条目行与带类型锚点，或同一 table 的完整 `thead` 三列表头与 `tbody` 识别；parser 独立复核结构，未知 `entry-type-*`、行 / 锚点 / href 类型冲突均整轮失败。
 - **可识别 symlink 一律拒绝**（Caddy JSON 的 `is_symlink`）：
   Caddy 官方明确 file server root 不是文件系统 sandbox，root 内
   symlink 仍可能指向 root 外；与 Local / SMB 的 fail-closed 风格

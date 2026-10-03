@@ -67,14 +67,14 @@ func TestParseMiniserveHTML(t *testing.T) {
 	}
 }
 
-// 无 entry-type-* 行标记时按锚点 class / 尾斜杠推断（兼容 miniserve
-// 版本差异）。
+// 完整表头确认 profile 后，无行标记的旧形态仍须锚点类型与 href 一致。
 func TestParseMiniserveHTMLFallbackMarkers(t *testing.T) {
 	m := newRootMapper(t)
 	body := `<html><body><table>
+	<thead><tr><th class="name">Name</th><th class="size">Size</th><th class="date">Date</th></tr></thead><tbody>
 <tr><td><a class="directory" href="d/">d/</a></td></tr>
 <tr><td><a class="file" href="f.txt">f.txt</a></td></tr>
-</table></body></html>`
+</tbody></table></body></html>`
 	entries, err := parseMiniserveHTML(m, "/", []byte(body))
 	if err != nil {
 		t.Fatalf("parseMiniserveHTML fallback: %v", err)
@@ -96,10 +96,10 @@ func TestParseMiniserveHTMLSecurity(t *testing.T) {
 		body string
 		want string
 	}{
-		{"path escape", `<html><body><table><tr class="entry-type-file"><td><a href="../../x">x</a></td></tr></table></body></html>`, "malformed directory listing"},
-		{"external absolute", `<html><body><table><tr class="entry-type-file"><td><a href="https://evil.example.com/x">x</a></td></tr></table></body></html>`, "malformed directory listing"},
-		{"encoded slash", `<html><body><table><tr class="entry-type-file"><td><a href="a%2Fb">a/b</a></td></tr></table></body></html>`, "malformed directory listing"},
-		{"duplicate", `<html><body><table><tr class="entry-type-file"><td><a href="a">a</a></td></tr><tr class="entry-type-file"><td><a href="a">a</a></td></tr></table></body></html>`, "duplicate entry"},
+		{"path escape", `<html><body><table><tr class="entry-type-file"><td><a class="file" href="../../x">x</a></td></tr></table></body></html>`, "malformed directory listing"},
+		{"external absolute", `<html><body><table><tr class="entry-type-file"><td><a class="file" href="https://evil.example.com/x">x</a></td></tr></table></body></html>`, "malformed directory listing"},
+		{"encoded slash", `<html><body><table><tr class="entry-type-file"><td><a class="file" href="a%2Fb">a/b</a></td></tr></table></body></html>`, "malformed directory listing"},
+		{"duplicate", `<html><body><table><tr class="entry-type-file"><td><a class="file" href="a">a</a></td></tr><tr class="entry-type-file"><td><a class="file" href="a">a</a></td></tr></table></body></html>`, "duplicate entry"},
 	}
 	for _, tc := range cases {
 		_, err := parseMiniserveHTML(m, "/", []byte(tc.body))
@@ -130,6 +130,41 @@ func TestParseMiniserveHTMLSecurity(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].Name != "a.txt" {
 		t.Errorf("entries = %+v, want only a.txt", entries)
+	}
+}
+
+func TestParseMiniserveHTMLMalformedRows(t *testing.T) {
+	m := newRootMapper(t)
+	for _, row := range []string{
+		`<tr class="entry-type-unknown"><td><a class="directory" href="docs/">docs</a></td></tr>`,
+		`<tr class="entry-type-special"><td><a href="docs/">docs</a></td></tr>`,
+		`<tr class="entry-type-file entry-type-directory"><td><a class="file" href="docs">docs</a></td></tr>`,
+		`<tr class="entry-type-file"><td><a class="directory" href="docs/">docs</a></td></tr>`,
+		`<tr class="entry-type-directory"><td><a class="file" href="docs">docs</a></td></tr>`,
+		`<tr class="entry-type-file"><td><a class="file directory" href="docs">docs</a></td></tr>`,
+		`<tr class="entry-type-directory"><td><a class="directory" href="docs">docs</a></td></tr>`,
+		`<tr class="entry-type-file"><td><a class="file" href="docs/">docs</a></td></tr>`,
+		`<tr class="entry-type-directory"><td><a class="directory">docs</a></td></tr>`,
+		`<tr class="entry-type-file"><td>docs</td></tr>`,
+	} {
+		t.Run(row, func(t *testing.T) {
+			body := `<table><tr class="entry-type-file"><td><a class="file" href="a.txt">a</a></td></tr>` + row + `</table>`
+			entries, err := parseMiniserveHTML(m, "/", []byte(body))
+			if err == nil || source.IsRetryable(err) || entries != nil {
+				t.Fatalf("entries = %+v, err = %v; want no partial entries and permanent failure", entries, err)
+			}
+		})
+	}
+	for _, body := range []string{
+		`<script>const className = "entry-type-file";</script>`,
+		`<table><tbody></tbody></table>`,
+		`<table><tr class="entry-type-directory"><td><a class="directory" href="../">Parent</a></td></tr></table>`,
+		`<table><thead><tr><th class="name">Name</th></tr></thead><tbody></tbody></table>`,
+	} {
+		entries, err := parseMiniserveHTML(m, "/", []byte(body))
+		if err == nil || source.IsRetryable(err) || entries != nil {
+			t.Errorf("unproven empty listing %q: entries = %+v, err = %v", body, entries, err)
+		}
 	}
 }
 

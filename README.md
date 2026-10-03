@@ -34,7 +34,7 @@ SFTP 可在保存前检查连接与目录权限。SSH 私钥可保存到「凭�
 
 本地文件源可同步整个目录或其中的子目录。例如源根目录为 `/data/media`、源端路径为 `/photos`、目标为 `/backup/photos`，实际同步的是 `/data/media/photos → /backup/photos`。源目录与目标目录不能相同或互相包含；只同步普通文件和目录，发现符号链接、特殊文件或目录读取失败时，本轮同步失败。
 
-HTTP 文件源以只读目录镜像 URL 为源根（如 `https://mirror.example.com/releases/`），适合镜像站与内网文件分发。服务类型可自动识别或显式指定 nginx / Caddy / miniserve；识别到符号链接或目录索引不完整（例如 Caddy 目录条目达到 `file_limit` 上限）时本轮同步直接失败，绝不依据截断快照执行 Mirror 删除——使用 Caddy 时请把 `file_limit` 设置为与服务器一致。地址栏不支持 query 与锚点，认证请使用 Basic / Bearer 字段；服务端推荐开启精确大小输出（nginx `autoindex_format json`、miniserve `--no-symlinks`）。
+HTTP 文件源以只读目录镜像 URL 为源根（如 `https://mirror.example.com/releases/`），适合镜像站与内网文件分发。服务类型可自动识别或显式指定 nginx / Caddy / miniserve；`auto` 模式遇到空 JSON 数组 `[]` 时无法确认服务类型，会明确失败，需显式选择 nginx 或 Caddy（已识别过服务类型也不例外）。识别到符号链接或目录索引不完整（例如 Caddy 目录条目达到 `file_limit` 上限）时本轮同步直接失败，绝不依据截断快照执行 Mirror 删除——使用 Caddy 时请把 `file_limit` 设置为与服务器一致。地址栏不支持 query 与锚点，认证请使用 Basic / Bearer 字段；服务端推荐开启精确大小输出（nginx `autoindex_format json`、miniserve `--no-symlinks`）。
 
 ## 同步任务
 

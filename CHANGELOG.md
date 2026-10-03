@@ -25,6 +25,10 @@ GitHub Release 摘要一致。
 
 - HTTP 文件服务同步源（`http`）：第七种一等 Source 类型，把 nginx 目录索引（推荐 `autoindex_format json`，兼容默认 HTML）、Caddy `file_server browse`（`Accept: application/json`）与 miniserve（`?raw=true`）这类只读 HTTP 目录镜像作为同步源，与既有协议共用同一同步引擎——创建 / 编辑 / 删除 / 连接测试（自动识别服务类型并在「可达但不是目录索引」时明确失败）、远端浏览、Copy / Mirror、过滤、进度、取消、重试、通知与 MCP 查询全部可用。服务类型支持自动识别（按响应形态判定，不依赖 Server 头；空目录识别要求完整表头 / 条目结构签名，任意 JSON 状态页绝不会被当作空目录）或显式指定；认证支持无认证 / Basic / Bearer Token，认证方式与保存的凭据严格一一对应，切换认证方式时自动清除旧方式的凭据。URL 安全收敛：请求按逻辑路径逐段编码，同源且不越出 BaseURL 子树、且编码形态规范（拒绝编码 dot segment 等可被代理规范化越界的重定向）的重定向、禁用压缩表示、识别到符号链接（Caddy `is_symlink`、miniserve `symlink` 标记）即拒绝；HTML 模式的精确大小一律经 HEAD（Range 兜底）获取，绝不解析页面近似值，负大小条目直接失败；单个目录索引响应体上限 32 MiB，超限整轮失败。Caddy `browse.file_limit` 完整性保护：配置值与服务器一致时，单目录条目达到上限即整轮扫描失败，绝不依据截断快照授权 Mirror 删除。无新增数据库迁移。注意：创建 HTTP Source 后不支持无损降级到不认识该类型的旧版本，降级前请先删除 HTTP Source。
 
+### 修复
+
+- HTTP 目录索引识别与解析严格校验完整性：自动模式拒绝无法确认服务类型的空 JSON 数组并提示显式配置；Caddy 所有条目必须包含非 null 的必填字段；miniserve 按 DOM 结构识别，未知条目类型及行、锚点、链接类型冲突使整轮失败，防止不完整快照导致 Mirror 误删已管理文件。
+
 ## [0.14.0] - 2026-10-03
 
 ### 新增

@@ -5,8 +5,6 @@ import (
 	"strings"
 
 	"golang.org/x/net/html"
-
-	"tinysync/internal/source"
 )
 
 // parseMiniserveHTML 解析 miniserve ?raw=true 的简化 HTML 表：
@@ -28,42 +26,42 @@ func parseMiniserveHTML(m *mapper, dir string, body []byte) ([]rawEntry, error) 
 		parseErr error
 	)
 	visitRows(doc, func(rowClass, href, anchorClass string) {
-		// 只有 entry-type-* 行标记或 file/directory/symlink 锚点 class
-		// 的行是条目行；表头（含 ?sort=... 排序控件）、隐藏行与导航行
-		// 跳过（真实 miniserve raw 页的表头锚点是纯 query href）。
-		// symlink 锚点计入条目行是为了落入下方的 fail-closed 拒绝，
-		// 而不是被当作非条目行静默跳过。
-		isEntryRow := strings.Contains(rowClass, "entry-type-") ||
-			hasClass(anchorClass, "directory") || hasClass(anchorClass, "file") ||
-			hasClass(anchorClass, "symlink")
-		if !isEntryRow {
+		if parseErr != nil {
 			return
 		}
-		// 父目录导航行跳过。
-		if href == "../" || href == "./" || href == "/" || href == ".." {
+		rowType, err := miniserveEntryType(rowClass, "entry-type-")
+		if err != nil {
+			parseErr = err
 			return
 		}
-		// symlink 行在提取条目前拒绝：跟随会破坏 BaseURL confinement，
-		// 静默跳过会破坏 Mirror 删除安全（部分快照）。
-		if strings.Contains(rowClass, "entry-type-symlink") || hasClass(anchorClass, "symlink") {
-			if parseErr == nil {
-				parseErr = source.MarkPermanent(fmt.Errorf(
-					"miniserve entry %q is a symlink; symlinks are not supported (fail-closed)", href))
-			}
+		anchorType, err := miniserveEntryType(anchorClass, "")
+		if err != nil {
+			parseErr = err
 			return
 		}
-		isDir := strings.Contains(rowClass, "entry-type-directory") ||
-			hasClass(anchorClass, "directory")
+		if rowType == "symlink" || anchorType == "symlink" {
+			parseErr = fmt.Errorf("miniserve entry %q is a symlink; symlinks are not supported (fail-closed)", href)
+			return
+		}
+		if rowType == "" && anchorType == "" {
+			// 表头排序控件和非条目行不参与快照。
+			return
+		}
+		if anchorType == "" || (rowType != "" && rowType != anchorType) {
+			parseErr = fmt.Errorf("miniserve entry %q has conflicting or missing row/anchor type", href)
+			return
+		}
+		// 仅确认是目录的父目录导航可以跳过。
+		if anchorType == "directory" && (href == "../" || href == "./" || href == "/" || href == "..") {
+			return
+		}
 		entry, err := m.entryFromHref(dir, href)
 		if err != nil {
-			if parseErr == nil {
-				parseErr = err
-			}
+			parseErr = err
 			return
 		}
-		// 行级 class 优先于尾斜杠推断目录形态。
-		if strings.Contains(rowClass, "entry-type-") {
-			raw = append(raw, rawEntry{Name: entry.Name, IsDir: isDir})
+		if entry.IsDir != (anchorType == "directory") {
+			parseErr = fmt.Errorf("miniserve entry %q has conflicting href/type", href)
 			return
 		}
 		raw = append(raw, rawEntry{Name: entry.Name, IsDir: entry.IsDir})
@@ -71,9 +69,99 @@ func parseMiniserveHTML(m *mapper, dir string, body []byte) ([]rawEntry, error) 
 	if parseErr != nil {
 		return nil, malformedListing(dir, parseErr.Error())
 	}
-	// 零条目行是合法形态（空目录：detection 以表头结构标记兜底，
-	// 此处不再要求至少一行）。
+	// parser 独立验证结构，不能仅信任 detector；零条目必须有完整表头。
+	if !isMiniserveDOM(doc) {
+		return nil, malformedListing(dir, "missing miniserve listing structure")
+	}
 	return collect(dir, raw)
+}
+
+// miniserveEntryType 按 class token enum 解析行或锚点类型。未知
+// entry-type-* 与多个相冲突的类型一律失败，不能默认解释为文件。
+func miniserveEntryType(class, prefix string) (string, error) {
+	kind := ""
+	for _, token := range strings.Fields(class) {
+		if prefix != "" && !strings.HasPrefix(token, prefix) {
+			continue
+		}
+		typ := strings.TrimPrefix(token, prefix)
+		switch typ {
+		case "file", "directory", "symlink":
+		default:
+			if prefix == "" {
+				continue
+			}
+			return "", fmt.Errorf("unknown miniserve entry type %q", token)
+		}
+		if kind != "" && kind != typ {
+			return "", fmt.Errorf("conflicting miniserve entry types in %q", class)
+		}
+		kind = typ
+	}
+	return kind, nil
+}
+
+func detectMiniserveHTML(body []byte) bool {
+	doc, err := html.Parse(strings.NewReader(string(body)))
+	return err == nil && isMiniserveDOM(doc)
+}
+
+// isMiniserveDOM 要求真实条目行与带类型的锚点，或同一 table 内
+// thead 的 name/size/date 三列表头与 tbody。脚本、注释和文本中的
+// class 字符串不构成目录索引证据。
+func isMiniserveDOM(doc *html.Node) bool {
+	if doc.Type == html.ElementNode && doc.Data == "table" {
+		recognizedRow := false
+		visitRows(doc, func(rowClass, href, anchorClass string) {
+			// 导航行不能证明有条目；零条目只能由完整表头确认。
+			if href == "../" || href == "./" || href == "/" || href == ".." {
+				return
+			}
+			if href != "" && (hasClass(rowClass, "entry-type-file") ||
+				hasClass(rowClass, "entry-type-directory") || hasClass(rowClass, "entry-type-symlink")) &&
+				(hasClass(anchorClass, "file") || hasClass(anchorClass, "directory") || hasClass(anchorClass, "symlink")) {
+				recognizedRow = true
+			}
+		})
+		if recognizedRow || hasMiniserveHeader(doc) {
+			return true
+		}
+	}
+	for child := doc.FirstChild; child != nil; child = child.NextSibling {
+		if isMiniserveDOM(child) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasMiniserveHeader(table *html.Node) bool {
+	var head, body *html.Node
+	for child := table.FirstChild; child != nil; child = child.NextSibling {
+		if child.Type != html.ElementNode {
+			continue
+		}
+		switch child.Data {
+		case "thead":
+			head = child
+		case "tbody":
+			body = child
+		}
+	}
+	return head != nil && body != nil && hasHeaderClass(head, "name") &&
+		hasHeaderClass(head, "size") && hasHeaderClass(head, "date")
+}
+
+func hasHeaderClass(node *html.Node, class string) bool {
+	if node.Type == html.ElementNode && node.Data == "th" && hasClass(attrOf(node, "class"), class) {
+		return true
+	}
+	for child := node.FirstChild; child != nil; child = child.NextSibling {
+		if hasHeaderClass(child, class) {
+			return true
+		}
+	}
+	return false
 }
 
 // visitRows 遍历 <tr>：解析行 class、行内首个 <a href> 与锚点 class。
@@ -81,9 +169,7 @@ func visitRows(n *html.Node, fn func(rowClass, href, anchorClass string)) {
 	if n.Type == html.ElementNode && n.Data == "tr" {
 		rowClass := attrOf(n, "class")
 		href, anchorClass := firstAnchor(n)
-		if href != "" {
-			fn(rowClass, href, anchorClass)
-		}
+		fn(rowClass, href, anchorClass)
 	}
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
 		visitRows(c, fn)

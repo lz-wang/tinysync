@@ -18,6 +18,7 @@ const (
 	listingNginxHTML
 	listingCaddyJSON
 	listingMiniserveHTML
+	listingEmptyJSON
 )
 
 // String 供错误消息与测试断言使用。
@@ -31,6 +32,8 @@ func (k listingKind) String() string {
 		return "caddy-json"
 	case listingMiniserveHTML:
 		return "miniserve-html"
+	case listingEmptyJSON:
+		return "ambiguous-empty-json"
 	default:
 		return "unknown"
 	}

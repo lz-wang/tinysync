@@ -24,6 +24,24 @@ type caddyEntry struct {
 	IsSymlink bool      `json:"is_symlink"`
 }
 
+var caddyRequiredFields = []string{"name", "size", "url", "mod_time", "is_dir", "is_symlink"}
+
+// UnmarshalJSON 逐条验证 wire schema；缺失 / null 字段不能落入 Go
+// 零值，尤其 is_dir 缺失会漏扫 managed descendants。
+func (e *caddyEntry) UnmarshalJSON(body []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return err
+	}
+	for _, field := range caddyRequiredFields {
+		if !hasRequiredFields(fields, field) {
+			return fmt.Errorf("caddy entry missing or null required field %q", field)
+		}
+	}
+	type wireEntry caddyEntry
+	return json.Unmarshal(body, (*wireEntry)(e))
+}
+
 // parseCaddyJSON 解析 Caddy JSON listing（顶层数组）。可识别的
 // symlink 一律拒绝（fail-closed，与 Local / SMB 同一风格）：Caddy
 // 官方明确 file server root 不是文件系统 sandbox，root 内 symlink
@@ -33,6 +51,9 @@ func parseCaddyJSON(m *mapper, dir string, body []byte) ([]rawEntry, error) {
 	var entries []caddyEntry
 	if err := json.Unmarshal(body, &entries); err != nil {
 		return nil, malformedListing(dir, fmt.Sprintf("invalid caddy JSON: %v", err))
+	}
+	if entries == nil {
+		return nil, malformedListing(dir, "invalid caddy JSON: expected an array, got null")
 	}
 	raw := make([]rawEntry, 0, len(entries))
 	for _, e := range entries {
