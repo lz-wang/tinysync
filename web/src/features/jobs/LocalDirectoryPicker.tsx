@@ -23,6 +23,7 @@ import {
     Typography,
 } from '@mui/material'
 import { useCallback, useEffect, useState } from 'react'
+import type { LocalDirectoriesResponse } from '../../api'
 import { createLocalDirectory, listLocalDirectoriesWithOptions } from '../../api'
 
 // LocalDirectoryPicker 浏览运行 TinySync 的主机目录；只列出可进入的目录，
@@ -39,7 +40,8 @@ export default function LocalDirectoryPicker({
     onPick: (path: string) => void
 }) {
     const [path, setPath] = useState('')
-    const [directories, setDirectories] = useState<Array<{ path: string }>>([])
+    const [parentPath, setParentPath] = useState('')
+    const [directories, setDirectories] = useState<LocalDirectoriesResponse['directories']>([])
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [showHidden, setShowHidden] = useState(false)
@@ -53,6 +55,7 @@ export default function LocalDirectoryPicker({
         return listLocalDirectoriesWithOptions(target, includeHidden)
             .then(response => {
                 setPath(response.path)
+                setParentPath(response.parent ?? '')
                 setDirectories(response.directories)
             })
             .catch(reason => setError(reason instanceof Error ? reason.message : String(reason)))
@@ -66,8 +69,6 @@ export default function LocalDirectoryPicker({
         setShowHidden(false)
         void browse(initialPath.trim(), false)
     }, [browse, initialPath, open])
-
-    const parentPath = path === '' ? '' : path.replace(/[\\/][^\\/]+$/, '') || path
 
     const createFolder = async () => {
         if (path === '' || folderName.trim() === '') {
@@ -141,7 +142,7 @@ export default function LocalDirectoryPicker({
                     </Box>
                 ) : (
                     <List disablePadding sx={{ flex: 1, overflowY: 'auto' }}>
-                        {parentPath !== '' && parentPath !== path && (
+                        {parentPath !== '' && (
                             <ListItemButton onClick={() => void browse(parentPath, showHidden)}>
                                 <ListItemIcon>
                                     <ArrowUpwardOutlinedIcon />
@@ -157,9 +158,7 @@ export default function LocalDirectoryPicker({
                                 <ListItemIcon>
                                     <FolderOutlinedIcon color="primary" />
                                 </ListItemIcon>
-                                <ListItemText
-                                    primary={directory.path.split(/[\\/]/).filter(Boolean).at(-1)}
-                                />
+                                <ListItemText primary={directory.name} />
                             </ListItemButton>
                         ))}
                     </List>

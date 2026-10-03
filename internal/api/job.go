@@ -53,10 +53,12 @@ type jobHandlers struct {
 
 type localDirectoryDTO struct {
 	Path string `json:"path"`
+	Name string `json:"name"`
 }
 
 type localDirectoriesDTO struct {
 	Path        string              `json:"path"`
+	Parent      string              `json:"parent,omitempty"`
 	Directories []localDirectoryDTO `json:"directories"`
 }
 
@@ -106,10 +108,14 @@ func (h *jobHandlers) listLocalDirectories(c *gin.Context) {
 	directories := make([]localDirectoryDTO, 0)
 	for _, entry := range entries {
 		if entry.IsDir() && (showHidden || !strings.HasPrefix(entry.Name(), ".")) {
-			directories = append(directories, localDirectoryDTO{Path: filepath.Join(resolved, entry.Name())})
+			directories = append(directories, localDirectoryDTO{Path: filepath.Join(resolved, entry.Name()), Name: entry.Name()})
 		}
 	}
-	c.JSON(http.StatusOK, localDirectoriesDTO{Path: resolved, Directories: directories})
+	parent := filepath.Dir(resolved)
+	if parent == resolved {
+		parent = ""
+	}
+	c.JSON(http.StatusOK, localDirectoriesDTO{Path: resolved, Parent: parent, Directories: directories})
 }
 
 // createLocalDirectory 在管理员当前浏览的目录中建立直接子目录。名称只允许
@@ -144,7 +150,7 @@ func (h *jobHandlers) createLocalDirectory(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("create local directory: %v", err)})
 		return
 	}
-	c.JSON(http.StatusCreated, localDirectoryDTO{Path: created})
+	c.JSON(http.StatusCreated, localDirectoryDTO{Path: created, Name: name})
 }
 
 // scheduleDTO 是调度配置的 discriminated object：按 type 消费互斥字段，

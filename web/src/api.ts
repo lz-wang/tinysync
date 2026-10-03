@@ -510,7 +510,8 @@ export interface JobsListResponse {
 
 export interface LocalDirectoriesResponse {
     path: string
-    directories: Array<{ path: string }>
+    parent?: string
+    directories: Array<{ path: string; name: string }>
 }
 
 // listLocalDirectories 读取运行 TinySync 主机上的直接子目录，供管理员选择 LocalRoot。

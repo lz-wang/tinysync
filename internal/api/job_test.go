@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -152,12 +153,15 @@ func TestListLocalDirectoriesAPI(t *testing.T) {
 	if body["path"] != canonicalRoot {
 		t.Errorf("path = %q, want %q", body["path"], canonicalRoot)
 	}
+	if body["parent"] != filepath.Dir(canonicalRoot) {
+		t.Errorf("parent = %q, want %q", body["parent"], filepath.Dir(canonicalRoot))
+	}
 	directories, ok := body["directories"].([]any)
 	if !ok || len(directories) != 1 {
 		t.Fatalf("directories = %#v, want one directory", body["directories"])
 	}
 	entry, ok := directories[0].(map[string]any)
-	if !ok || entry["path"] != filepath.Join(canonicalRoot, "alpha") {
+	if !ok || entry["path"] != filepath.Join(canonicalRoot, "alpha") || entry["name"] != "alpha" {
 		t.Errorf("directory entry = %#v, want alpha", directories[0])
 	}
 
@@ -1076,5 +1080,37 @@ func TestRunProgressAPI(t *testing.T) {
 	}
 	if detail["status"] != string(syncjob.RunSucceeded) {
 		t.Errorf("final status = %v, want succeeded", detail["status"])
+	}
+}
+
+// 使用当前平台原生根目录，macOS/Linux 覆盖 /Users 或 /tmp → /，
+// Windows 原生运行时覆盖盘符顶层目录 → drive root。
+func TestListLocalDirectoriesAPIRootNavigation(t *testing.T) {
+	router := newJobRouter(t, fakeJobRemote{})
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	top := base
+	for filepath.Dir(filepath.Dir(top)) != filepath.Dir(top) {
+		top = filepath.Dir(top)
+	}
+	root := filepath.Dir(top)
+	for _, requested := range []string{top, root} {
+		rec := doJSON(t, router, "GET", "/api/v1/jobs/local-directories?path="+url.QueryEscape(requested), "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("list %q = %d: %s", requested, rec.Code, rec.Body.String())
+		}
+		body := decodeJSON(t, rec)
+		if body["path"] != requested {
+			t.Fatalf("path = %q; want %q", body["path"], requested)
+		}
+		if requested == root {
+			if _, present := body["parent"]; present {
+				t.Fatalf("root response has parent: %#v", body["parent"])
+			}
+		} else if body["parent"] != root {
+			t.Fatalf("top-level parent = %q; want root %q", body["parent"], root)
+		}
 	}
 }
