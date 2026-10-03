@@ -85,7 +85,8 @@ func TestParseMiniserveHTMLFallbackMarkers(t *testing.T) {
 	}
 }
 
-// miniserve 安全矩阵：越子树、编码分隔符、外部源、无条目行。
+// miniserve 安全矩阵：越子树、编码分隔符、外部源、重复条目；空表
+// （仅表头）解析为零条目而非 malformed。
 func TestParseMiniserveHTMLSecurity(t *testing.T) {
 	m := newRootMapper(t)
 	cases := []struct {
@@ -96,7 +97,6 @@ func TestParseMiniserveHTMLSecurity(t *testing.T) {
 		{"path escape", `<html><body><table><tr class="entry-type-file"><td><a href="../../x">x</a></td></tr></table></body></html>`, "malformed directory listing"},
 		{"external absolute", `<html><body><table><tr class="entry-type-file"><td><a href="https://evil.example.com/x">x</a></td></tr></table></body></html>`, "malformed directory listing"},
 		{"encoded slash", `<html><body><table><tr class="entry-type-file"><td><a href="a%2Fb">a/b</a></td></tr></table></body></html>`, "malformed directory listing"},
-		{"no rows", `<html><body><table><thead><tr><th>Name</th></tr></thead></table></body></html>`, "no entry rows"},
 		{"duplicate", `<html><body><table><tr class="entry-type-file"><td><a href="a">a</a></td></tr><tr class="entry-type-file"><td><a href="a">a</a></td></tr></table></body></html>`, "duplicate entry"},
 	}
 	for _, tc := range cases {
@@ -108,5 +108,25 @@ func TestParseMiniserveHTMLSecurity(t *testing.T) {
 		if !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: error = %v, want containing %q", tc.name, err, tc.want)
 		}
+	}
+
+	// 真实 miniserve 空目录 raw 页（表头 + 排序控件，无条目行）。
+	empty := `<!DOCTYPE html><html><body><table><thead><th class="name">Name</th><th class="size">Size</th><th class="date">Last modification</th></thead><tbody></tbody></table></body></html>`
+	entries, err := parseMiniserveHTML(m, "/", []byte(empty))
+	if err != nil {
+		t.Fatalf("empty dir listing: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("empty dir entries = %+v, want none", entries)
+	}
+
+	// 表头排序控件（纯 query href）不构成条目。
+	withSort := `<!DOCTYPE html><html><body><table><thead><th class="name"><a href="?sort=name&order=asc">Name</a></th></thead><tbody><tr class="entry-type-file"><td><p><a class="file" href="a.txt">a.txt</a></p></td></tr></tbody></table></body></html>`
+	entries, err = parseMiniserveHTML(m, "/", []byte(withSort))
+	if err != nil {
+		t.Fatalf("sort header listing: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name != "a.txt" {
+		t.Errorf("entries = %+v, want only a.txt", entries)
 	}
 }

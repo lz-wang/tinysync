@@ -20,20 +20,23 @@ func parseMiniserveHTML(m *mapper, dir string, body []byte) ([]rawEntry, error) 
 	}
 	var (
 		raw      []rawEntry
-		sawRow   bool
 		parseErr error
 	)
 	visitRows(doc, func(rowClass, href, anchorClass string) {
+		// 只有 entry-type-* 行标记或 file/directory 锚点 class 的行是
+		// 条目行；表头（含 ?sort=... 排序控件）、隐藏行与导航行跳过
+		//（真实 miniserve raw 页的表头锚点是纯 query href）。
+		isEntryRow := strings.Contains(rowClass, "entry-type-") ||
+			hasClass(anchorClass, "directory") || hasClass(anchorClass, "file")
+		if !isEntryRow {
+			return
+		}
 		// 父目录导航行跳过。
 		if href == "../" || href == "./" || href == "/" || href == ".." {
 			return
 		}
 		isDir := strings.Contains(rowClass, "entry-type-directory") ||
-			strings.Contains(anchorClass, "directory")
-		// 无 entry-type-* 行标记也无 anchor class 的行不是条目
-		//（表头 / 隐藏行）；带 entry-type-file 但缺锚点的行同样
-		// 形态不可信，交给 href 解析统一拒绝。
-		sawRow = true
+			hasClass(anchorClass, "directory")
 		entry, err := m.entryFromHref(dir, href)
 		if err != nil {
 			if parseErr == nil {
@@ -51,9 +54,8 @@ func parseMiniserveHTML(m *mapper, dir string, body []byte) ([]rawEntry, error) 
 	if parseErr != nil {
 		return nil, malformedListing(dir, parseErr.Error())
 	}
-	if !sawRow {
-		return nil, malformedListing(dir, "miniserve HTML has no entry rows")
-	}
+	// 零条目行是合法形态（空目录：detection 以表头结构标记兜底，
+	// 此处不再要求至少一行）。
 	return collect(dir, raw)
 }
 
@@ -92,6 +94,17 @@ func attrOf(n *html.Node, key string) string {
 		}
 	}
 	return ""
+}
+
+// hasClass 报告空白分隔的 class 列表是否含指定 token（精确词匹配，
+// 避免 "file" 误匹配 "profile"）。
+func hasClass(class, want string) bool {
+	for _, token := range strings.Fields(class) {
+		if token == want {
+			return true
+		}
+	}
+	return false
 }
 
 // miniserveRawURL 为目录 listing URL 附加 ?raw=true（listing query 由

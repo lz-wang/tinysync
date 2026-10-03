@@ -48,6 +48,7 @@ BENCH_PACKAGES := \
 	./internal/source/sftp/ \
 	./internal/source/smb/ \
 	./internal/source/s3/ \
+	./internal/source/http/ \
 	./internal/source/githubrelease/ \
 	./internal/syncjob/ \
 	./internal/syncjob/sqlite/
@@ -257,6 +258,24 @@ integration-smb:
 		TINYSYNC_IT_SMB_DOMAIN="$(TINYSYNC_IT_SMB_DOMAIN)" \
 		$(GO) test -timeout 300s -v -run 'TestIntegrationSMB|TestSyncAcrossProtocols/smb' ./internal/e2e/
 
+## Run HTTP file-server integration tests against a real nginx / Caddy /
+## miniserve service. Usage: make integration-http \
+##          TINYSYNC_IT_HTTP_BASE_URL=http://localhost:18080/ \
+##          TINYSYNC_IT_HTTP_ROOT=/tmp/tinysync-http-it \
+##          [TINYSYNC_IT_HTTP_LISTING=auto] [TINYSYNC_IT_HTTP_USERNAME=... \
+##          TINYSYNC_IT_HTTP_PASSWORD=...] [TINYSYNC_IT_HTTP_FILE_LIMIT=...]
+## 未设置 BASE_URL 时自动跳过；同时运行协议矩阵中的 http_real fixture。
+integration-http:
+	@echo "[tinysync] HTTP file-server integration"
+	@$(GOENV) \
+		TINYSYNC_IT_HTTP_BASE_URL="$(TINYSYNC_IT_HTTP_BASE_URL)" \
+		TINYSYNC_IT_HTTP_ROOT="$(TINYSYNC_IT_HTTP_ROOT)" \
+		TINYSYNC_IT_HTTP_LISTING="$(TINYSYNC_IT_HTTP_LISTING)" \
+		TINYSYNC_IT_HTTP_USERNAME="$(TINYSYNC_IT_HTTP_USERNAME)" \
+		TINYSYNC_IT_HTTP_PASSWORD="$(TINYSYNC_IT_HTTP_PASSWORD)" \
+		TINYSYNC_IT_HTTP_FILE_LIMIT="$(TINYSYNC_IT_HTTP_FILE_LIMIT)" \
+		$(GO) test -timeout 300s -v -run 'TestIntegrationHTTP|TestSyncAcrossProtocols/http_real' ./internal/e2e/
+
 ## Generate backend coverage files for Codecov and local inspection.
 coverage:
 	@mkdir -p "$(COVERAGE_DIR)"
@@ -450,6 +469,7 @@ help:
 	@echo "  make hardening      Hardening quality gate + short fuzz"
 	@echo "  make integration      Protocol integration (real S3/Samba/GitHub, env-gated)"
 	@echo "  make integration-smb  SMB integration (real Samba, env-gated)"
+	@echo "  make integration-http HTTP integration (real nginx/Caddy/miniserve, env-gated)"
 	@echo "  make benchmark      Run performance benchmarks"
 	@echo "  make benchmark-record NAME=x  Record results + metadata"
 	@echo "  make benchmark-compare BASE= NEW=  benchstat comparison"

@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"tinysync/internal/source"
@@ -37,8 +38,9 @@ func parseCaddyJSON(m *mapper, dir string, body []byte) ([]rawEntry, error) {
 			return nil, source.MarkPermanent(fmt.Errorf(
 				"caddy entry %q is a symlink; symlinks are not supported (fail-closed)", joinLogical(dir, e.Name)))
 		}
+		// 真实 Caddy 的目录名带尾 "/"（与 nginx JSON 同一约定），统一剥掉。
 		entry := rawEntry{
-			Name:       e.Name,
+			Name:       strings.TrimSuffix(e.Name, "/"),
 			IsDir:      e.IsDir,
 			SizeKnown:  true,
 			Size:       e.Size,

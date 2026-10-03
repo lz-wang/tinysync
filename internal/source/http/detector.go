@@ -21,6 +21,11 @@ func detectListing(body []byte) listingKind {
 		bytes.Contains(trimmed, []byte("entry-type-file")) {
 		return listingMiniserveHTML
 	}
+	// 空目录的 miniserve raw 页没有条目行，只剩表头结构标记
+	//（真实输出：<thead><th class="name">Name</th>…）。
+	if bytes.Contains(trimmed, []byte(`<th class="name">`)) {
+		return listingMiniserveHTML
+	}
 	// nginx autoindex HTML 的稳定结构标记：标题「Index of /」。
 	if bytes.Contains(trimmed, []byte("<title>Index of /")) {
 		return listingNginxHTML

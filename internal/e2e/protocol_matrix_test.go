@@ -70,6 +70,7 @@ func protocolFixtures() []protocolCase {
 		{name: "smb", fixture: newSMBFixture},
 		{name: "local", fixture: newLocalFixture},
 		{name: "http", fixture: newHTTPFixture},
+		{name: "http_real", fixture: newHTTPRealFixture},
 	}
 }
 

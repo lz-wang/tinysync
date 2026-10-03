@@ -104,7 +104,8 @@ func (r *requester) do(req *http.Request) (*http.Response, error) {
 
 // directoryURL / fileURL 转发到 mapper。
 func (r *requester) directoryURL(logical string) string { return r.base.directoryURL(logical) }
-func (r *requester) fileURL(logical string) string      { return r.base.fileURL(logical) }
+
+func (r *requester) fileURL(logical string) string { return r.base.fileURL(logical) }
 
 // CloseIdleConnections 释放 transport 上的空闲连接（Remote.Close 调用）。
 func (r *requester) CloseIdleConnections() {

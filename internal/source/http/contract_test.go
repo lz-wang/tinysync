@@ -32,7 +32,7 @@ type fakeCaddyServer struct {
 	srv     *httptest.Server
 }
 
-func newFakeCaddyServer(t *testing.T) *fakeCaddyServer {
+func newFakeCaddyServer(t testing.TB) *fakeCaddyServer {
 	t.Helper()
 	f := &fakeCaddyServer{
 		files:    map[string]string{},

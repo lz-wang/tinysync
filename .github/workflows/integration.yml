@@ -1,11 +1,12 @@
 name: Protocol Integration
 
 # 可复用的协议 integration gate：真实服务容器（S3 job 用 Silo 容器
-# （MinIO fork），SMB job 用 Samba 容器），验证各协议 adapter 与同一
-# Sync Engine 的真实端到端行为。Build 与 Release workflow 共用本
-# workflow，避免维护两份装配；远端发布门禁因此与 main 的持续集成
-# 使用同一套 integration 证据。SFTP / WebDAV 的真实协议栈测试由
-# in-process server 覆盖、随 make check 运行，不在本 gate 内。
+# （MinIO fork），SMB job 用 Samba 容器，HTTP job 用 nginx / Caddy /
+# miniserve 容器），验证各协议 adapter 与同一 Sync Engine 的真实
+# 端到端行为。Build 与 Release workflow 共用本 workflow，避免维护
+# 两份装配；远端发布门禁因此与 main 的持续集成使用同一套
+# integration 证据。SFTP / WebDAV 的真实协议栈测试由 in-process
+# server 覆盖、随 make check 运行，不在本 gate 内。
 #
 # ref 为必填输入：可复用 workflow 的 github context 始终跟随调用方
 # 事件，checkout 不显式指定 ref 时会检出触发调用方的 commit。Build
@@ -181,3 +182,93 @@ jobs:
       - name: Stop Samba service
         if: always()
         run: docker rm -f samba
+
+  # HTTP 文件源集成：三个真实 Web Server（nginx JSON autoindex、
+  # Caddy file_server browse、miniserve raw listing）分别验证同一
+  # adapter 的 listing 兼容性与 Copy/Mirror 协议矩阵（http_real
+  # fixture）。miniserve 启用 basic auth（真实 401 路径）；Caddy 以
+  # 小 file_limit 单独复跑 fail-closed 场景（截断 listing 不授权
+  # Mirror 删除）。任一步骤失败即终止（后续服务器不再执行），日志
+  # 直接指向出问题的服务器。
+  http:
+    name: HTTP file-server integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        ref: ${{ inputs.ref }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+
+      # --- nginx：autoindex_format json（推荐形态），auto 探测。
+      # 显式 root：新版官方镜像 http 级默认 root 是 /etc/nginx/html。
+      - name: Run HTTP integration (nginx JSON autoindex)
+        env:
+          TINYSYNC_IT_HTTP_BASE_URL: http://127.0.0.1:18081/
+          TINYSYNC_IT_HTTP_ROOT: /tmp/tinysync-http-nginx
+          TINYSYNC_IT_HTTP_LISTING: auto
+        run: |
+          install -d -m 0777 /tmp/tinysync-http-nginx
+          printf 'server {\n  listen 80;\n  root /usr/share/nginx/html;\n  location / {\n    autoindex on;\n    autoindex_format json;\n  }\n}\n' > /tmp/tinysync-http-nginx.conf
+          docker run -d --name http-nginx \
+            -p 127.0.0.1:18081:80 \
+            -v /tmp/tinysync-http-nginx:/usr/share/nginx/html:ro \
+            -v /tmp/tinysync-http-nginx.conf:/etc/nginx/conf.d/default.conf:ro \
+            nginx:stable
+          for _ in $(seq 1 30); do
+            if (echo > /dev/tcp/127.0.0.1/18081) 2>/dev/null; then break; fi
+            sleep 2
+          done
+          make integration-http
+          docker rm -f http-nginx
+
+      # --- Caddy：file_server browse + 小 file_limit（fail-closed 场景）。
+      # file_limit 是 browse 子指令自身的块参数。
+      - name: Run HTTP integration (Caddy browse)
+        env:
+          TINYSYNC_IT_HTTP_BASE_URL: http://127.0.0.1:18082/
+          TINYSYNC_IT_HTTP_ROOT: /tmp/tinysync-http-caddy
+          TINYSYNC_IT_HTTP_LISTING: auto
+          TINYSYNC_IT_HTTP_FILE_LIMIT: "5"
+        run: |
+          install -d -m 0777 /tmp/tinysync-http-caddy
+          printf ':80 {\n  root * /srv\n  file_server {\n    browse {\n      file_limit 5\n    }\n  }\n}\n' > /tmp/Caddyfile
+          docker run -d --name http-caddy \
+            -p 127.0.0.1:18082:80 \
+            -v /tmp/tinysync-http-caddy:/srv \
+            -v /tmp/Caddyfile:/etc/caddy/Caddyfile:ro \
+            caddy:2
+          for _ in $(seq 1 30); do
+            if (echo > /dev/tcp/127.0.0.1/18082) 2>/dev/null; then break; fi
+            sleep 2
+          done
+          # file_limit=5：Copy/Mirror 矩阵（种子文件数 < 5 时正常）+
+          # 达上限 fail-closed 场景（file-limit 测试自建恰好 5 条目）。
+          make integration-http
+          docker rm -f http-caddy
+
+      # --- miniserve：--no-symlinks + basic auth（真实 401 路径）。
+      - name: Run HTTP integration (miniserve)
+        env:
+          TINYSYNC_IT_HTTP_BASE_URL: http://127.0.0.1:18083/
+          TINYSYNC_IT_HTTP_ROOT: /tmp/tinysync-http-miniserve
+          TINYSYNC_IT_HTTP_LISTING: auto
+          TINYSYNC_IT_HTTP_USERNAME: tinysync
+          TINYSYNC_IT_HTTP_PASSWORD: integration-secret
+        run: |
+          install -d -m 0777 /tmp/tinysync-http-miniserve
+          docker run -d --name http-miniserve \
+            -p 127.0.0.1:18083:8080 \
+            -v /tmp/tinysync-http-miniserve:/srv \
+            svenstaro/miniserve:latest \
+            --no-symlinks --auth tinysync:integration-secret /srv
+          for _ in $(seq 1 30); do
+            if (echo > /dev/tcp/127.0.0.1/18083) 2>/dev/null; then break; fi
+            sleep 2
+          done
+          sleep 2
+          make integration-http
+          docker rm -f http-miniserve

@@ -1,6 +1,6 @@
 # TinySync
 
-TinySync 是面向 HomeLab 的文件同步服务，将 WebDAV、S3、SFTP、SMB、GitHub Release 或运行主机上的文件单向同步到本地。内置中文 Web 界面，支持定时同步、运行进度与历史、完成通知，以及通过公开链接分享本地文件。
+TinySync 是面向 HomeLab 的文件同步服务，将 WebDAV、S3、SFTP、SMB、GitHub Release、HTTP 文件服务或运行主机上的文件单向同步到本地。内置中文 Web 界面，支持定时同步、运行进度与历史、完成通知，以及通过公开链接分享本地文件。
 
 ## 安装与开始使用
 
@@ -28,10 +28,13 @@ TinySync 是面向 HomeLab 的文件同步服务，将 WebDAV、S3、SFTP、SMB�
 | SMB / CIFS | 主机、共享名、共享内路径、用户名与密码，可填写域 |
 | GitHub Release | 仓库地址，选择最新版本、指定 Tag、最近 N 个或全部版本；私有仓库需提供 Token |
 | 本地文件 | 运行主机上的源根目录，无需凭据，可在界面中浏览、选择或创建目录 |
+| HTTP 文件服务 | 只读目录镜像 URL，支持 nginx 目录索引、Caddy `file_server browse` 与 miniserve，可自动识别服务类型，支持无认证 / Basic / Bearer Token |
 
 SFTP 可在保存前检查连接与目录权限。SSH 私钥可保存到「凭据」中供多个同步源引用，更新一条凭据后，引用它的源在下一轮同步使用新私钥。GitHub Release 支持「测试并预览」版本和制品，预发布版本默认排除。
 
 本地文件源可同步整个目录或其中的子目录。例如源根目录为 `/data/media`、源端路径为 `/photos`、目标为 `/backup/photos`，实际同步的是 `/data/media/photos → /backup/photos`。源目录与目标目录不能相同或互相包含；只同步普通文件和目录，发现符号链接、特殊文件或目录读取失败时，本轮同步失败。
+
+HTTP 文件源以只读目录镜像 URL 为源根（如 `https://mirror.example.com/releases/`），适合镜像站与内网文件分发。服务类型可自动识别或显式指定 nginx / Caddy / miniserve；识别到符号链接或目录索引不完整（例如 Caddy 目录条目达到 `file_limit` 上限）时本轮同步直接失败，绝不依据截断快照执行 Mirror 删除——使用 Caddy 时请把 `file_limit` 设置为与服务器一致。地址栏不支持 query 与锚点，认证请使用 Basic / Bearer 字段；服务端推荐开启精确大小输出（nginx `autoindex_format json`、miniserve `--no-symlinks`）。
 
 ## 同步任务
 

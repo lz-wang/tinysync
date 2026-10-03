@@ -46,6 +46,7 @@ func classifyResponseError(op string, resp *http.Response) error {
 type redirectError struct{ err error }
 
 func (e *redirectError) Error() string { return e.err.Error() }
+
 func (e *redirectError) Unwrap() error { return e.err }
 
 // classifyTransportError 分类传输层错误：ctx 取消原样透传；TLS 证书
