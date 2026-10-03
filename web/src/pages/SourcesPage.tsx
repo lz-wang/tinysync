@@ -35,6 +35,7 @@ import { Link as RouterLink } from 'react-router-dom'
 import {
     deleteSource,
     type GitHubReleaseConfig,
+    type LocalConfig,
     listSources,
     type S3Config,
     type SFTPConfig,
@@ -74,8 +75,17 @@ export default function SourcesPage() {
         setTesting(source.id)
         try {
             const result = await testSource(source.id)
-            if (result.ok) toast.success(`“${source.name}”连接成功，耗时 ${result.latency_ms} ms`)
-            else toast.error(`“${source.name}”连接失败：${result.error ?? '未知错误'}`)
+            if (result.ok) {
+                toast.success(
+                    source.type === 'local'
+                        ? `“${source.name}”本地目录可访问，耗时 ${result.latency_ms} ms`
+                        : `“${source.name}”连接成功，耗时 ${result.latency_ms} ms`,
+                )
+            } else {
+                toast.error(
+                    `“${source.name}”${source.type === 'local' ? '本地目录访问' : '连接'}失败：${result.error ?? '未知错误'}`,
+                )
+            }
         } catch (e) {
             toast.error(e instanceof Error ? e.message : String(e))
         } finally {
@@ -171,7 +181,7 @@ export default function SourcesPage() {
                 <DialogTitle>删除已选同步源？</DialogTitle>
                 <DialogContent>
                     <Typography>
-                        确认删除 {batchDeleting?.length ?? 0} 个同步源？不会删除远端文件。
+                        确认删除 {batchDeleting?.length ?? 0} 个同步源？不会删除源端文件。
                     </Typography>
                 </DialogContent>
                 <DialogActions>
@@ -332,6 +342,7 @@ function SourceTable({
                     <MenuItem value="sftp">SFTP</MenuItem>
                     <MenuItem value="smb">SMB</MenuItem>
                     <MenuItem value="github_release">GitHub Release</MenuItem>
+                    <MenuItem value="local">本地</MenuItem>
                 </TextField>
                 <TextField
                     select
@@ -458,7 +469,13 @@ function SourceTable({
                                             spacing={0.25}
                                             sx={{ justifyContent: 'center' }}
                                         >
-                                            <Tooltip title="测试连接">
+                                            <Tooltip
+                                                title={
+                                                    source.type === 'local'
+                                                        ? '测试本地目录'
+                                                        : '测试连接'
+                                                }
+                                            >
                                                 <span>
                                                     <IconButton
                                                         size="small"
@@ -531,6 +548,8 @@ function SourceTable({
 function locationSummary(source: SourceResponse): string {
     const config = source.config
     switch (source.type) {
+        case 'local':
+            return (config as LocalConfig).root
         case 'webdav':
             return (config as WebDAVConfig).endpoint ?? ''
         case 's3': {

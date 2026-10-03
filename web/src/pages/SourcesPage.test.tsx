@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SourceResponse } from '../api'
@@ -74,4 +74,27 @@ describe('SourcesPage 文件浏览入口', () => {
         await waitFor(() => expect(mocked.listSources).toHaveBeenCalled())
         expect(screen.queryByRole('link')).toBeNull()
     })
+})
+
+it('本地源显示 LOCAL 与原生路径，并可筛选和直达源端文件树', async () => {
+    mocked.listSources.mockResolvedValue([
+        webdavSource,
+        {
+            ...webdavSource,
+            id: 'src-local',
+            name: '本地照片',
+            type: 'local',
+            config: { root: '/data/photos' },
+            credential_state: {},
+        },
+    ])
+    renderPage()
+    const link = await screen.findByRole('link', { name: '本地照片' })
+    expect(screen.getByText('LOCAL')).toBeTruthy()
+    expect(screen.getByText('/data/photos')).toBeTruthy()
+    expect(link.getAttribute('href')).toContain('source=src-local')
+    fireEvent.mouseDown(screen.getByRole('combobox', { name: '类型' }))
+    fireEvent.click(await screen.findByRole('option', { name: '本地' }))
+    await waitFor(() => expect(screen.queryByRole('link', { name: 'NAS WebDAV' })).toBeNull())
+    expect(screen.getByRole('link', { name: '本地照片' })).toBeTruthy()
 })

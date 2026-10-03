@@ -128,7 +128,7 @@ export default function RemotePathPicker({
         >
             <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 2, py: 1 }}>
                 <Typography component="span" variant="h6" sx={{ flexGrow: 1 }}>
-                    选择远端目录
+                    选择源端目录
                 </Typography>
                 <FormControlLabel
                     sx={{ mr: 0 }}

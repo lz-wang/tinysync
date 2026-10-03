@@ -3,8 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CredentialResponse, SFTPConfig, SMBConfig, SourceResponse } from '../../api'
 import {
     checkSFTPSource,
+    createLocalDirectory,
     createSource,
     listCredentials,
+    listLocalDirectoriesWithOptions,
     promoteSourceCredential,
     updateSource,
 } from '../../api'
@@ -17,6 +19,8 @@ vi.mock('../../api', () => ({
     createRemoteDirectory: vi.fn(),
     createSource: vi.fn(),
     listCredentials: vi.fn(),
+    listLocalDirectoriesWithOptions: vi.fn(),
+    createLocalDirectory: vi.fn(),
     listRemoteFiles: vi.fn(),
     listSources: vi.fn(),
     promoteSourceCredential: vi.fn(),
@@ -28,6 +32,8 @@ const mocked = vi.mocked({
     createRemoteDirectory: await import('../../api').then(m => m.createRemoteDirectory),
     createSource,
     listCredentials,
+    listLocalDirectoriesWithOptions,
+    createLocalDirectory,
     listRemoteFiles: await import('../../api').then(m => m.listRemoteFiles),
     listSources: await import('../../api').then(m => m.listSources),
     promoteSourceCredential,
@@ -105,7 +111,7 @@ describe('SourceDialog SFTP 根目录检查', () => {
 
     it('创建前使用最新表单检查，不依赖名称、不保存同步源', async () => {
         await fillPasswordForm()
-        fireEvent.change(screen.getByLabelText(/远端根目录/), { target: { value: '/srv/files' } })
+        fireEvent.change(screen.getByLabelText(/源端路径/), { target: { value: '/srv/files' } })
         fireEvent.click(screen.getByRole('button', { name: '检查' }))
         await waitFor(() =>
             expect(mocked.checkSFTPSource).toHaveBeenCalledWith({
@@ -152,7 +158,7 @@ describe('SourceDialog SFTP 根目录检查', () => {
 
     it('编辑使用提案根目录及引用，未改动的秘密字段不回填', async () => {
         renderDialog({ source: referencingSource })
-        fireEvent.change(screen.getByLabelText(/远端根目录/), { target: { value: '/new-root' } })
+        fireEvent.change(screen.getByLabelText(/源端路径/), { target: { value: '/new-root' } })
         fireEvent.click(screen.getByRole('button', { name: '检查' }))
         await waitFor(() =>
             expect(mocked.checkSFTPSource).toHaveBeenCalledWith({
@@ -423,5 +429,65 @@ describe('SourceDialog SMB', () => {
         expect(config.remote_root).toBe('/photos')
         // 未触碰密码：不发送 credentials。
         expect(input.credentials).toBeUndefined()
+    })
+})
+
+const localSource: SourceResponse = {
+    id: 'src-local',
+    name: '本地照片',
+    type: 'local',
+    config: { root: '/data/photos' },
+    credential_state: {},
+    enabled: true,
+    created_at: '2026-10-03T00:00:00Z',
+    updated_at: '2026-10-03T00:00:00Z',
+}
+
+describe('SourceDialog 本地文件源', () => {
+    it('复用主机目录选择器，提交原生路径且不携带其他类型的已编辑凭据', async () => {
+        mocked.createSource.mockResolvedValue(localSource)
+        mocked.listLocalDirectoriesWithOptions.mockResolvedValue({
+            path: '/data/photos',
+            directories: [],
+        })
+        renderDialog()
+        fireEvent.change(screen.getByLabelText(/名称/), { target: { value: '本地照片' } })
+        // WebDAV 密码草稿不能在切换到 Local 后进入请求。
+        fireEvent.change(screen.getByLabelText(/密码/), { target: { value: 'unused-password' } })
+        fireEvent.mouseDown(screen.getByLabelText(/类型/))
+        fireEvent.click(await screen.findByText('本地文件'))
+        expect(screen.queryByLabelText(/密码|用户名|私钥|凭据/)).toBeNull()
+        expect((screen.getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled).toBe(
+            true,
+        )
+        fireEvent.click(screen.getByRole('button', { name: '浏览' }))
+        await waitFor(() =>
+            expect(mocked.listLocalDirectoriesWithOptions).toHaveBeenCalledWith('', false),
+        )
+        fireEvent.click(await screen.findByRole('button', { name: '使用此目录' }))
+        await waitFor(() => expect(screen.queryByText('选择本地目录')).toBeNull())
+        expect((screen.getByLabelText(/源根目录/) as HTMLInputElement).value).toBe('/data/photos')
+        fireEvent.click(screen.getByRole('button', { name: '保存' }))
+        await waitFor(() => expect(mocked.createSource).toHaveBeenCalled())
+        const input = mocked.createSource.mock.calls[0][0]
+        expect(input.type).toBe('local')
+        expect(input.config).toEqual({ root: '/data/photos' })
+        expect(input.credentials).toBeUndefined()
+    })
+
+    it('编辑时保持类型只读并只提交修改后的源根目录', async () => {
+        mocked.updateSource.mockResolvedValue(localSource)
+        renderDialog({ source: localSource })
+        expect(screen.getByRole('combobox', { name: '类型' }).getAttribute('aria-disabled')).toBe(
+            'true',
+        )
+        expect(screen.queryByLabelText(/密码|用户名|私钥|凭据/)).toBeNull()
+        fireEvent.change(screen.getByLabelText(/源根目录/), { target: { value: '/data/videos' } })
+        fireEvent.click(screen.getByRole('button', { name: '保存' }))
+        await waitFor(() =>
+            expect(mocked.updateSource).toHaveBeenCalledWith('src-local', {
+                config: { root: '/data/videos' },
+            }),
+        )
     })
 })

@@ -94,7 +94,7 @@ function scheduleEquals(a: ScheduleSpec, b: ScheduleSpec): boolean {
 
 // JobDialog 创建 / 编辑 Sync Job：Source、Root、Mode、Selector 与
 // Schedule 集中在同一个对话框。Remote Root 只做路径文本输入
-//（远端文件浏览器属后续阶段）；Include / Exclude 为多行文本。
+//（源端文件浏览器属后续阶段）；Include / Exclude 为多行文本。
 export default function JobDialog({ open, job, sources, onClose, onSaved }: JobDialogProps) {
     const [name, setName] = useState('')
     const [sourceId, setSourceId] = useState('')
@@ -172,7 +172,7 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
         schedule !== null
 
     // 选定 GitHub Release Source 后的针对性适配（契约见设计文档 §4.2）：
-    // 动态版本策略（latest / recent / all）的远端根目录固定为 /——
+    // 动态版本策略（latest / recent / all）的源端路径固定为 /——
     // 选定某个具体版本目录会导致下一版本发布后不再跟随；tag 模式允许
     // 浏览选择该版本目录。Mirror 在版本轮换时会删除退出选择范围的
     // 旧版本目录，需明确提示。
@@ -299,7 +299,7 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
                                 }
                             }}
                             required
-                            helperText="从此同步源拉取远端文件"
+                            helperText="从此同步源拉取源端文件"
                         >
                             {sources.map(source => (
                                 <MenuItem key={source.id} value={source.id}>
@@ -313,7 +313,7 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
                             label="同步规则"
                             value={mode}
                             onChange={e => setMode(e.target.value as JobMode)}
-                            helperText="镜像会删除远端已消失的受管理本地文件"
+                            helperText="镜像会删除源端已消失的受管理本地文件"
                         >
                             <MenuItem value="copy">复制 — 不删除本地文件</MenuItem>
                             <MenuItem value="mirror">镜像 — 删除受管理本地文件</MenuItem>
@@ -327,7 +327,7 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
                             }}
                         >
                             <TextField
-                                label="远端根目录"
+                                label="源端路径"
                                 value={remoteRoot}
                                 onChange={e => setRemoteRoot(e.target.value)}
                                 required
@@ -336,7 +336,7 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
                                 helperText={
                                     githubDynamicRoot
                                         ? '动态版本策略固定为 /，始终跟随最新选中版本'
-                                        : '要同步的远端绝对路径'
+                                        : '要同步的源端逻辑路径'
                                 }
                                 sx={{
                                     flex: 1,

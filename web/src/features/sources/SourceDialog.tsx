@@ -26,6 +26,7 @@ import {
     checkSFTPSource,
     createSource,
     type GitHubReleaseConfig,
+    type LocalConfig,
     listCredentials,
     type S3Config,
     type SFTPConfig,
@@ -41,6 +42,7 @@ import {
 } from '../../api'
 import { useToast } from '../../app/toast'
 import RemotePathPicker from '../files/RemotePathPicker'
+import LocalDirectoryPicker from '../jobs/LocalDirectoryPicker'
 import GitHubReleaseFields from './GitHubReleaseFields'
 import PromoteCredentialDialog from './PromoteCredentialDialog'
 import SecretField from './SecretField'
@@ -76,6 +78,8 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
     const [checking, setChecking] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [remotePickerOpen, setRemotePickerOpen] = useState(false)
+    const [localPickerOpen, setLocalPickerOpen] = useState(false)
+    const [local, setLocal] = useState<LocalConfig>({ root: '' })
 
     // 各协议非敏感配置字段。
     const [webdav, setWebdav] = useState<WebDAVConfig>({
@@ -144,6 +148,8 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
         setName(source?.name ?? '')
         setType(source?.type ?? 'webdav')
         setEnabled(source?.enabled ?? true)
+        setLocal({ root: source?.type === 'local' ? (source.config as LocalConfig).root : '' })
+        setLocalPickerOpen(false)
         setWebdav({
             endpoint:
                 source?.type === 'webdav' ? ((source.config as WebDAVConfig).endpoint ?? '') : '',
@@ -322,6 +328,7 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
     }
 
     function buildConfig(): SourceConfig {
+        if (type === 'local') return { ...local }
         if (type === 'webdav') {
             return { ...webdav }
         }
@@ -339,6 +346,7 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
     }
 
     function buildCredentials(): SourceCredentials | undefined {
+        if (type === 'local') return undefined
         if (type === 'webdav') {
             if (secretsDirty.has('webdav.password')) {
                 return { password: secrets['webdav.password'] }
@@ -411,7 +419,7 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
             if (request !== checkRequest.current) return
             if (result.ok) {
                 toast.success(
-                    `SFTP 检查通过：${config.host}:${config.port || 22}，远端根目录「${config.remote_root || '用户 Home'}」存在且可读取（${result.latency_ms} ms）`,
+                    `SFTP 检查通过：${config.host}:${config.port || 22}，源端路径「${config.remote_root || '用户 Home'}」存在且可读取（${result.latency_ms} ms）`,
                 )
             } else {
                 toast.error(`SFTP 检查失败：${result.error ?? '未知错误'}`)
@@ -472,6 +480,7 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
         if (name.trim() === '') {
             return false
         }
+        if (type === 'local') return local.root.trim() !== ''
         if (type === 'webdav') {
             return webdav.endpoint.trim() !== ''
         }
@@ -595,6 +604,7 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                             <MenuItem value="sftp">SFTP</MenuItem>
                             <MenuItem value="smb">SMB (SMB2/SMB3)</MenuItem>
                             <MenuItem value="github_release">GitHub Release</MenuItem>
+                            <MenuItem value="local">本地文件</MenuItem>
                         </Select>
                     </FormControl>
                     {source !== null && (
@@ -603,6 +613,36 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                         </Typography>
                     )}
 
+                    {type === 'local' && (
+                        <Box
+                            sx={{
+                                display: 'flex',
+                                gap: 1.5,
+                                alignItems: 'flex-start',
+                                minWidth: 0,
+                            }}
+                        >
+                            <TextField
+                                label="源根目录"
+                                value={local.root}
+                                onChange={e => setLocal({ root: e.target.value })}
+                                required
+                                fullWidth
+                                placeholder="/data/photos"
+                                helperText="运行 TinySync 的主机目录；请选择已有目录。"
+                                sx={{ '& input': { fontFamily: 'monospace' } }}
+                            />
+                            <Button
+                                variant="outlined"
+                                startIcon={<FolderOpenOutlinedIcon />}
+                                onClick={() => setLocalPickerOpen(true)}
+                                disabled={saving}
+                                sx={{ minWidth: 112, height: 56 }}
+                            >
+                                浏览
+                            </Button>
+                        </Box>
+                    )}
                     {type === 'webdav' && (
                         <>
                             <TextField
@@ -1085,6 +1125,15 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                     {saving ? '保存中…' : '保存'}
                 </Button>
             </DialogActions>
+            <LocalDirectoryPicker
+                open={localPickerOpen}
+                initialPath={local.root}
+                onClose={() => setLocalPickerOpen(false)}
+                onPick={path => {
+                    setLocal({ root: path })
+                    setLocalPickerOpen(false)
+                }}
+            />
             <RemotePathPicker
                 open={remotePickerOpen}
                 onClose={() => setRemotePickerOpen(false)}
@@ -1140,7 +1189,7 @@ function RootField({
     return (
         <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'flex-start', minWidth: 0 }}>
             <TextField
-                label="远端根目录"
+                label="源端路径"
                 value={value}
                 onChange={event => onChange(event.target.value)}
                 placeholder="/"

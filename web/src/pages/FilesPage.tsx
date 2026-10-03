@@ -11,7 +11,7 @@ export default function FilesPage() {
     const [searchParams, setSearchParams] = useSearchParams()
     const queryTab = searchParams.get('tab')
     const tab = queryTab === 'remote' ? 'remote' : 'local'
-    const viewTitle = tab === 'local' ? '本地文件' : '远端文件'
+    const viewTitle = tab === 'local' ? '本地文件' : '源端文件'
     const path = searchParams.get('path') ?? '/'
     usePageTitle(path !== '/' ? `${path} · ${viewTitle} · 文件管理` : `${viewTitle} · 文件管理`)
 
@@ -27,7 +27,7 @@ export default function FilesPage() {
                 sx={{ mb: 2 }}
             >
                 <Tab value="local" label="本地文件" />
-                <Tab value="remote" label="远端文件" />
+                <Tab value="remote" label="源端文件" />
             </Tabs>
             {tab === 'local' && <LocalFileBrowser />}
             {tab === 'remote' && <RemoteFileBrowser />}

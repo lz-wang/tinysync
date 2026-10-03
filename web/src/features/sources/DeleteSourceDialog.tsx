@@ -18,7 +18,7 @@ interface DeleteSourceDialogProps {
 }
 
 // DeleteSourceDialog 是删除确认框：明确告知只删除本地 Source 配置，
-// 不删除远端文件，为后续 Job 阶段建立正确的用户预期。
+// 不删除源端文件，为后续 Job 阶段建立正确的用户预期。
 export default function DeleteSourceDialog({
     source,
     onClose,
@@ -54,7 +54,7 @@ export default function DeleteSourceDialog({
         <Dialog open={source !== null} onClose={onClose} maxWidth="xs" fullWidth>
             <DialogTitle>删除同步源？</DialogTitle>
             <DialogContent>
-                <Typography>确认删除“{source?.name}”？不会删除远端文件。</Typography>
+                <Typography>确认删除“{source?.name}”？不会删除源端文件。</Typography>
                 {error !== null && (
                     <Alert severity="error" sx={{ mt: 2 }}>
                         {error}

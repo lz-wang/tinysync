@@ -24,7 +24,12 @@ export interface VersionResponse {
 }
 
 // SourceType 是 Source 支持的协议类型；创建后不可变。
-export type SourceType = 'webdav' | 's3' | 'sftp' | 'smb' | 'github_release'
+export type SourceType = 'webdav' | 's3' | 'sftp' | 'smb' | 'github_release' | 'local'
+
+// LocalConfig 使用运行主机的 native 文件系统路径，无凭据字段。
+export interface LocalConfig {
+    root: string
+}
 
 // WebDAVConfig 是 WebDAV 的非敏感配置。
 export interface WebDAVConfig {
@@ -94,7 +99,13 @@ export interface GitHubReleaseConfig {
 }
 
 // SourceConfig 是按 type 判别的协议配置（请求与响应均为扁平单选对象）。
-export type SourceConfig = WebDAVConfig | S3Config | SFTPConfig | SMBConfig | GitHubReleaseConfig
+export type SourceConfig =
+    | WebDAVConfig
+    | S3Config
+    | SFTPConfig
+    | SMBConfig
+    | GitHubReleaseConfig
+    | LocalConfig
 
 // CredentialState 回显各 secret 是否设置；任何 secret 不回显明文。
 export interface CredentialState {
