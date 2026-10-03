@@ -204,13 +204,15 @@ jobs:
           go-version: "1.26.x"
           check-latest: true
 
-      # --- nginx：autoindex_format json（推荐形态），auto 探测。
+      # --- nginx：autoindex_format json（推荐形态）。Remote 契约测试
+      # 单独验证非空目录的 auto 探测；Copy/Mirror 矩阵使用显式 profile，
+      # 因为删空目录后的 [] 在 auto 下必须 fail-closed。
       # 显式 root：新版官方镜像 http 级默认 root 是 /etc/nginx/html。
       - name: Run HTTP integration (nginx JSON autoindex)
         env:
           TINYSYNC_IT_HTTP_BASE_URL: http://127.0.0.1:18081/
           TINYSYNC_IT_HTTP_ROOT: /tmp/tinysync-http-nginx
-          TINYSYNC_IT_HTTP_LISTING: auto
+          TINYSYNC_IT_HTTP_LISTING: nginx
         run: |
           install -d -m 0777 /tmp/tinysync-http-nginx
           printf 'server {\n  listen 80;\n  root /usr/share/nginx/html;\n  location / {\n    autoindex on;\n    autoindex_format json;\n  }\n}\n' > /tmp/tinysync-http-nginx.conf
@@ -232,7 +234,7 @@ jobs:
         env:
           TINYSYNC_IT_HTTP_BASE_URL: http://127.0.0.1:18082/
           TINYSYNC_IT_HTTP_ROOT: /tmp/tinysync-http-caddy
-          TINYSYNC_IT_HTTP_LISTING: auto
+          TINYSYNC_IT_HTTP_LISTING: caddy
           TINYSYNC_IT_HTTP_FILE_LIMIT: "5"
         run: |
           install -d -m 0777 /tmp/tinysync-http-caddy
@@ -256,7 +258,7 @@ jobs:
         env:
           TINYSYNC_IT_HTTP_BASE_URL: http://127.0.0.1:18083/
           TINYSYNC_IT_HTTP_ROOT: /tmp/tinysync-http-miniserve
-          TINYSYNC_IT_HTTP_LISTING: auto
+          TINYSYNC_IT_HTTP_LISTING: miniserve
           TINYSYNC_IT_HTTP_USERNAME: tinysync
           TINYSYNC_IT_HTTP_PASSWORD: integration-secret
         run: |

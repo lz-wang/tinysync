@@ -164,7 +164,11 @@ func TestIntegrationHTTPRemote(t *testing.T) {
 		}
 	}
 
-	remote, err := cfg.openRemote(root)
+	// 非空目录仍验证真实输出的 auto 识别；Copy/Mirror 矩阵按环境中
+	// 的显式 profile 运行，以允许同步真正的空 JSON 目录。
+	autoCfg := cfg
+	autoCfg.listing = source.HTTPListingAuto
+	remote, err := autoCfg.openRemote(root)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
