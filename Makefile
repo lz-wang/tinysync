@@ -45,6 +45,7 @@ BENCH_PACKAGES := \
 	./internal/browser/ \
 	./internal/source/webdav/ \
 	./internal/source/sftp/ \
+	./internal/source/smb/ \
 	./internal/source/s3/ \
 	./internal/source/githubrelease/ \
 	./internal/syncjob/ \

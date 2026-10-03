@@ -6,9 +6,9 @@ TinySync 是一个面向 HomeLab 的文件同步服务：单一 Go 二进制，�
 通过 REST API 管理同步源（Sources）与同步任务（Jobs）。
 
 > 当前开发版提供：持久化的多协议 Source 管理（WebDAV / S3 / SFTP /
-> GitHub Release，创建、编辑、删除与连接测试），以及远端 → 本地单向
+> SMB / GitHub Release，创建、编辑、删除与连接测试），以及远端 → 本地单向
 > 同步 Job——Copy / Mirror 模式、include / exclude 过滤、原子下载
-> 与本地文件归属保护（Mirror 只删除本 Job 管理的文件）。四种协议
+> 与本地文件归属保护（Mirror 只删除本 Job 管理的文件）。五种协议
 > 共用同一个同步引擎。Job 支持自动调度（once / interval / cron，重叠自动
 > 跳过）、受控并发（`--max-concurrent-jobs` /
 > `--max-concurrent-transfers`）与持久化运行历史（每轮运行与
@@ -300,6 +300,33 @@ curl -X POST http://127.0.0.1:9466/api/v1/sources \
   }'
 ```
 
+SMB / CIFS（SMB2/SMB3 + NTLMv2 用户名密码；`host` 是裸主机名 / IP，
+`share` 与 `remote_root` 分离，`remote_root` 是 share 内的 `/` 风格
+路径；消息签名默认 `required`，可显式放宽为 `auto`；symlink /
+junction 等 reparse point 不跟随、发现即失败。需要 TCP 445 出站
+可达（`port` 可配置）。创建 SMB Source 后不支持无损降级到不认识
+SMB 的旧版本，降级前请先删除 SMB Source）：
+
+```bash
+curl -X POST http://127.0.0.1:9466/api/v1/sources \
+  -H "Authorization: Bearer $TINYSYNC_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "nas-smb",
+    "type": "smb",
+    "config": {
+      "host": "192.168.2.10",
+      "port": 445,
+      "share": "backup",
+      "remote_root": "/photos",
+      "username": "tinysync",
+      "domain": "WORKGROUP",
+      "signing": "required"
+    },
+    "credentials": {"password": "..."}
+  }'
+```
+
 GitHub Release（把一个仓库的 Releases 转换为版本目录树；`repository`
 接受 owner/repo 或完整 GitHub 仓库 URL；Token 可选，公开仓库匿名）：
 
@@ -332,11 +359,12 @@ tag 中 `/` 等字符 percent-encode），Job 的远端根目录在动态版本�
 被 Sync Job 引用的 Source 拒绝修改 remote identity（WebDAV 的
 endpoint + username、S3 的 endpoint / region / bucket / prefix /
 path-style、SFTP 的 host / port / username / remote_root / host key
-fingerprint、GitHub Release 的 repository / release_policy / tag /
+fingerprint、SMB 的 host / port / share / remote_root / username /
+domain、GitHub Release 的 repository / release_policy / tag /
 recent_count / include_prereleases），防止 Mirror 把既有本地文件误判
-为远端消失而删除；secret 轮换与 GitHub Release 的 verify_sha256
-调整始终允许。更换远端的正确路径是新建 Source 后切换 Job 的
-source_id。
+为远端消失而删除；secret 轮换、SMB 的 signing 与 GitHub Release 的
+verify_sha256 调整始终允许。更换远端的正确路径是新建 Source 后切换
+Job 的 source_id。
 
 ## Files：文件浏览与共享
 

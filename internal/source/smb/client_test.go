@@ -220,7 +220,7 @@ func lastSegment(native string) string {
 }
 
 // newFakeRemote 用注入的 connect 构造 remote 并完成首连。
-func newFakeRemote(t *testing.T, connect func(ctx context.Context) (conn, error)) *remote {
+func newFakeRemote(t testing.TB, connect func(ctx context.Context) (conn, error)) *remote {
 	t.Helper()
 	r := &remote{
 		cfg: source.SMBConfig{

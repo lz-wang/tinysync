@@ -74,3 +74,14 @@ scheduler 的变化会混入 trend，无法与代码变更的影响区分。建�
   主导」降为「页数主导」；这类指标同时是单元测试断言。
 - **wall-clock 指标**（ns/op、B/op、allocs/op）：仅用于记录与
   benchstat 对比，不作硬阈值。
+
+## 各协议 benchmark 的数据面
+
+WebDAV / SFTP / S3 的 benchmark 走进程内真实协议栈；**SMB 无进程内
+server 可用**（真实 Samba 属 env-gated 集成测试，见
+`internal/e2e/smb_integration_test.go` 与 `make integration-smb`），
+`internal/source/smb/benchmark_test.go` 的数据面为内存 fake conn：
+度量的是 adapter 层（remotePath 映射、toFileInfo 转换、walkDirectory
+枚举、PageSlice 切页、ReadCloser 包装），不含网络往返。SMB 的
+wall-clock 基线只用于 adapter 层优化的相对对比；真实网络吞吐
+（SMB 是典型高延迟网络文件协议）以集成环境的实测为准。
