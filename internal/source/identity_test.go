@@ -11,6 +11,13 @@ func sftpWith(mutate func(*SFTPConfig)) SFTPConfig {
 	return c
 }
 
+// smbWith 便捷构造变体。
+func smbWith(mutate func(*SMBConfig)) SMBConfig {
+	c := validSMBConfig()
+	mutate(&c)
+	return c
+}
+
 // RemoteIdentityEqual 按协议判定身份字段：identity 字段变更返回
 // false；非身份字段（name 之外的可变项如 access_key / auth_method）
 // 与 secret 状态不影响判定。
@@ -49,6 +56,30 @@ func TestRemoteIdentityEqual(t *testing.T) {
 		other := Source{Type: TypeSFTP, Config: Config{SFTP: ptrSFTP(tc.cfg)}}
 		if got := RemoteIdentityEqual(base, other); got != tc.want {
 			t.Errorf("sftp %s = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+
+	// SMB：身份字段（host / port / share / remote_root / username /
+	// domain）任一变化 → false；signing 只影响协商强度 → true。
+	smbBase := Source{Type: TypeSMB, Config: Config{SMB: ptrSMB(validSMBConfig())}}
+	smbCases := []struct {
+		name string
+		cfg  SMBConfig
+		want bool
+	}{
+		{"same", validSMBConfig(), true},
+		{"host", smbWith(func(c *SMBConfig) { c.Host = "other-nas.example.com" }), false},
+		{"port", smbWith(func(c *SMBConfig) { c.Port = 1445 }), false},
+		{"share", smbWith(func(c *SMBConfig) { c.Share = "media" }), false},
+		{"remote root", smbWith(func(c *SMBConfig) { c.RemoteRoot = "/media" }), false},
+		{"username", smbWith(func(c *SMBConfig) { c.Username = "other" }), false},
+		{"domain", smbWith(func(c *SMBConfig) { c.Domain = "OTHER" }), false},
+		{"signing only", smbWith(func(c *SMBConfig) { c.Signing = SMBSigningAuto }), true},
+	}
+	for _, tc := range smbCases {
+		other := Source{Type: TypeSMB, Config: Config{SMB: ptrSMB(tc.cfg)}}
+		if got := RemoteIdentityEqual(smbBase, other); got != tc.want {
+			t.Errorf("smb %s = %v, want %v", tc.name, got, tc.want)
 		}
 	}
 

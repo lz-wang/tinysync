@@ -20,7 +20,7 @@ const sftpDefaultPort = 22
 // ValidateType 校验协议类型。
 func ValidateType(t Type) error {
 	switch t {
-	case TypeWebDAV, TypeS3, TypeSFTP, TypeGitHubRelease:
+	case TypeWebDAV, TypeS3, TypeSFTP, TypeSMB, TypeGitHubRelease:
 		return nil
 	case "":
 		return fmt.Errorf("%w: type is required", ErrInvalid)
@@ -74,7 +74,7 @@ func ValidateConfig(t Type, c Config) error {
 		if c.WebDAV == nil {
 			return fmt.Errorf("%w: webdav config is required", ErrInvalid)
 		}
-		if c.S3 != nil || c.SFTP != nil {
+		if c.S3 != nil || c.SFTP != nil || c.SMB != nil {
 			return fmt.Errorf("%w: config must only contain webdav fields for type webdav", ErrInvalid)
 		}
 		if err := ValidateEndpoint(c.WebDAV.Endpoint); err != nil {
@@ -87,7 +87,7 @@ func ValidateConfig(t Type, c Config) error {
 		if c.S3 == nil {
 			return fmt.Errorf("%w: s3 config is required", ErrInvalid)
 		}
-		if c.WebDAV != nil || c.SFTP != nil {
+		if c.WebDAV != nil || c.SFTP != nil || c.SMB != nil {
 			return fmt.Errorf("%w: config must only contain s3 fields for type s3", ErrInvalid)
 		}
 		return validateS3Config(*c.S3)
@@ -95,15 +95,23 @@ func ValidateConfig(t Type, c Config) error {
 		if c.SFTP == nil {
 			return fmt.Errorf("%w: sftp config is required", ErrInvalid)
 		}
-		if c.WebDAV != nil || c.S3 != nil {
+		if c.WebDAV != nil || c.S3 != nil || c.SMB != nil {
 			return fmt.Errorf("%w: config must only contain sftp fields for type sftp", ErrInvalid)
 		}
 		return validateSFTPConfig(*c.SFTP)
+	case TypeSMB:
+		if c.SMB == nil {
+			return fmt.Errorf("%w: smb config is required", ErrInvalid)
+		}
+		if c.WebDAV != nil || c.S3 != nil || c.SFTP != nil {
+			return fmt.Errorf("%w: config must only contain smb fields for type smb", ErrInvalid)
+		}
+		return validateSMBConfig(*c.SMB)
 	case TypeGitHubRelease:
 		if c.GitHubRelease == nil {
 			return fmt.Errorf("%w: github_release config is required", ErrInvalid)
 		}
-		if c.WebDAV != nil || c.S3 != nil || c.SFTP != nil {
+		if c.WebDAV != nil || c.S3 != nil || c.SFTP != nil || c.SMB != nil {
 			return fmt.Errorf("%w: config must only contain github_release fields for type github_release", ErrInvalid)
 		}
 		return validateGitHubReleaseConfig(*c.GitHubRelease)
@@ -183,6 +191,58 @@ func validateSFTPConfig(c SFTPConfig) error {
 		return nil
 	}
 	return validateHostKeyFingerprint(c.HostKeyFingerprint)
+}
+
+// validateSMBConfig 校验 SMB 配置：host / share / username 必填；
+// host 只接受裸主机名 / IP（拒绝 smb:// scheme、\\server\share UNC
+// 形态与附带路径——share 由独立字段表达）；share 是单个名称段
+//（不含路径分隔符与 dot segment，允许 Unicode 与隐藏 share 的 $
+// 后缀）；remote_root 留空归一为 "/"，有值时必须是 clean 的 POSIX
+// 风格绝对路径（tinysync 内部不出现反斜杠路径）；signing 留空归一
+// 为 required。port 留空归一为 445，有值时限定 1..65535。不支持
+// guest：username 与 password（见 ValidateCredentials）都必填，
+// 不做空值隐式推断。
+func validateSMBConfig(c SMBConfig) error {
+	host := strings.TrimSpace(c.Host)
+	if host == "" {
+		return fmt.Errorf("%w: smb host is required", ErrInvalid)
+	}
+	if strings.Contains(host, "://") {
+		return fmt.Errorf("%w: smb host %q must not include a scheme; put the share in the share field", ErrInvalid, c.Host)
+	}
+	if strings.HasPrefix(host, `\\`) || strings.ContainsAny(host, `/\`) {
+		return fmt.Errorf("%w: smb host %q must be a bare host or IP without share or path", ErrInvalid, c.Host)
+	}
+	if c.Port != 0 && (c.Port < 1 || c.Port > 65535) {
+		return fmt.Errorf("%w: smb port %d out of range", ErrInvalid, c.Port)
+	}
+	share := strings.TrimSpace(c.Share)
+	if share == "" {
+		return fmt.Errorf("%w: smb share is required", ErrInvalid)
+	}
+	if strings.ContainsAny(share, `/\`) {
+		return fmt.Errorf("%w: smb share %q must be a single share name without separators", ErrInvalid, c.Share)
+	}
+	if share == "." || share == ".." {
+		return fmt.Errorf("%w: smb share %q must not be a dot segment", ErrInvalid, c.Share)
+	}
+	if strings.TrimSpace(c.Username) == "" {
+		return fmt.Errorf("%w: smb username is required", ErrInvalid)
+	}
+	if c.RemoteRoot != "" {
+		if strings.ContainsRune(c.RemoteRoot, '\\') {
+			return fmt.Errorf("%w: smb remote_root %q must use / separators", ErrInvalid, c.RemoteRoot)
+		}
+		if !path.IsAbs(c.RemoteRoot) || path.Clean(c.RemoteRoot) != c.RemoteRoot {
+			return fmt.Errorf("%w: smb remote_root %q must be a clean absolute path", ErrInvalid, c.RemoteRoot)
+		}
+	}
+	switch c.Signing {
+	case "", SMBSigningRequired, SMBSigningAuto:
+	default:
+		return fmt.Errorf("%w: unsupported smb signing %q", ErrInvalid, c.Signing)
+	}
+	return nil
 }
 
 // validateGitHubReleaseConfig 校验 GitHub Release 配置。只覆盖归一化
@@ -313,18 +373,18 @@ func validateHostKeyFingerprint(fp string) error {
 func ValidateCredentials(t Type, c Config, creds Credentials) error {
 	switch t {
 	case TypeWebDAV:
-		if creds.S3 != nil || creds.SFTP != nil {
+		if creds.S3 != nil || creds.SFTP != nil || creds.SMB != nil {
 			return fmt.Errorf("%w: credentials must only contain webdav fields for type webdav", ErrInvalid)
 		}
 	case TypeS3:
-		if creds.WebDAV != nil || creds.SFTP != nil {
+		if creds.WebDAV != nil || creds.SFTP != nil || creds.SMB != nil {
 			return fmt.Errorf("%w: credentials must only contain s3 fields for type s3", ErrInvalid)
 		}
 		if creds.S3 == nil || creds.S3.SecretKey == "" {
 			return fmt.Errorf("%w: s3 secret_key is required", ErrInvalid)
 		}
 	case TypeSFTP:
-		if creds.WebDAV != nil || creds.S3 != nil {
+		if creds.WebDAV != nil || creds.S3 != nil || creds.SMB != nil {
 			return fmt.Errorf("%w: credentials must only contain sftp fields for type sftp", ErrInvalid)
 		}
 		if creds.SFTP == nil {
@@ -351,8 +411,15 @@ func ValidateCredentials(t Type, c Config, creds Credentials) error {
 		default:
 			return fmt.Errorf("%w: unsupported sftp auth_method %q", ErrInvalid, c.SFTP.AuthMethod)
 		}
-	case TypeGitHubRelease:
+	case TypeSMB:
 		if creds.WebDAV != nil || creds.S3 != nil || creds.SFTP != nil {
+			return fmt.Errorf("%w: credentials must only contain smb fields for type smb", ErrInvalid)
+		}
+		if creds.SMB == nil || creds.SMB.Password == "" {
+			return fmt.Errorf("%w: smb password is required (guest access is not supported)", ErrInvalid)
+		}
+	case TypeGitHubRelease:
+		if creds.WebDAV != nil || creds.S3 != nil || creds.SFTP != nil || creds.SMB != nil {
 			return fmt.Errorf("%w: credentials must only contain github_release fields for type github_release", ErrInvalid)
 		}
 		// Token 可为空（公开仓库匿名访问），无必填约束。
@@ -387,6 +454,12 @@ func CredentialStateOf(t Type, creds Credentials) CredentialState {
 			st.PrivateKeyPassphraseSet = creds.SFTP.PrivateKeyPassphrase != ""
 		}
 		return CredentialState{SFTP: &st}
+	case TypeSMB:
+		set := false
+		if creds.SMB != nil {
+			set = creds.SMB.Password != ""
+		}
+		return CredentialState{SMB: &SMBCredentialState{PasswordSet: set}}
 	case TypeGitHubRelease:
 		set := false
 		if creds.GitHubRelease != nil {
@@ -408,19 +481,23 @@ func ValidateCredentialsUpdate(t Type, creds *CredentialsUpdate) error {
 	}
 	switch t {
 	case TypeWebDAV:
-		if creds.S3 != nil || creds.SFTP != nil {
+		if creds.S3 != nil || creds.SFTP != nil || creds.SMB != nil {
 			return fmt.Errorf("%w: credentials update must only contain webdav fields for type webdav", ErrInvalid)
 		}
 	case TypeS3:
-		if creds.WebDAV != nil || creds.SFTP != nil {
+		if creds.WebDAV != nil || creds.SFTP != nil || creds.SMB != nil {
 			return fmt.Errorf("%w: credentials update must only contain s3 fields for type s3", ErrInvalid)
 		}
 	case TypeSFTP:
-		if creds.WebDAV != nil || creds.S3 != nil {
+		if creds.WebDAV != nil || creds.S3 != nil || creds.SMB != nil {
 			return fmt.Errorf("%w: credentials update must only contain sftp fields for type sftp", ErrInvalid)
 		}
-	case TypeGitHubRelease:
+	case TypeSMB:
 		if creds.WebDAV != nil || creds.S3 != nil || creds.SFTP != nil {
+			return fmt.Errorf("%w: credentials update must only contain smb fields for type smb", ErrInvalid)
+		}
+	case TypeGitHubRelease:
+		if creds.WebDAV != nil || creds.S3 != nil || creds.SFTP != nil || creds.SMB != nil {
 			return fmt.Errorf("%w: credentials update must only contain github_release fields for type github_release", ErrInvalid)
 		}
 	case "":
@@ -478,6 +555,17 @@ func applyCredentialsUpdate(t Type, current CredentialState, update *Credentials
 			c.PrivateKeyPassphraseSet = *update.SFTP.PrivateKeyPassphrase != ""
 		}
 		return CredentialState{SFTP: &c}
+	case TypeSMB:
+		if update.SMB == nil || update.SMB.Password == nil {
+			return current
+		}
+		set := *update.SMB.Password != ""
+		if current.SMB == nil {
+			current.SMB = &SMBCredentialState{}
+		}
+		c := *current.SMB
+		c.PasswordSet = set
+		return CredentialState{SMB: &c}
 	case TypeGitHubRelease:
 		if update.GitHubRelease == nil || update.GitHubRelease.Token == nil {
 			return current

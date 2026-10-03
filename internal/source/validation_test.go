@@ -6,9 +6,9 @@ import (
 	"testing"
 )
 
-// TestValidateType 接受三种协议类型，空值与其余类型拒绝。
+// TestValidateType 接受已支持的协议类型，空值与其余类型拒绝。
 func TestValidateType(t *testing.T) {
-	for _, valid := range []Type{TypeWebDAV, TypeS3, TypeSFTP} {
+	for _, valid := range []Type{TypeWebDAV, TypeS3, TypeSFTP, TypeSMB, TypeGitHubRelease} {
 		if err := ValidateType(valid); err != nil {
 			t.Errorf("type %q = %v, want nil", valid, err)
 		}
@@ -104,6 +104,19 @@ func validSFTPConfig() SFTPConfig {
 	}
 }
 
+// validSMBConfig 返回合法 SMB 配置。
+func validSMBConfig() SMBConfig {
+	return SMBConfig{
+		Host:       "nas.example.com",
+		Port:       445,
+		Share:      "backup",
+		RemoteRoot: "/photos",
+		Username:   "tinysync",
+		Domain:     "WORKGROUP",
+		Signing:    SMBSigningRequired,
+	}
+}
+
 // TestValidateConfig 按 Type 强制 config 单选一致性与协议字段约束。
 func TestValidateConfig(t *testing.T) {
 	valid := []struct {
@@ -129,6 +142,33 @@ func TestValidateConfig(t *testing.T) {
 			c.AuthMethod = SFTPAuthPrivateKey
 			return &c
 		}()}},
+		{"smb", TypeSMB, Config{SMB: ptrSMB(validSMBConfig())}},
+		{"smb default port and empty root", TypeSMB, Config{SMB: func() *SMBConfig {
+			c := validSMBConfig()
+			c.Port = 0
+			c.RemoteRoot = ""
+			return &c
+		}()}},
+		{"smb hidden share", TypeSMB, Config{SMB: func() *SMBConfig {
+			c := validSMBConfig()
+			c.Share = "backup$"
+			return &c
+		}()}},
+		{"smb unicode share", TypeSMB, Config{SMB: func() *SMBConfig {
+			c := validSMBConfig()
+			c.Share = "共享"
+			return &c
+		}()}},
+		{"smb empty domain", TypeSMB, Config{SMB: func() *SMBConfig {
+			c := validSMBConfig()
+			c.Domain = ""
+			return &c
+		}()}},
+		{"smb auto signing", TypeSMB, Config{SMB: func() *SMBConfig {
+			c := validSMBConfig()
+			c.Signing = SMBSigningAuto
+			return &c
+		}()}},
 	}
 	for _, tt := range valid {
 		if err := ValidateConfig(tt.typ, tt.config); err != nil {
@@ -144,6 +184,11 @@ func TestValidateConfig(t *testing.T) {
 		{"missing config", TypeWebDAV, Config{}},
 		{"type mismatch s3 with webdav config", TypeS3, Config{WebDAV: &WebDAVConfig{Endpoint: "https://x/"}}},
 		{"type mismatch sftp with s3 config", TypeSFTP, Config{S3: ptrS3(validS3Config())}},
+		{"type mismatch smb with sftp config", TypeSMB, Config{SFTP: ptrSFTP(validSFTPConfig())}},
+		{"extra smb group on webdav", TypeWebDAV, Config{
+			WebDAV: &WebDAVConfig{Endpoint: "https://x/"},
+			SMB:    ptrSMB(validSMBConfig()),
+		}},
 		{"extra group", TypeWebDAV, Config{
 			WebDAV: &WebDAVConfig{Endpoint: "https://x/"},
 			S3:     ptrS3(validS3Config()),
@@ -218,6 +263,81 @@ func TestValidateConfig(t *testing.T) {
 			c.HostKeyFingerprint = "SHA256:UC1Dk4I9LLQOV3B8eZ5FlrUUcbbNie4INffe2TDTz3k="
 			return &c
 		}()}},
+		{"smb missing host", TypeSMB, Config{SMB: func() *SMBConfig {
+			c := validSMBConfig()
+			c.Host = ""
+			return &c
+		}()}},
+		{"smb host whitespace only", TypeSMB, Config{SMB: func() *SMBConfig {
+			c := validSMBConfig()
+			c.Host = "  "
+			return &c
+		}()}},
+		{"smb host with scheme", TypeSMB, Config{SMB: func() *SMBConfig {
+			c := validSMBConfig()
+			c.Host = "smb://nas.example.com"
+			return &c
+		}()}},
+		{"smb host unc form", TypeSMB, Config{SMB: func() *SMBConfig {
+			c := validSMBConfig()
+			c.Host = `\\nas\backup`
+			return &c
+		}()}},
+		{"smb host with trailing path", TypeSMB, Config{SMB: func() *SMBConfig {
+			c := validSMBConfig()
+			c.Host = "nas.example.com/photos"
+			return &c
+		}()}},
+		{"smb port out of range", TypeSMB, Config{SMB: func() *SMBConfig {
+			c := validSMBConfig()
+			c.Port = 70000
+			return &c
+		}()}},
+		{"smb missing share", TypeSMB, Config{SMB: func() *SMBConfig {
+			c := validSMBConfig()
+			c.Share = ""
+			return &c
+		}()}},
+		{"smb share with slash", TypeSMB, Config{SMB: func() *SMBConfig {
+			c := validSMBConfig()
+			c.Share = "backup/photos"
+			return &c
+		}()}},
+		{"smb share with backslash", TypeSMB, Config{SMB: func() *SMBConfig {
+			c := validSMBConfig()
+			c.Share = `backup\photos`
+			return &c
+		}()}},
+		{"smb share dot segment", TypeSMB, Config{SMB: func() *SMBConfig {
+			c := validSMBConfig()
+			c.Share = ".."
+			return &c
+		}()}},
+		{"smb missing username", TypeSMB, Config{SMB: func() *SMBConfig {
+			c := validSMBConfig()
+			c.Username = ""
+			return &c
+		}()}},
+		{"smb relative remote root", TypeSMB, Config{SMB: func() *SMBConfig {
+			c := validSMBConfig()
+			c.RemoteRoot = "photos"
+			return &c
+		}()}},
+		{"smb unclean remote root", TypeSMB, Config{SMB: func() *SMBConfig {
+			c := validSMBConfig()
+			c.RemoteRoot = "/photos//2026"
+			return &c
+		}()}},
+		{"smb backslash remote root", TypeSMB, Config{SMB: func() *SMBConfig {
+			c := validSMBConfig()
+			c.RemoteRoot = `\photos`
+			return &c
+		}()}},
+		{"smb bad signing", TypeSMB, Config{SMB: func() *SMBConfig {
+			c := validSMBConfig()
+			c.Signing = SMBSigningPolicy("disabled")
+			return &c
+		}()}},
 	}
 	for _, tt := range invalid {
 		err := ValidateConfig(tt.typ, tt.config)
@@ -255,6 +375,8 @@ func TestValidateCredentials(t *testing.T) {
 				return &c
 			}()},
 			Credentials{SFTP: &SFTPCredentials{PrivateKey: "-----BEGIN", PrivateKeyPassphrase: "pp"}}},
+		{"smb password", TypeSMB, Config{SMB: ptrSMB(validSMBConfig())},
+			Credentials{SMB: &SMBCredentials{Password: "secret"}}},
 	}
 	for _, tt := range valid {
 		if err := ValidateCredentials(tt.typ, tt.config, tt.creds); err != nil {
@@ -282,6 +404,13 @@ func TestValidateCredentials(t *testing.T) {
 			Credentials{SFTP: &SFTPCredentials{Password: "x"}}},
 		{"sftp creds in wrong group", TypeSFTP, Config{SFTP: ptrSFTP(validSFTPConfig())},
 			Credentials{S3: &S3Credentials{SecretKey: "x"}}},
+		{"smb missing password", TypeSMB, Config{SMB: ptrSMB(validSMBConfig())}, Credentials{}},
+		{"smb empty password", TypeSMB, Config{SMB: ptrSMB(validSMBConfig())},
+			Credentials{SMB: &SMBCredentials{Password: ""}}},
+		{"smb creds in wrong group", TypeSMB, Config{SMB: ptrSMB(validSMBConfig())},
+			Credentials{WebDAV: &WebDAVCredentials{Password: "x"}}},
+		{"webdav with smb group", TypeWebDAV, Config{WebDAV: &WebDAVConfig{Endpoint: "https://x/"}},
+			Credentials{SMB: &SMBCredentials{Password: "x"}}},
 	}
 	for _, tt := range invalid {
 		err := ValidateCredentials(tt.typ, tt.config, tt.creds)
@@ -313,6 +442,17 @@ func TestValidateCredentialsUpdate(t *testing.T) {
 	}); err != nil {
 		t.Errorf("sftp empty group = %v, want nil", err)
 	}
+	smbPW := "next"
+	if err := ValidateCredentialsUpdate(TypeSMB, &CredentialsUpdate{
+		SMB: &SMBCredentialsUpdate{Password: &smbPW},
+	}); err != nil {
+		t.Errorf("smb update = %v, want nil", err)
+	}
+	if err := ValidateCredentialsUpdate(TypeSMB, &CredentialsUpdate{
+		SFTP: &SFTPCredentialsUpdate{},
+	}); !errors.Is(err, ErrInvalid) {
+		t.Errorf("smb with sftp group = %v, want ErrInvalid", err)
+	}
 }
 
 // TestCredentialStateOf 校验凭据状态推导。
@@ -326,6 +466,12 @@ func TestCredentialStateOf(t *testing.T) {
 	st := CredentialStateOf(TypeSFTP, Credentials{SFTP: &SFTPCredentials{PrivateKey: "k", PrivateKeyPassphrase: "p"}})
 	if st.SFTP == nil || st.SFTP.PasswordSet || !st.SFTP.PrivateKeySet || !st.SFTP.PrivateKeyPassphraseSet {
 		t.Errorf("sftp state = %+v, want private key set", st.SFTP)
+	}
+	if st := CredentialStateOf(TypeSMB, Credentials{}); st.SMB == nil || st.SMB.PasswordSet {
+		t.Errorf("smb without password = %+v, want PasswordSet false", st.SMB)
+	}
+	if st := CredentialStateOf(TypeSMB, Credentials{SMB: &SMBCredentials{Password: "p"}}); st.SMB == nil || !st.SMB.PasswordSet {
+		t.Errorf("smb with password = %+v, want PasswordSet true", st.SMB)
 	}
 }
 
@@ -410,3 +556,5 @@ func TestValidateLogicalPath(t *testing.T) {
 func ptrS3(c S3Config) *S3Config { return &c }
 
 func ptrSFTP(c SFTPConfig) *SFTPConfig { return &c }
+
+func ptrSMB(c SMBConfig) *SMBConfig { return &c }

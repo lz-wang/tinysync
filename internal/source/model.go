@@ -21,6 +21,7 @@ const (
 	TypeWebDAV        Type = "webdav"
 	TypeS3            Type = "s3"
 	TypeSFTP          Type = "sftp"
+	TypeSMB           Type = "smb"
 	TypeGitHubRelease Type = "github_release"
 )
 
@@ -62,6 +63,21 @@ const (
 	SFTPAuthPrivateKey SFTPAuthMethod = "private_key"
 )
 
+// SMBSigningPolicy 是 SMB 消息签名策略。枚举而非 bool：bool 零值无法
+// 区分「字段未提供」与「用户明确关闭要求」。不提供 disabled——auto
+// 已足够兼容家庭 LAN 的旧 NAS，降低客户端要求必须是主动选择。
+type SMBSigningPolicy string
+
+// SMB 消息签名策略：required 要求服务器启用签名，协商失败即失败
+//（默认）；auto 跟随服务器协商结果。
+const (
+	SMBSigningRequired SMBSigningPolicy = "required"
+	SMBSigningAuto     SMBSigningPolicy = "auto"
+)
+
+// SMBDefaultPort 是 SMB 的默认端口（445，Direct TCP）。
+const SMBDefaultPort = 445
+
 // hostKeyFingerprintPrefix 是 SFTP host key fingerprint 的固定前缀。
 const hostKeyFingerprintPrefix = "SHA256:"
 
@@ -98,6 +114,7 @@ type Config struct {
 	WebDAV        *WebDAVConfig
 	S3            *S3Config
 	SFTP          *SFTPConfig
+	SMB           *SMBConfig
 	GitHubRelease *GitHubReleaseConfig
 }
 
@@ -135,6 +152,22 @@ type SFTPConfig struct {
 	CredentialID       string         `json:"credential_id"`
 }
 
+// SMBConfig 是 SMB Source 的非敏感配置。Host 是裸主机名 / IP（不带
+// smb:// 前缀、不带 share），Share 是 share 名（不含分隔符），二者
+// 分离使远端身份各字段可独立校验；RemoteRoot 是 share 内的 POSIX
+// 风格绝对逻辑路径（tinysync 内部不暴露 SMB 反斜杠路径，adapter
+// 边界才转换为 native 分隔符）。认证只有 NTLMv2 用户名/密码，
+// 不支持 guest——匿名访问需要显式 auth_method，不做字段空值推断。
+type SMBConfig struct {
+	Host       string           `json:"host"`
+	Port       int              `json:"port"`
+	Share      string           `json:"share"`
+	RemoteRoot string           `json:"remote_root"`
+	Username   string           `json:"username"`
+	Domain     string           `json:"domain"`
+	Signing    SMBSigningPolicy `json:"signing"`
+}
+
 // GitHubReleaseConfig 是 GitHub Release Source 的非敏感配置。
 // Repository 接受 owner/repo 或完整 GitHub 仓库 URL（解析规则由
 // adapter 承担，持久化只做 trim）；Tag / RecentCount 仅在对应策略
@@ -155,6 +188,7 @@ type Credentials struct {
 	WebDAV        *WebDAVCredentials
 	S3            *S3Credentials
 	SFTP          *SFTPCredentials
+	SMB           *SMBCredentials
 	GitHubRelease *GitHubReleaseCredentials
 }
 
@@ -184,12 +218,21 @@ type SFTPCredentials struct {
 	PrivateKeyPassphrase string
 }
 
+// SMBCredentials 是 SMB 的 secret（NTLMv2 密码）。生命周期与 WebDAV
+// password 完全一致：明文只存在于 credentials_json，普通 API 永不
+// 回显；v1 不接入凭据库（credential library 目前只服务 SFTP SSH
+// key，username/password 通用凭据是独立的设计议题）。
+type SMBCredentials struct {
+	Password string
+}
+
 // CredentialState 是各 secret 是否已设置的布尔集合，协议无关地用于
 // API 回显与 UI 状态展示；按 Type 严格单选，与 Config 对应。
 type CredentialState struct {
 	WebDAV        *WebDAVCredentialState        `json:"webdav,omitempty"`
 	S3            *S3CredentialState            `json:"s3,omitempty"`
 	SFTP          *SFTPCredentialState          `json:"sftp,omitempty"`
+	SMB           *SMBCredentialState           `json:"smb,omitempty"`
 	GitHubRelease *GitHubReleaseCredentialState `json:"github_release,omitempty"`
 }
 
@@ -208,6 +251,11 @@ type SFTPCredentialState struct {
 	PasswordSet             bool `json:"password_set"`
 	PrivateKeySet           bool `json:"private_key_set"`
 	PrivateKeyPassphraseSet bool `json:"private_key_passphrase_set"`
+}
+
+// SMBCredentialState 是 SMB 的凭据状态。
+type SMBCredentialState struct {
+	PasswordSet bool `json:"password_set"`
 }
 
 // GitHubReleaseCredentialState 是 GitHub Release 的凭据状态。
@@ -245,6 +293,7 @@ type CredentialsUpdate struct {
 	WebDAV        *WebDAVCredentialsUpdate
 	S3            *S3CredentialsUpdate
 	SFTP          *SFTPCredentialsUpdate
+	SMB           *SMBCredentialsUpdate
 	GitHubRelease *GitHubReleaseCredentialsUpdate
 }
 
@@ -270,6 +319,11 @@ type SFTPCredentialsUpdate struct {
 	PrivateKeyPassphrase *string
 }
 
+// SMBCredentialsUpdate 是 SMB secret 的更新输入。
+type SMBCredentialsUpdate struct {
+	Password *string
+}
+
 // UpdateInput 是更新 Source 的输入，指针字段区分「未提供」与「零值」：
 // nil 表示保留现有值；Credentials 组内 secret 为三态（nil 保留、
 // 空串清除、非空替换）。Type 不支持修改，输入结构不携带 Type。
@@ -281,7 +335,9 @@ type UpdateInput struct {
 }
 
 // Normalized 返回按 Type 归一化后的配置副本：WebDAV endpoint 去首尾
-// 空白，SFTP port 零值取默认 22，GitHub Release 的 policy 空值取
+// 空白，SFTP port 零值取默认 22，SMB 的 port 零值取默认 445、
+// remote_root 空串取 "/"、signing 空值取 required（持久化后 SMB
+// 配置保持 canonical form），GitHub Release 的 policy 空值取
 // latest、verify_sha256 空值取 if_available，非对应策略下的 Tag /
 // RecentCount 归一为零值（身份比较与持久化因此形态稳定）。调用前必须
 // 已通过 ValidateConfig。
@@ -316,6 +372,25 @@ func (c Config) Normalized(t Type) Config {
 			sftp.Port = 22
 		}
 		return Config{SFTP: &sftp}
+	case TypeSMB:
+		if c.SMB == nil {
+			return c
+		}
+		smb := *c.SMB
+		smb.Host = strings.TrimSpace(smb.Host)
+		smb.Share = strings.TrimSpace(smb.Share)
+		smb.Username = strings.TrimSpace(smb.Username)
+		smb.Domain = strings.TrimSpace(smb.Domain)
+		if smb.Port == 0 {
+			smb.Port = SMBDefaultPort
+		}
+		if smb.RemoteRoot == "" {
+			smb.RemoteRoot = "/"
+		}
+		if smb.Signing == "" {
+			smb.Signing = SMBSigningRequired
+		}
+		return Config{SMB: &smb}
 	case TypeGitHubRelease:
 		if c.GitHubRelease == nil {
 			return c

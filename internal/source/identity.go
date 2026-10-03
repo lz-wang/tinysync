@@ -8,6 +8,9 @@ package source
 //	        （access_key 属凭据组件，可随 secret_key 轮换）
 //	SFTP    host + port + username + remote_root + host key fingerprint
 //	        （auth_method 切换不改变物理远端身份）
+//	SMB     host + port + share + remote_root + username + domain
+//	        （signing 只影响协商强度，password 轮换只影响访问，改
+//	        变 share / root 即改变远端 namespace，均不属于身份）
 //	GitHub  repository + release_policy + tag + recent_count +
 //	        include_prereleases（版本选择范围决定逻辑目录内容，改变
 //	        即改变 Mirror 的删除范围；verify_sha256 只影响校验强度，
@@ -46,6 +49,17 @@ func RemoteIdentityEqual(a, b Source) bool {
 			x.Username == y.Username &&
 			x.RemoteRoot == y.RemoteRoot &&
 			x.HostKeyFingerprint == y.HostKeyFingerprint
+	case TypeSMB:
+		if a.Config.SMB == nil || b.Config.SMB == nil {
+			return a.Config.SMB == b.Config.SMB
+		}
+		x, y := *a.Config.SMB, *b.Config.SMB
+		return x.Host == y.Host &&
+			x.Port == y.Port &&
+			x.Share == y.Share &&
+			x.RemoteRoot == y.RemoteRoot &&
+			x.Username == y.Username &&
+			x.Domain == y.Domain
 	case TypeGitHubRelease:
 		if a.Config.GitHubRelease == nil || b.Config.GitHubRelease == nil {
 			return a.Config.GitHubRelease == b.Config.GitHubRelease
