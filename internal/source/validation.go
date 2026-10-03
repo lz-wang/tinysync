@@ -67,16 +67,14 @@ func ValidateEndpoint(raw string) error {
 
 // ValidateConfig 校验 config 与 Type 的一致性及各协议字段约束：
 // Type=webdav → 只能存在 WebDAV config，以此类推；config 缺失同样
-// 拒绝（每个 Type 必须携带自己的配置）。
+// 拒绝（每个 Type 必须携带自己的配置）。单选检查先于字段校验且
+// 集中在 validateConfigUnion 维护。
 func ValidateConfig(t Type, c Config) error {
+	if err := validateConfigUnion(t, c); err != nil {
+		return err
+	}
 	switch t {
 	case TypeWebDAV:
-		if c.WebDAV == nil {
-			return fmt.Errorf("%w: webdav config is required", ErrInvalid)
-		}
-		if c.S3 != nil || c.SFTP != nil || c.SMB != nil {
-			return fmt.Errorf("%w: config must only contain webdav fields for type webdav", ErrInvalid)
-		}
 		if err := ValidateEndpoint(c.WebDAV.Endpoint); err != nil {
 			return err
 		}
@@ -84,43 +82,86 @@ func ValidateConfig(t Type, c Config) error {
 			return fmt.Errorf("%w: webdav remote_root %q must be a clean absolute path", ErrInvalid, c.WebDAV.RemoteRoot)
 		}
 	case TypeS3:
-		if c.S3 == nil {
-			return fmt.Errorf("%w: s3 config is required", ErrInvalid)
-		}
-		if c.WebDAV != nil || c.SFTP != nil || c.SMB != nil {
-			return fmt.Errorf("%w: config must only contain s3 fields for type s3", ErrInvalid)
-		}
 		return validateS3Config(*c.S3)
 	case TypeSFTP:
-		if c.SFTP == nil {
-			return fmt.Errorf("%w: sftp config is required", ErrInvalid)
-		}
-		if c.WebDAV != nil || c.S3 != nil || c.SMB != nil {
-			return fmt.Errorf("%w: config must only contain sftp fields for type sftp", ErrInvalid)
-		}
 		return validateSFTPConfig(*c.SFTP)
 	case TypeSMB:
-		if c.SMB == nil {
-			return fmt.Errorf("%w: smb config is required", ErrInvalid)
-		}
-		if c.WebDAV != nil || c.S3 != nil || c.SFTP != nil {
-			return fmt.Errorf("%w: config must only contain smb fields for type smb", ErrInvalid)
-		}
 		return validateSMBConfig(*c.SMB)
 	case TypeGitHubRelease:
-		if c.GitHubRelease == nil {
-			return fmt.Errorf("%w: github_release config is required", ErrInvalid)
-		}
-		if c.WebDAV != nil || c.S3 != nil || c.SFTP != nil || c.SMB != nil {
-			return fmt.Errorf("%w: config must only contain github_release fields for type github_release", ErrInvalid)
-		}
 		return validateGitHubReleaseConfig(*c.GitHubRelease)
+	}
+	return nil
+}
+
+// validateConfigUnion 校验 config 的严格单选：Type 合法、自身组存在、
+// 无 foreign 组。独立于字段校验存在，供 ValidateCreateInput 在
+// Normalized 之前先行检查——Normalized 会丢弃当前协议之外的组，
+// 先归一再做完整校验会让混入的 foreign group 在校验前被消掉、单选
+// 不变量被绕过。
+func validateConfigUnion(t Type, c Config) error {
+	var missing bool
+	switch t {
+	case TypeWebDAV:
+		missing = c.WebDAV == nil
+	case TypeS3:
+		missing = c.S3 == nil
+	case TypeSFTP:
+		missing = c.SFTP == nil
+	case TypeSMB:
+		missing = c.SMB == nil
+	case TypeGitHubRelease:
+		missing = c.GitHubRelease == nil
 	case "":
 		return fmt.Errorf("%w: type is required", ErrInvalid)
 	default:
 		return fmt.Errorf("%w: unsupported source type %q", ErrInvalid, t)
 	}
+	if missing {
+		return fmt.Errorf("%w: %s config is required", ErrInvalid, configTypeName(t))
+	}
+	if c.foreignGroupSet(t) {
+		return fmt.Errorf("%w: config must only contain %s fields for type %s", ErrInvalid, configTypeName(t), configTypeName(t))
+	}
 	return nil
+}
+
+// configTypeName 返回协议在错误消息中的名字（与 Type 字面值一致）。
+func configTypeName(t Type) string {
+	switch t {
+	case TypeWebDAV:
+		return "webdav"
+	case TypeS3:
+		return "s3"
+	case TypeSFTP:
+		return "sftp"
+	case TypeSMB:
+		return "smb"
+	case TypeGitHubRelease:
+		return "github_release"
+	}
+	return string(t)
+}
+
+// foreignGroupSet 报告 c 是否携带 t 之外协议的非空配置组。「Config 按
+// Type 严格单选」的互斥检查集中于此：新增协议时在此追加一行即可，
+// 不会再出现某个 case 的交叉检查列表遗漏新协议（SMB 落地时
+// GitHubRelease 就漏在了四个既有检查之外，单选不变量因此不对称）。
+func (c Config) foreignGroupSet(t Type) bool {
+	for _, g := range []struct {
+		typ Type
+		set bool
+	}{
+		{TypeWebDAV, c.WebDAV != nil},
+		{TypeS3, c.S3 != nil},
+		{TypeSFTP, c.SFTP != nil},
+		{TypeSMB, c.SMB != nil},
+		{TypeGitHubRelease, c.GitHubRelease != nil},
+	} {
+		if g.typ != t && g.set {
+			return true
+		}
+	}
+	return false
 }
 
 // validateS3Config 校验 S3 配置：endpoint / bucket / access_key 必填，region 可选，
@@ -373,18 +414,18 @@ func validateHostKeyFingerprint(fp string) error {
 func ValidateCredentials(t Type, c Config, creds Credentials) error {
 	switch t {
 	case TypeWebDAV:
-		if creds.S3 != nil || creds.SFTP != nil || creds.SMB != nil {
+		if creds.foreignGroupSet(t) {
 			return fmt.Errorf("%w: credentials must only contain webdav fields for type webdav", ErrInvalid)
 		}
 	case TypeS3:
-		if creds.WebDAV != nil || creds.SFTP != nil || creds.SMB != nil {
+		if creds.foreignGroupSet(t) {
 			return fmt.Errorf("%w: credentials must only contain s3 fields for type s3", ErrInvalid)
 		}
 		if creds.S3 == nil || creds.S3.SecretKey == "" {
 			return fmt.Errorf("%w: s3 secret_key is required", ErrInvalid)
 		}
 	case TypeSFTP:
-		if creds.WebDAV != nil || creds.S3 != nil || creds.SMB != nil {
+		if creds.foreignGroupSet(t) {
 			return fmt.Errorf("%w: credentials must only contain sftp fields for type sftp", ErrInvalid)
 		}
 		if creds.SFTP == nil {
@@ -412,14 +453,14 @@ func ValidateCredentials(t Type, c Config, creds Credentials) error {
 			return fmt.Errorf("%w: unsupported sftp auth_method %q", ErrInvalid, c.SFTP.AuthMethod)
 		}
 	case TypeSMB:
-		if creds.WebDAV != nil || creds.S3 != nil || creds.SFTP != nil {
+		if creds.foreignGroupSet(t) {
 			return fmt.Errorf("%w: credentials must only contain smb fields for type smb", ErrInvalid)
 		}
 		if creds.SMB == nil || creds.SMB.Password == "" {
 			return fmt.Errorf("%w: smb password is required (guest access is not supported)", ErrInvalid)
 		}
 	case TypeGitHubRelease:
-		if creds.WebDAV != nil || creds.S3 != nil || creds.SFTP != nil || creds.SMB != nil {
+		if creds.foreignGroupSet(t) {
 			return fmt.Errorf("%w: credentials must only contain github_release fields for type github_release", ErrInvalid)
 		}
 		// Token 可为空（公开仓库匿名访问），无必填约束。
@@ -429,6 +470,26 @@ func ValidateCredentials(t Type, c Config, creds Credentials) error {
 		return fmt.Errorf("%w: unsupported source type %q", ErrInvalid, t)
 	}
 	return nil
+}
+
+// foreignGroupSet 报告 creds 是否携带 t 之外协议的非空凭据组；互斥
+// 检查集中维护的理由与 Config.foreignGroupSet 相同。
+func (c Credentials) foreignGroupSet(t Type) bool {
+	for _, g := range []struct {
+		typ Type
+		set bool
+	}{
+		{TypeWebDAV, c.WebDAV != nil},
+		{TypeS3, c.S3 != nil},
+		{TypeSFTP, c.SFTP != nil},
+		{TypeSMB, c.SMB != nil},
+		{TypeGitHubRelease, c.GitHubRelease != nil},
+	} {
+		if g.typ != t && g.set {
+			return true
+		}
+	}
+	return false
 }
 
 // CredentialStateOf 从凭据集合推导回显状态（按 Type 单选）。
@@ -481,23 +542,23 @@ func ValidateCredentialsUpdate(t Type, creds *CredentialsUpdate) error {
 	}
 	switch t {
 	case TypeWebDAV:
-		if creds.S3 != nil || creds.SFTP != nil || creds.SMB != nil {
+		if creds.foreignGroupSet(t) {
 			return fmt.Errorf("%w: credentials update must only contain webdav fields for type webdav", ErrInvalid)
 		}
 	case TypeS3:
-		if creds.WebDAV != nil || creds.SFTP != nil || creds.SMB != nil {
+		if creds.foreignGroupSet(t) {
 			return fmt.Errorf("%w: credentials update must only contain s3 fields for type s3", ErrInvalid)
 		}
 	case TypeSFTP:
-		if creds.WebDAV != nil || creds.S3 != nil || creds.SMB != nil {
+		if creds.foreignGroupSet(t) {
 			return fmt.Errorf("%w: credentials update must only contain sftp fields for type sftp", ErrInvalid)
 		}
 	case TypeSMB:
-		if creds.WebDAV != nil || creds.S3 != nil || creds.SFTP != nil {
+		if creds.foreignGroupSet(t) {
 			return fmt.Errorf("%w: credentials update must only contain smb fields for type smb", ErrInvalid)
 		}
 	case TypeGitHubRelease:
-		if creds.WebDAV != nil || creds.S3 != nil || creds.SFTP != nil || creds.SMB != nil {
+		if creds.foreignGroupSet(t) {
 			return fmt.Errorf("%w: credentials update must only contain github_release fields for type github_release", ErrInvalid)
 		}
 	case "":
@@ -506,6 +567,26 @@ func ValidateCredentialsUpdate(t Type, creds *CredentialsUpdate) error {
 		return fmt.Errorf("%w: unsupported source type %q", ErrInvalid, t)
 	}
 	return nil
+}
+
+// foreignGroupSet 报告 creds 是否携带 t 之外协议的非空更新组；互斥
+// 检查集中维护的理由与 Config.foreignGroupSet 相同。
+func (c CredentialsUpdate) foreignGroupSet(t Type) bool {
+	for _, g := range []struct {
+		typ Type
+		set bool
+	}{
+		{TypeWebDAV, c.WebDAV != nil},
+		{TypeS3, c.S3 != nil},
+		{TypeSFTP, c.SFTP != nil},
+		{TypeSMB, c.SMB != nil},
+		{TypeGitHubRelease, c.GitHubRelease != nil},
+	} {
+		if g.typ != t && g.set {
+			return true
+		}
+	}
+	return false
 }
 
 // applyCredentialsUpdate 把三态凭据更新应用到现有回显状态上：
@@ -597,13 +678,20 @@ func ValidateLogicalPath(p string) error {
 	return nil
 }
 
-// ValidateCreateInput 校验创建输入的全部必填与格式约束；config 与
-// credentials 基于归一化后的形态校验，与持久化值一致。
+// ValidateCreateInput 校验创建输入的全部必填与格式约束。单选检查在
+// 原始形态上先行（Normalized 会丢弃当前协议之外的组，先归一再校验
+// 会让混入的 foreign group 在校验前被消掉、严格单选不变量被绕过）；
+// 字段约束与 credentials 基于归一化后的形态校验，与持久化值一致
+// （Create 因此保留对空白容错的既有契约：如带首尾空格的 endpoint
+// 归一后通过，与 Update 的 raw 校验语义存在已知差异）。
 func ValidateCreateInput(input CreateInput) error {
 	if err := ValidateName(input.Name); err != nil {
 		return err
 	}
 	if err := ValidateType(input.Type); err != nil {
+		return err
+	}
+	if err := validateConfigUnion(input.Type, input.Config); err != nil {
 		return err
 	}
 	normalized := input.Config.Normalized(input.Type)

@@ -514,6 +514,159 @@ func TestValidateCreateInput(t *testing.T) {
 	}
 }
 
+// strictUnionSamples 是五种协议各自的合法 config + credentials 组，
+// 供严格单选全矩阵测试构造「own + foreign 混组」输入。
+type strictUnionSample struct {
+	name  string
+	typ   Type
+	cfg   Config
+	creds Credentials
+}
+
+func strictUnionSamples() []strictUnionSample {
+	return []strictUnionSample{
+		{"webdav", TypeWebDAV,
+			Config{WebDAV: &WebDAVConfig{Endpoint: "https://x/"}}, Credentials{}},
+		{"s3", TypeS3, Config{S3: ptrS3(validS3Config())},
+			Credentials{S3: &S3Credentials{SecretKey: "shhh"}}},
+		{"sftp", TypeSFTP, Config{SFTP: ptrSFTP(validSFTPConfig())},
+			Credentials{SFTP: &SFTPCredentials{Password: "secret"}}},
+		{"smb", TypeSMB, Config{SMB: ptrSMB(validSMBConfig())},
+			Credentials{SMB: &SMBCredentials{Password: "secret"}}},
+		{"github_release", TypeGitHubRelease,
+			Config{GitHubRelease: &GitHubReleaseConfig{Repository: "owner/repo"}}, Credentials{}},
+	}
+}
+
+// TestValidateConfigStrictUnion 严格单选全矩阵（5×4）：任何协议的
+// config 混入任何其它协议的非空组都必须拒绝。SMB 落地时
+// GitHubRelease 曾漏在四个既有互斥检查之外，单选不变量因此不对称。
+func TestValidateConfigStrictUnion(t *testing.T) {
+	for _, own := range strictUnionSamples() {
+		for _, foreign := range strictUnionSamples() {
+			if own.name == foreign.name {
+				continue
+			}
+			mixed := own.cfg
+			mixed.WebDAV = nonNilOf(own.cfg.WebDAV, foreign.cfg.WebDAV)
+			mixed.S3 = nonNilOf(own.cfg.S3, foreign.cfg.S3)
+			mixed.SFTP = nonNilOf(own.cfg.SFTP, foreign.cfg.SFTP)
+			mixed.SMB = nonNilOf(own.cfg.SMB, foreign.cfg.SMB)
+			mixed.GitHubRelease = nonNilOf(own.cfg.GitHubRelease, foreign.cfg.GitHubRelease)
+			if err := ValidateConfig(own.typ, mixed); err == nil {
+				t.Errorf("config %s + %s group = nil, want error", own.name, foreign.name)
+			} else if !errors.Is(err, ErrInvalid) {
+				t.Errorf("config %s + %s group error = %v, want ErrInvalid", own.name, foreign.name, err)
+			}
+		}
+	}
+}
+
+// TestValidateCredentialsStrictUnion 严格单选全矩阵：任何协议的
+// credentials 混入任何其它协议的非空组都必须拒绝。
+func TestValidateCredentialsStrictUnion(t *testing.T) {
+	samples := []struct {
+		name  string
+		typ   Type
+		cfg   Config
+		creds Credentials
+	}{
+		{"webdav", TypeWebDAV, Config{WebDAV: &WebDAVConfig{Endpoint: "https://x/"}},
+			Credentials{WebDAV: &WebDAVCredentials{Password: "p"}}},
+		{"s3", TypeS3, Config{S3: ptrS3(validS3Config())},
+			Credentials{S3: &S3Credentials{SecretKey: "shhh"}}},
+		{"sftp", TypeSFTP, Config{SFTP: ptrSFTP(validSFTPConfig())},
+			Credentials{SFTP: &SFTPCredentials{Password: "secret"}}},
+		{"smb", TypeSMB, Config{SMB: ptrSMB(validSMBConfig())},
+			Credentials{SMB: &SMBCredentials{Password: "secret"}}},
+		{"github_release", TypeGitHubRelease, Config{GitHubRelease: &GitHubReleaseConfig{Repository: "owner/repo"}},
+			Credentials{GitHubRelease: &GitHubReleaseCredentials{Token: "ghp_x"}}},
+	}
+	for _, own := range samples {
+		for _, foreign := range samples {
+			if own.name == foreign.name {
+				continue
+			}
+			mixed := own.creds
+			mixed.WebDAV = nonNilOf(own.creds.WebDAV, foreign.creds.WebDAV)
+			mixed.S3 = nonNilOf(own.creds.S3, foreign.creds.S3)
+			mixed.SFTP = nonNilOf(own.creds.SFTP, foreign.creds.SFTP)
+			mixed.SMB = nonNilOf(own.creds.SMB, foreign.creds.SMB)
+			mixed.GitHubRelease = nonNilOf(own.creds.GitHubRelease, foreign.creds.GitHubRelease)
+			err := ValidateCredentials(own.typ, own.cfg, mixed)
+			if err == nil {
+				t.Errorf("credentials %s + %s group = nil, want error", own.name, foreign.name)
+			} else if !errors.Is(err, ErrInvalid) {
+				t.Errorf("credentials %s + %s group error = %v, want ErrInvalid", own.name, foreign.name, err)
+			}
+		}
+	}
+}
+
+// TestValidateCredentialsUpdateStrictUnion 严格单选全矩阵：任何协议的
+// 更新输入混入任何其它协议的非空组都必须拒绝。
+func TestValidateCredentialsUpdateStrictUnion(t *testing.T) {
+	s := "x"
+	samples := []struct {
+		name string
+		typ  Type
+		upd  CredentialsUpdate
+	}{
+		{"webdav", TypeWebDAV, CredentialsUpdate{WebDAV: &WebDAVCredentialsUpdate{Password: &s}}},
+		{"s3", TypeS3, CredentialsUpdate{S3: &S3CredentialsUpdate{SecretKey: &s}}},
+		{"sftp", TypeSFTP, CredentialsUpdate{SFTP: &SFTPCredentialsUpdate{Password: &s}}},
+		{"smb", TypeSMB, CredentialsUpdate{SMB: &SMBCredentialsUpdate{Password: &s}}},
+		{"github_release", TypeGitHubRelease, CredentialsUpdate{GitHubRelease: &GitHubReleaseCredentialsUpdate{Token: &s}}},
+	}
+	for _, own := range samples {
+		for _, foreign := range samples {
+			if own.name == foreign.name {
+				continue
+			}
+			mixed := own.upd
+			mixed.WebDAV = nonNilOf(own.upd.WebDAV, foreign.upd.WebDAV)
+			mixed.S3 = nonNilOf(own.upd.S3, foreign.upd.S3)
+			mixed.SFTP = nonNilOf(own.upd.SFTP, foreign.upd.SFTP)
+			mixed.SMB = nonNilOf(own.upd.SMB, foreign.upd.SMB)
+			mixed.GitHubRelease = nonNilOf(own.upd.GitHubRelease, foreign.upd.GitHubRelease)
+			err := ValidateCredentialsUpdate(own.typ, &mixed)
+			if err == nil {
+				t.Errorf("credentials update %s + %s group = nil, want error", own.name, foreign.name)
+			} else if !errors.Is(err, ErrInvalid) {
+				t.Errorf("credentials update %s + %s group error = %v, want ErrInvalid", own.name, foreign.name, err)
+			}
+		}
+	}
+}
+
+// nonNilOf 返回 a、b 中非 nil 的那个（同为 nil 时 nil），测试装置用。
+func nonNilOf[T any](a, b *T) *T {
+	if a != nil {
+		return a
+	}
+	return b
+}
+
+// TestValidateCreateInputRejectsMixedConfig 严格单选在原始形态上先行：
+// Normalized 会丢弃当前协议之外的组，先归一再校验会让混组输入绕过
+// 单选不变量（SMB + GitHubRelease 混组曾被归一化消掉后通过校验）。
+func TestValidateCreateInputRejectsMixedConfig(t *testing.T) {
+	input := CreateInput{
+		Name: "mixed",
+		Type: TypeSMB,
+		Config: Config{
+			SMB:           ptrSMB(validSMBConfig()),
+			GitHubRelease: &GitHubReleaseConfig{Repository: "owner/repo"},
+		},
+		Credentials: Credentials{SMB: &SMBCredentials{Password: "secret"}},
+	}
+	if err := ValidateCreateInput(input); err == nil {
+		t.Error("mixed smb + github_release config = nil, want error")
+	} else if !errors.Is(err, ErrInvalid) {
+		t.Errorf("mixed config error = %v, want ErrInvalid", err)
+	}
+}
+
 // TestValidateLogicalPath 校验跨协议 logical path 规则：绝对、clean、
 // 无反斜杠 / NUL / 尾随分隔符；反斜杠必须拒绝以保证跨平台本地映射
 // 语义一致。
