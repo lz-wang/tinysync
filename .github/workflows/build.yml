@@ -80,12 +80,12 @@ jobs:
           name: backend
           fail_ci_if_error: false
 
-  # S3 integration gate：真实 S3 服务（Silo，MinIO fork）。实现在
+  # Protocol integration gate：真实协议服务（S3 Silo + Samba）。实现在
   # integration.yml 可复用 workflow 中，与 Release workflow 共用同一套
   # 装配与证据；ref 固定为本 workflow 检出的 commit，保证被验证的就是
   # 被构建的代码。
   integration:
-    name: S3 integration (Silo)
+    name: Protocol integration
     needs: prepare
     uses: ./.github/workflows/integration.yml
     with:

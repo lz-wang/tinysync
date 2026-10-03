@@ -131,12 +131,12 @@ jobs:
       - name: Run release checks
         run: make ci
 
-  # S3 integration gate 是发布门禁的一部分：main 集成变红时不可能
+  # Protocol integration gate 是发布门禁的一部分：main 集成变红时不可能
   # 发布。实现与 Build workflow 共用（integration.yml），避免维护两份
-  # S3 服务装配；ref 固定为发布 tag——手动补跑时调用方事件 ref 可能是
+  # 协议服务装配；ref 固定为发布 tag——手动补跑时调用方事件 ref 可能是
   # main，必须保证被验证的 commit 就是被发布的 commit。
   integration:
-    name: S3 integration (Silo)
+    name: Protocol integration
     needs: prepare
     uses: ./.github/workflows/integration.yml
     with:

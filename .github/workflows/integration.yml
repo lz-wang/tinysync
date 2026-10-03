@@ -120,10 +120,13 @@ jobs:
           check-latest: true
 
       # 真实 Samba（smbd-only variant）：真实 TCP + SMB2/3 negotiate +
-      # NTLMv2 + 真实文件系统。pull 重试语义与 S3 job 相同。
+      # NTLMv2 + 真实文件系统。pull 重试语义与 S3 job 相同。镜像按
+      # digest 固定（smbd-only-latest 是滚动 tag：镜像升级可能改变
+      # 默认 smb.conf / 权限模型 / 协议最低版本，integration gate 会
+      # 在无代码变更的情况下变红）；当前 digest 对应 Samba 4.23.8。
       - name: Start Samba service
         run: |
-          image="ghcr.io/servercontainers/samba:smbd-only-latest"
+          image="ghcr.io/servercontainers/samba@sha256:31b90ea7fe3258d30fccd971c85743b92694605f4b43dc8a4df23a202fced06a"
           pulled=false
           for attempt in 1 2 3; do
             if docker pull "$image"; then
@@ -137,7 +140,11 @@ jobs:
             echo "Failed to pull ${image} after retries"
             exit 1
           fi
-          mkdir -p /tmp/tinysync-smb-it
+          # 宿主机目录 0777：容器内 Samba 进程与 runner 用户 UID 不同，
+          # 0755 会让 SMB 写入（mkdir 造隔离目录等）在 Linux 文件系统
+          # 层被拒（permission denied）。这是 CI 专属的一次性测试
+          # 目录，不与仓库 / 常驻数据混用。
+          install -d -m 0777 /tmp/tinysync-smb-it
           docker run -d --name samba \
             -p 127.0.0.1:445:445 \
             -e "ACCOUNT_tinysync=integration-secret" \
