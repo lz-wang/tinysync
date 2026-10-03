@@ -92,6 +92,7 @@ func TestParseCaddyJSONMalformed(t *testing.T) {
 		{"invalid json", `[{"name":`, "invalid caddy JSON"},
 		{"duplicate", `[{"name":"a","is_dir":false,"is_symlink":false},{"name":"a","is_dir":true,"is_symlink":false}]`, "duplicate entry"},
 		{"nested name", `[{"name":"a/b","is_dir":false,"is_symlink":false}]`, "not a single clean path segment"},
+		{"negative size", `[{"name":"a","size":-1,"url":"a","mod_time":"2026-10-01T12:00:00Z","is_dir":false,"is_symlink":false}]`, "negative size"},
 	}
 	for _, tc := range cases {
 		_, err := parseCaddyJSON(m, "/", []byte(tc.body))

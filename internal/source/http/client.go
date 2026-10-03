@@ -23,6 +23,14 @@ import (
 // 有界并发上限（one file = one HEAD，禁止无界 goroutine）。
 const metadataConcurrency = 8
 
+// maxListingBodyBytes 是单个目录 listing 响应体的读取上限（nginx 无
+// Caddy file_limit 那样的客户端可知条目上限）：异常或恶意服务可以
+// 返回任意大的响应体，不加限制会造成高内存占用甚至 OOM。超过上限
+// 视为无法证明快照完整性的 permanent 失败（不截断解析——截断的
+// JSON 同样无法证明完整性）。32 MiB 约合十几万条 JSON 条目，远超
+// Caddy 默认 file_limit=10000 的对应体积。
+const maxListingBodyBytes = 32 << 20
+
 // Client 实现 source.Remote 与 source.TreeScanner。
 type Client struct {
 	cfg  source.HTTPConfig
@@ -251,7 +259,9 @@ func (c *Client) cacheKind(kind listingKind) {
 	c.kind = kind
 }
 
-// getListingBody 请求目录 listing 并返回 body；非 200 分类为协议错误。
+// getListingBody 请求目录 listing 并返回 body；非 200 分类为协议错误，
+// 响应体超过 maxListingBodyBytes 时 fail-closed（permanent）——绝不
+// 截断解析，截断的 listing 等于不完整快照。
 func (c *Client) getListingBody(ctx context.Context, dir string, raw bool) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -272,9 +282,14 @@ func (c *Client) getListingBody(ctx context.Context, dir string, raw bool) ([]by
 	if resp.StatusCode != 200 {
 		return nil, classifyResponseError("list", resp)
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxListingBodyBytes+1))
 	if err != nil {
 		return nil, classifyTransportError("list", err)
+	}
+	if len(body) > maxListingBodyBytes {
+		return nil, source.MarkPermanent(fmt.Errorf(
+			"http list %s: directory listing exceeds %d bytes; snapshot completeness cannot be guaranteed",
+			req.URL.Redacted(), maxListingBodyBytes))
 	}
 	return body, nil
 }

@@ -32,6 +32,11 @@ func parseNginxJSON(m *mapper, dir string, body []byte) ([]rawEntry, error) {
 			return nil, malformedListing(dir, fmt.Sprintf("nginx entry %q has unknown type %q", e.Name, e.Type))
 		}
 		isDir := e.Type == "directory"
+		if !isDir && e.Size < 0 {
+			// 负 size 是畸形 listing：不得进入 Fingerprint（Planner 的
+			// 大小比较与 Downloader 的字节数校验都依赖非负精确值）。
+			return nil, malformedListing(dir, fmt.Sprintf("nginx entry %q has negative size %d", e.Name, e.Size))
+		}
 		entry := rawEntry{Name: strings.TrimSuffix(e.Name, "/"), IsDir: isDir}
 		if !isDir {
 			// 文件条目携带精确字节大小。

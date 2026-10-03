@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"tinysync/internal/source"
@@ -88,12 +89,15 @@ func (r *requester) newRequest(ctx context.Context, method, rawURL, accept strin
 
 // do 执行请求并统一校验响应边界：非 identity 的 Content-Encoding 一律
 // 拒绝（Caddy precompressed sidecar 等场景会返回压缩 representation）。
+// 只接受空值或字面 identity（大小写无关、容忍首尾空白）；q 值是请求
+// 协商参数，出现在响应头里只能视为畸形响应，绝不能当作「未压缩」。
 func (r *requester) do(req *http.Request) (*http.Response, error) {
 	resp, err := r.client.Do(req)
 	if err != nil {
 		return nil, classifyTransportError(req.Method, normalizeHTTPErr(err))
 	}
-	if enc := resp.Header.Get("Content-Encoding"); enc != "" && enc != "identity" && enc != "gzip;q=0" {
+	if enc := strings.TrimSpace(resp.Header.Get("Content-Encoding")); enc != "" &&
+		!strings.EqualFold(enc, "identity") {
 		_ = resp.Body.Close()
 		return nil, source.MarkPermanent(fmt.Errorf(
 			"http %s %s: content-encoding %q is not identity; compressed representations would break size verification",

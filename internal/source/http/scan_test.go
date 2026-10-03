@@ -321,3 +321,33 @@ func TestAutoModeJSONObjectUnsupported(t *testing.T) {
 		}
 	}
 }
+
+// listing 响应体超过上限：permanent 失败，绝不截断解析（截断的
+// listing 等于不完整快照）。上限减一字节仍可正常读取。
+func TestListingBodySizeLimit(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		oversized := make([]byte, maxListingBodyBytes+1)
+		for i := range oversized {
+			oversized[i] = ' '
+		}
+		_, _ = w.Write(oversized)
+	}))
+	t.Cleanup(ts.Close)
+	remote := openRemoteAt(t, ts, source.HTTPListingAuto)
+	_, err := remote.Stat(context.Background(), "/")
+	if err == nil {
+		t.Fatal("oversized listing accepted, want fail-closed")
+	}
+	if !strings.Contains(err.Error(), "exceeds") || source.IsRetryable(err) {
+		t.Errorf("oversized listing error = %v, want permanent size-limit detail", err)
+	}
+
+	// 边界内（恰好上限大小的未知内容）走正常 unsupported 路径而非
+	// 超限错误。
+	within := newFixedListingServer(t, strings.Repeat(" ", maxListingBodyBytes-2)+"{}")
+	remote2 := openRemoteAt(t, within, source.HTTPListingAuto)
+	_, err = remote2.Stat(context.Background(), "/")
+	if err == nil || strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("within-limit listing error = %v, want unsupported (not size-limit)", err)
+	}
+}

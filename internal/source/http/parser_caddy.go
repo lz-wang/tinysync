@@ -40,6 +40,11 @@ func parseCaddyJSON(m *mapper, dir string, body []byte) ([]rawEntry, error) {
 			return nil, source.MarkPermanent(fmt.Errorf(
 				"caddy entry %q is a symlink; symlinks are not supported (fail-closed)", joinLogical(dir, e.Name)))
 		}
+		// 负 size 是畸形 listing：不得进入 Fingerprint（Planner 的大小
+		// 比较与 Downloader 的字节数校验都依赖非负精确值）。
+		if !e.IsDir && e.Size < 0 {
+			return nil, malformedListing(dir, fmt.Sprintf("caddy entry %q has negative size %d", e.Name, e.Size))
+		}
 		// 真实 Caddy 的目录名带尾 "/"（与 nginx JSON 同一约定），统一剥掉。
 		entry := rawEntry{
 			Name:       strings.TrimSuffix(e.Name, "/"),

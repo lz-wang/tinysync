@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"golang.org/x/net/html"
+
+	"tinysync/internal/source"
 )
 
 // parseMiniserveHTML 解析 miniserve ?raw=true 的简化 HTML 表：
@@ -12,7 +14,10 @@ import (
 // <a class="directory|file" href>。只从 DOM 取 name / isDir——
 // miniserve 默认 --size-display human，页面大小是人类可读近似，
 // 绝不解析；精确 metadata 由 HEAD（Range 兜底）补全。父目录导航行
-// （href "../"）跳过。
+// （href "../"）跳过。symlink 条目（行标记 entry-type-symlink /
+// 锚点 class=symlink，真实 miniserve 对指向目录与文件的链接均使用
+// 该标记）fail-closed 拒绝（与 Caddy is_symlink 同一风格）：服务器
+// 端推荐 --no-symlinks 只是测试配置，客户端必须自带防线。
 func parseMiniserveHTML(m *mapper, dir string, body []byte) ([]rawEntry, error) {
 	doc, err := html.Parse(strings.NewReader(string(body)))
 	if err != nil {
@@ -23,16 +28,28 @@ func parseMiniserveHTML(m *mapper, dir string, body []byte) ([]rawEntry, error) 
 		parseErr error
 	)
 	visitRows(doc, func(rowClass, href, anchorClass string) {
-		// 只有 entry-type-* 行标记或 file/directory 锚点 class 的行是
-		// 条目行；表头（含 ?sort=... 排序控件）、隐藏行与导航行跳过
-		//（真实 miniserve raw 页的表头锚点是纯 query href）。
+		// 只有 entry-type-* 行标记或 file/directory/symlink 锚点 class
+		// 的行是条目行；表头（含 ?sort=... 排序控件）、隐藏行与导航行
+		// 跳过（真实 miniserve raw 页的表头锚点是纯 query href）。
+		// symlink 锚点计入条目行是为了落入下方的 fail-closed 拒绝，
+		// 而不是被当作非条目行静默跳过。
 		isEntryRow := strings.Contains(rowClass, "entry-type-") ||
-			hasClass(anchorClass, "directory") || hasClass(anchorClass, "file")
+			hasClass(anchorClass, "directory") || hasClass(anchorClass, "file") ||
+			hasClass(anchorClass, "symlink")
 		if !isEntryRow {
 			return
 		}
 		// 父目录导航行跳过。
 		if href == "../" || href == "./" || href == "/" || href == ".." {
+			return
+		}
+		// symlink 行在提取条目前拒绝：跟随会破坏 BaseURL confinement，
+		// 静默跳过会破坏 Mirror 删除安全（部分快照）。
+		if strings.Contains(rowClass, "entry-type-symlink") || hasClass(anchorClass, "symlink") {
+			if parseErr == nil {
+				parseErr = source.MarkPermanent(fmt.Errorf(
+					"miniserve entry %q is a symlink; symlinks are not supported (fail-closed)", href))
+			}
 			return
 		}
 		isDir := strings.Contains(rowClass, "entry-type-directory") ||

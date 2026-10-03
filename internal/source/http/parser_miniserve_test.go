@@ -3,6 +3,8 @@ package http
 import (
 	"strings"
 	"testing"
+
+	"tinysync/internal/source"
 )
 
 // newRootMapper 构造指向固定 BaseURL 的 mapper（parser 测试用）。
@@ -128,5 +130,51 @@ func TestParseMiniserveHTMLSecurity(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].Name != "a.txt" {
 		t.Errorf("entries = %+v, want only a.txt", entries)
+	}
+}
+
+// symlink 条目 fail-closed（permanent）：真实 miniserve 对指向文件与
+// 指向目录的 symlink 都用 a.symlink 锚点（内嵌目标链接）与
+// entry-type-symlink 行标记，两种形态都必须整轮失败——服务器端
+// --no-symlinks 只是部署建议，客户端自带防线。
+func TestParseMiniserveHTMLSymlinkFailClosed(t *testing.T) {
+	m := newRootMapper(t)
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			"file symlink",
+			`<html><body><table>` +
+				`<tr class="entry-type-symlink"><td><p><a class="symlink" href="link.txt">link.txt<span class="symlink-symbol"></span><a class="file">target.txt</a></a></p></td><td class="size-cell">3 B</td><td class="date-cell">2026-10-01 12:00</td></tr>` +
+				`</table></body></html>`,
+		},
+		{
+			"directory symlink",
+			`<html><body><table>` +
+				`<tr class="entry-type-symlink"><td><p><a class="symlink" href="link-dir/">link-dir/<span class="symlink-symbol"></span><a class="directory">real-dir/</a></a></p></td><td class="size-cell">-</td><td class="date-cell">2026-10-01 12:00</td></tr>` +
+				`</table></body></html>`,
+		},
+		{
+			// 仅锚点标记、行标记缺失的兼容形态同样拒绝。
+			"anchor class only",
+			`<html><body><table>` +
+				`<tr><td><p><a class="symlink" href="link.txt">link.txt</a></p></td></tr>` +
+				`</table></body></html>`,
+		},
+	}
+	for _, tc := range cases {
+		_, err := parseMiniserveHTML(m, "/", []byte(tc.body))
+		if err == nil {
+			t.Errorf("%s: symlink accepted, want fail-closed", tc.name)
+			continue
+		}
+		if !strings.Contains(err.Error(), "symlink") {
+			t.Errorf("%s: error = %v, want symlink detail", tc.name, err)
+		}
+		if !source.IsRetryable(err) {
+			continue
+		}
+		t.Errorf("%s: symlink rejection should be permanent, got %v", tc.name, err)
 	}
 }

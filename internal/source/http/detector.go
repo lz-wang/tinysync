@@ -21,9 +21,13 @@ func detectListing(body []byte) listingKind {
 		bytes.Contains(trimmed, []byte("entry-type-file")) {
 		return listingMiniserveHTML
 	}
-	// 空目录的 miniserve raw 页没有条目行，只剩表头结构标记
-	//（真实输出：<thead><th class="name">Name</th>…）。
-	if bytes.Contains(trimmed, []byte(`<th class="name">`)) {
+	// 空目录的 miniserve raw 页没有条目行，只剩表头结构标记。完整
+	// 签名要求 name / size / date 三列表头同时存在（真实 miniserve
+	// 的 raw 表头恒为这三列）：只认 th.name 会让恰好含该标记的普通
+	// HTML 页被误判，解析零条目后得到「合法空目录」快照。
+	if bytes.Contains(trimmed, []byte(`<th class="name">`)) &&
+		bytes.Contains(trimmed, []byte(`<th class="size">`)) &&
+		bytes.Contains(trimmed, []byte(`<th class="date">`)) {
 		return listingMiniserveHTML
 	}
 	// nginx autoindex HTML 的稳定结构标记：标题「Index of /」。

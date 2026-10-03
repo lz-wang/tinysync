@@ -67,6 +67,7 @@ func TestParseNginxJSONMalformed(t *testing.T) {
 		{"file dir collision", `[{"name":"a","type":"file","mtime":"Wed, 21 Oct 2026 07:28:00 GMT","size":1},{"name":"a/","type":"directory","mtime":"Wed, 21 Oct 2026 07:28:00 GMT"}]`, "duplicate entry"},
 		{"nested name", `[{"name":"a/b","type":"file","mtime":"Wed, 21 Oct 2026 07:28:00 GMT","size":1}]`, "not a single clean path segment"},
 		{"dot segment", `[{"name":"..","type":"directory","mtime":"Wed, 21 Oct 2026 07:28:00 GMT"}]`, "not a single clean path segment"},
+		{"negative size", `[{"name":"x","type":"file","mtime":"Wed, 21 Oct 2026 07:28:00 GMT","size":-1}]`, "negative size"},
 	}
 	for _, tc := range cases {
 		_, err := parseNginxJSON(m, "/", []byte(tc.body))

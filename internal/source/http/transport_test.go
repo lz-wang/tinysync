@@ -189,6 +189,56 @@ func TestCompressionFailClosed(t *testing.T) {
 	}
 }
 
+// Content-Encoding 只接受空值或字面 identity（大小写无关、容忍首尾
+// 空白）：q 值是请求协商参数，出现在响应头（如 gzip;q=0）只能视为
+// 畸形 / 压缩响应并拒绝。
+func TestContentEncodingStrictMatrix(t *testing.T) {
+	cases := []struct {
+		encoding string
+		wantErr  bool
+	}{
+		{"", false},
+		{"identity", false},
+		{"Identity", false},
+		{"IDENTITY", false},
+		{" identity ", false},
+		{"gzip", true},
+		{"gzip;q=0", true},
+		{"br", true},
+		{"deflate, gzip", true},
+	}
+	for _, tc := range cases {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if tc.encoding != "" {
+				w.Header().Set("Content-Encoding", tc.encoding)
+			}
+			_, _ = w.Write([]byte("body"))
+		}))
+		r := newTestRequester(t, ts, authConfig{method: source.HTTPAuthNone})
+		req, err := r.newRequest(context.Background(), http.MethodGet, ts.URL+"/files/a.txt", "")
+		if err != nil {
+			t.Fatalf("encoding %q newRequest: %v", tc.encoding, err)
+		}
+		resp, err := r.do(req)
+		if tc.wantErr {
+			if err == nil {
+				_ = resp.Body.Close()
+				t.Errorf("content-encoding %q accepted, want rejection", tc.encoding)
+			} else if !strings.Contains(err.Error(), "content-encoding") || source.IsRetryable(err) {
+				t.Errorf("content-encoding %q error = %v, want permanent content-encoding detail", tc.encoding, err)
+			}
+			ts.Close()
+			continue
+		}
+		if err != nil {
+			t.Errorf("content-encoding %q rejected: %v", tc.encoding, err)
+		} else {
+			_ = resp.Body.Close()
+		}
+		ts.Close()
+	}
+}
+
 // 认证头：basic 与 bearer 按配置注入，none 不携带。
 func TestAuthHeaders(t *testing.T) {
 	var got string
