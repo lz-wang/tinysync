@@ -7,26 +7,6 @@ import (
 	"testing"
 )
 
-func TestPathsOverlap(t *testing.T) {
-	base := filepath.VolumeName(t.TempDir()) + string(filepath.Separator)
-	for _, tc := range []struct {
-		a, b string
-		want bool
-	}{
-		{base, base, true}, {base, filepath.Join(base, "home/user"), true},
-		{filepath.Join(base, "home/user"), filepath.Join(base, "home/user/data"), true},
-		{filepath.Join(base, "home/user"), filepath.Join(base, "home/users"), false},
-		{filepath.Join(base, "a/b"), filepath.Join(base, "a/c"), false},
-	} {
-		if got := PathsOverlap(tc.a, tc.b); got != tc.want {
-			t.Errorf("PathsOverlap(%q,%q)=%v", tc.a, tc.b, got)
-		}
-		if got := PathsOverlap(tc.b, tc.a); got != tc.want {
-			t.Errorf("reverse PathsOverlap=%v", got)
-		}
-	}
-}
-
 func TestCanonicalExistingDir(t *testing.T) {
 	root := t.TempDir()
 	want, err := filepath.EvalSymlinks(root)

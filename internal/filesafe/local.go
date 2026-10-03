@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 )
 
@@ -108,15 +107,6 @@ func DirectoryCandidatesOverlap(a, b string) (bool, error) {
 	}
 	return sameOrUnder(strings.ToLower(aSuffix), strings.ToLower(bSuffix)) ||
 		sameOrUnder(strings.ToLower(bSuffix), strings.ToLower(aSuffix)), nil
-}
-
-// PathsOverlap 判断 canonical native 路径是否相同或互相包含。
-func PathsOverlap(a, b string) bool {
-	if runtime.GOOS == "windows" {
-		a = strings.ToLower(a)
-		b = strings.ToLower(b)
-	}
-	return sameOrUnder(a, b) || sameOrUnder(b, a)
 }
 
 // ExistingDirectoriesOverlap 根据文件系统身份判断已存在目录是否相同或
