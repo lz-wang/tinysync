@@ -23,6 +23,7 @@ const (
 	TypeSFTP          Type = "sftp"
 	TypeSMB           Type = "smb"
 	TypeGitHubRelease Type = "github_release"
+	TypeLocal         Type = "local"
 )
 
 // GitHubReleasePolicy 是 GitHub Release Source 的版本选择策略。
@@ -116,6 +117,12 @@ type Config struct {
 	SFTP          *SFTPConfig
 	SMB           *SMBConfig
 	GitHubRelease *GitHubReleaseConfig
+	Local         *LocalConfig
+}
+
+// LocalConfig 是宿主机文件树的非敏感配置，Root 为 canonical native 绝对路径。
+type LocalConfig struct {
+	Root string `json:"root"`
 }
 
 // WebDAVConfig 是 WebDAV Source 的非敏感配置。
@@ -343,6 +350,13 @@ type UpdateInput struct {
 // 已通过 ValidateConfig。
 func (c Config) Normalized(t Type) Config {
 	switch t {
+	case TypeLocal:
+		if c.Local == nil {
+			return c
+		}
+		local := *c.Local
+		local.Root = strings.TrimSpace(local.Root)
+		return Config{Local: &local}
 	case TypeWebDAV:
 		if c.WebDAV == nil {
 			return c

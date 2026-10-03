@@ -525,6 +525,7 @@ type strictUnionSample struct {
 
 func strictUnionSamples() []strictUnionSample {
 	return []strictUnionSample{
+		{"local", TypeLocal, Config{Local: &LocalConfig{Root: "/local"}}, Credentials{}},
 		{"webdav", TypeWebDAV,
 			Config{WebDAV: &WebDAVConfig{Endpoint: "https://x/"}}, Credentials{}},
 		{"s3", TypeS3, Config{S3: ptrS3(validS3Config())},
@@ -538,7 +539,7 @@ func strictUnionSamples() []strictUnionSample {
 	}
 }
 
-// TestValidateConfigStrictUnion 严格单选全矩阵（5×4）：任何协议的
+// TestValidateConfigStrictUnion 严格单选全矩阵（6×5）：任何协议的
 // config 混入任何其它协议的非空组都必须拒绝。SMB 落地时
 // GitHubRelease 曾漏在四个既有互斥检查之外，单选不变量因此不对称。
 func TestValidateConfigStrictUnion(t *testing.T) {
@@ -553,6 +554,7 @@ func TestValidateConfigStrictUnion(t *testing.T) {
 			mixed.SFTP = nonNilOf(own.cfg.SFTP, foreign.cfg.SFTP)
 			mixed.SMB = nonNilOf(own.cfg.SMB, foreign.cfg.SMB)
 			mixed.GitHubRelease = nonNilOf(own.cfg.GitHubRelease, foreign.cfg.GitHubRelease)
+			mixed.Local = nonNilOf(own.cfg.Local, foreign.cfg.Local)
 			if err := ValidateConfig(own.typ, mixed); err == nil {
 				t.Errorf("config %s + %s group = nil, want error", own.name, foreign.name)
 			} else if !errors.Is(err, ErrInvalid) {

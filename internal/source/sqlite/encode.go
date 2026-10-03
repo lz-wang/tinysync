@@ -15,6 +15,8 @@ import (
 func encodeConfig(t source.Type, c source.Config) (string, error) {
 	var data any
 	switch t {
+	case source.TypeLocal:
+		data = c.Local
 	case source.TypeWebDAV:
 		data = c.WebDAV
 	case source.TypeS3:
@@ -41,6 +43,12 @@ func encodeConfig(t source.Type, c source.Config) (string, error) {
 // decodeConfig 按协议解码扁平 JSON 对象为 typed config。
 func decodeConfig(t source.Type, raw string) (source.Config, error) {
 	switch t {
+	case source.TypeLocal:
+		c := &source.LocalConfig{}
+		if err := json.Unmarshal([]byte(raw), c); err != nil {
+			return source.Config{}, fmt.Errorf("decode local config: %w", err)
+		}
+		return source.Config{Local: c}, nil
 	case source.TypeWebDAV:
 		c := &source.WebDAVConfig{}
 		if err := json.Unmarshal([]byte(raw), c); err != nil {
@@ -90,6 +98,10 @@ type credentialsJSON struct {
 func encodeCredentials(t source.Type, c source.Credentials) (string, error) {
 	var raw credentialsJSON
 	switch t {
+	case source.TypeLocal:
+		if err := source.ValidateCredentials(t, source.Config{}, c); err != nil {
+			return "", err
+		}
 	case source.TypeWebDAV:
 		if c.WebDAV != nil {
 			raw.Password = strPtr(c.WebDAV.Password)
@@ -132,6 +144,8 @@ func decodeCredentials(t source.Type, raw string) (source.Credentials, error) {
 		return source.Credentials{}, fmt.Errorf("decode source credentials: %w", err)
 	}
 	switch t {
+	case source.TypeLocal:
+		return source.Credentials{}, nil
 	case source.TypeWebDAV:
 		return source.Credentials{WebDAV: &source.WebDAVCredentials{
 			Password: derefStr(data.Password),

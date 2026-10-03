@@ -20,7 +20,7 @@ const sftpDefaultPort = 22
 // ValidateType 校验协议类型。
 func ValidateType(t Type) error {
 	switch t {
-	case TypeWebDAV, TypeS3, TypeSFTP, TypeSMB, TypeGitHubRelease:
+	case TypeWebDAV, TypeS3, TypeSFTP, TypeSMB, TypeGitHubRelease, TypeLocal:
 		return nil
 	case "":
 		return fmt.Errorf("%w: type is required", ErrInvalid)
@@ -74,6 +74,10 @@ func ValidateConfig(t Type, c Config) error {
 		return err
 	}
 	switch t {
+	case TypeLocal:
+		if strings.TrimSpace(c.Local.Root) == "" {
+			return fmt.Errorf("%w: local root is required", ErrInvalid)
+		}
 	case TypeWebDAV:
 		if err := ValidateEndpoint(c.WebDAV.Endpoint); err != nil {
 			return err
@@ -111,6 +115,8 @@ func validateConfigUnion(t Type, c Config) error {
 		missing = c.SMB == nil
 	case TypeGitHubRelease:
 		missing = c.GitHubRelease == nil
+	case TypeLocal:
+		missing = c.Local == nil
 	case "":
 		return fmt.Errorf("%w: type is required", ErrInvalid)
 	default:
@@ -156,6 +162,7 @@ func (c Config) foreignGroupSet(t Type) bool {
 		{TypeSFTP, c.SFTP != nil},
 		{TypeSMB, c.SMB != nil},
 		{TypeGitHubRelease, c.GitHubRelease != nil},
+		{TypeLocal, c.Local != nil},
 	} {
 		if g.typ != t && g.set {
 			return true
@@ -413,6 +420,10 @@ func validateHostKeyFingerprint(fp string) error {
 //     时源自身不得再持有任何内联 secret——引用与内联互斥。
 func ValidateCredentials(t Type, c Config, creds Credentials) error {
 	switch t {
+	case TypeLocal:
+		if creds.foreignGroupSet(t) {
+			return fmt.Errorf("%w: local source does not accept credentials", ErrInvalid)
+		}
 	case TypeWebDAV:
 		if creds.foreignGroupSet(t) {
 			return fmt.Errorf("%w: credentials must only contain webdav fields for type webdav", ErrInvalid)
@@ -539,6 +550,9 @@ func CredentialStateOf(t Type, creds Credentials) CredentialState {
 func ValidateCredentialsUpdate(t Type, creds *CredentialsUpdate) error {
 	if creds == nil {
 		return nil
+	}
+	if t == TypeLocal {
+		return fmt.Errorf("%w: local source does not accept credentials", ErrInvalid)
 	}
 	switch t {
 	case TypeWebDAV:
@@ -691,12 +705,28 @@ func ValidateCreateInput(input CreateInput) error {
 	if err := ValidateType(input.Type); err != nil {
 		return err
 	}
-	if err := validateConfigUnion(input.Type, input.Config); err != nil {
-		return err
-	}
-	normalized := input.Config.Normalized(input.Type)
-	if err := ValidateConfig(input.Type, normalized); err != nil {
+	normalized, err := PrepareConfig(input.Type, input.Config)
+	if err != nil {
 		return err
 	}
 	return ValidateCredentials(input.Type, normalized, input.Credentials)
+}
+
+// PrepareConfig 先校验严格单选，再归一化配置与本地目录身份。
+func PrepareConfig(t Type, c Config) (Config, error) {
+	if err := validateConfigUnion(t, c); err != nil {
+		return Config{}, err
+	}
+	c = c.Normalized(t)
+	if t == TypeLocal {
+		root, err := filesafe.CanonicalExistingDir(c.Local.Root)
+		if err != nil {
+			return Config{}, fmt.Errorf("%w: invalid local root: %w", ErrInvalid, err)
+		}
+		c.Local.Root = root
+	}
+	if err := ValidateConfig(t, c); err != nil {
+		return Config{}, err
+	}
+	return c, nil
 }

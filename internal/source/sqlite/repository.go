@@ -46,6 +46,7 @@ const credentialStateExpr = `CASE type
 		'password_set', CASE WHEN COALESCE(json_extract(credentials_json, '$.password'), '') != '' THEN json('true') ELSE json('false') END))
 	WHEN 'github_release' THEN json_object('github_release', json_object(
 		'token_set', CASE WHEN COALESCE(json_extract(credentials_json, '$.token'), '') != '' THEN json('true') ELSE json('false') END))
+	WHEN 'local' THEN '{}'
 	ELSE '{}'
 END`
 

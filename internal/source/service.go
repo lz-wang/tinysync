@@ -48,6 +48,10 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Source, error)
 		return Source{}, err
 	}
 
+	prepared, err := PrepareConfig(input.Type, input.Config)
+	if err != nil {
+		return Source{}, err
+	}
 	id, err := NewID()
 	if err != nil {
 		return Source{}, err
@@ -57,7 +61,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Source, error)
 		ID:              id,
 		Name:            strings.TrimSpace(input.Name),
 		Type:            input.Type,
-		Config:          input.Config.Normalized(input.Type),
+		Config:          prepared,
 		CredentialState: CredentialStateOf(input.Type, input.Credentials),
 		Enabled:         input.Enabled,
 		CreatedAt:       now,
@@ -103,10 +107,10 @@ func (s *Service) Update(ctx context.Context, id string, input UpdateInput) (Sou
 		updated.Name = name
 	}
 	if input.Config != nil {
-		if err := ValidateConfig(updated.Type, *input.Config); err != nil {
+		normalized, err := PrepareConfig(updated.Type, *input.Config)
+		if err != nil {
 			return Source{}, err
 		}
-		normalized := input.Config.Normalized(updated.Type)
 		// 凭据引用存在性校验：config 整体替换语义下，credential_id
 		// 缺省即解绑，出现即改绑（指向不存在的凭据在入口拒绝）。
 		if err := s.validateCredentialReference(ctx, normalized); err != nil {

@@ -24,6 +24,11 @@ func RemoteIdentityEqual(a, b Source) bool {
 		return false
 	}
 	switch a.Type {
+	case TypeLocal:
+		if a.Config.Local == nil || b.Config.Local == nil {
+			return a.Config.Local == b.Config.Local
+		}
+		return a.Config.Local.Root == b.Config.Local.Root
 	case TypeWebDAV:
 		if a.Config.WebDAV == nil || b.Config.WebDAV == nil {
 			return a.Config.WebDAV == b.Config.WebDAV
