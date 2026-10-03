@@ -713,3 +713,5 @@ func ptrS3(c S3Config) *S3Config { return &c }
 func ptrSFTP(c SFTPConfig) *SFTPConfig { return &c }
 
 func ptrSMB(c SMBConfig) *SMBConfig { return &c }
+
+func ptrHTTP(c HTTPConfig) *HTTPConfig { return &c }

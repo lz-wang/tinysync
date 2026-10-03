@@ -116,6 +116,8 @@ func marshalConfigForResponse(t source.Type, c source.Config) (json.RawMessage, 
 		data = c.SMB
 	case source.TypeGitHubRelease:
 		data = c.GitHubRelease
+	case source.TypeHTTP:
+		data = c.HTTP
 	default:
 		return nil, fmt.Errorf("unsupported source type %q", t)
 	}
@@ -213,6 +215,12 @@ func decodeConfigPayload(t source.Type, raw json.RawMessage) (source.Config, err
 			return source.Config{}, fmt.Errorf("invalid github_release config: %v", err)
 		}
 		return source.Config{GitHubRelease: &c}, nil
+	case source.TypeHTTP:
+		var c source.HTTPConfig
+		if err := strictDecode(raw, &c); err != nil {
+			return source.Config{}, fmt.Errorf("invalid http config: %v", err)
+		}
+		return source.Config{HTTP: &c}, nil
 	default:
 		return source.Config{}, fmt.Errorf("unsupported source type %q", t)
 	}
@@ -292,6 +300,22 @@ func decodeCredentialsPayload(t source.Type, raw json.RawMessage) (source.Creden
 			creds.GitHubRelease.Token = *p.Token
 		}
 		return creds, nil
+	case source.TypeHTTP:
+		var p struct {
+			Password    *string `json:"password"`
+			BearerToken *string `json:"bearer_token"`
+		}
+		if err := strictDecode(raw, &p); err != nil {
+			return source.Credentials{}, fmt.Errorf("invalid http credentials: %v", err)
+		}
+		creds := source.Credentials{HTTP: &source.HTTPCredentials{}}
+		if p.Password != nil {
+			creds.HTTP.Password = *p.Password
+		}
+		if p.BearerToken != nil {
+			creds.HTTP.BearerToken = *p.BearerToken
+		}
+		return creds, nil
 	default:
 		return source.Credentials{}, fmt.Errorf("unsupported source type %q", t)
 	}
@@ -352,6 +376,18 @@ func decodeCredentialsUpdatePayload(t source.Type, raw json.RawMessage) (*source
 		}
 		return &source.CredentialsUpdate{GitHubRelease: &source.GitHubReleaseCredentialsUpdate{
 			Token: p.Token,
+		}}, nil
+	case source.TypeHTTP:
+		var p struct {
+			Password    *string `json:"password"`
+			BearerToken *string `json:"bearer_token"`
+		}
+		if err := strictDecode(raw, &p); err != nil {
+			return nil, fmt.Errorf("invalid http credentials: %v", err)
+		}
+		return &source.CredentialsUpdate{HTTP: &source.HTTPCredentialsUpdate{
+			Password:    p.Password,
+			BearerToken: p.BearerToken,
 		}}, nil
 	default:
 		return nil, fmt.Errorf("unsupported source type %q", t)

@@ -15,6 +15,11 @@ package source
 //	        include_prereleases（版本选择范围决定逻辑目录内容，改变
 //	        即改变 Mirror 的删除范围；verify_sha256 只影响校验强度，
 //	        token 轮换只影响访问，均不属于身份）
+//	HTTP    base_url + listing_mode + auth_method + username
+//	        （base_url 即源根，改变即改变远端 namespace；username
+//	        经 ACL 可能看到完全不同的目录树；caddy_file_limit 是扫描
+//	        安全参数，password / bearer_token 轮换只影响访问，均不
+//	        属于身份）
 //
 // 被 Sync Job 引用的 Source 禁止身份变更（409）：身份变化后 Mirror
 // 下轮完整扫描可能把既有 managed 文件全部误判为远端消失而删除。
@@ -75,6 +80,15 @@ func RemoteIdentityEqual(a, b Source) bool {
 			x.Tag == y.Tag &&
 			x.RecentCount == y.RecentCount &&
 			x.IncludePrereleases == y.IncludePrereleases
+	case TypeHTTP:
+		if a.Config.HTTP == nil || b.Config.HTTP == nil {
+			return a.Config.HTTP == b.Config.HTTP
+		}
+		x, y := *a.Config.HTTP, *b.Config.HTTP
+		return x.BaseURL == y.BaseURL &&
+			x.ListingMode == y.ListingMode &&
+			x.AuthMethod == y.AuthMethod &&
+			x.Username == y.Username
 	default:
 		return false
 	}

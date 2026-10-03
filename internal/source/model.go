@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -24,6 +25,7 @@ const (
 	TypeSMB           Type = "smb"
 	TypeGitHubRelease Type = "github_release"
 	TypeLocal         Type = "local"
+	TypeHTTP          Type = "http"
 )
 
 // GitHubReleasePolicy 是 GitHub Release Source 的版本选择策略。
@@ -79,6 +81,35 @@ const (
 // SMBDefaultPort 是 SMB 的默认端口（445，Direct TCP）。
 const SMBDefaultPort = 445
 
+// HTTPListingMode 是 HTTP 文件源的目录索引表现形式（ADR 0009）。
+// nginx / Caddy / miniserve 不是独立 Source Type，只是同一 http 类型
+// 下的 listing profile；auto 按响应形态自动识别。
+type HTTPListingMode string
+
+// 支持的目录索引表现形式。
+const (
+	HTTPListingAuto      HTTPListingMode = "auto"
+	HTTPListingNginx     HTTPListingMode = "nginx"
+	HTTPListingCaddy     HTTPListingMode = "caddy"
+	HTTPListingMiniserve HTTPListingMode = "miniserve"
+)
+
+// HTTPAuthMethod 是 HTTP 文件源的认证方式；显式声明，不根据字段
+// 非空推断（与 SFTP 的 AuthMethod 同一风格）。
+type HTTPAuthMethod string
+
+// 支持的认证方式：none / basic（用户名密码）/ bearer（token）。
+const (
+	HTTPAuthNone   HTTPAuthMethod = "none"
+	HTTPAuthBasic  HTTPAuthMethod = "basic"
+	HTTPAuthBearer HTTPAuthMethod = "bearer"
+)
+
+// DefaultCaddyFileLimit 是 Caddy file_server browse 的默认 file_limit
+// （官方默认 10000，超出后只显示前 N 个条目）。归一化把 0 补成该值；
+// 单目录 caddy listing 达到该值时扫描整轮失败（fail-closed）。
+const DefaultCaddyFileLimit = 10000
+
 // hostKeyFingerprintPrefix 是 SFTP host key fingerprint 的固定前缀。
 const hostKeyFingerprintPrefix = "SHA256:"
 
@@ -118,6 +149,7 @@ type Config struct {
 	SMB           *SMBConfig
 	GitHubRelease *GitHubReleaseConfig
 	Local         *LocalConfig
+	HTTP          *HTTPConfig
 }
 
 // LocalConfig 是宿主机文件树的非敏感配置，Root 为 canonical native 绝对路径。
@@ -188,6 +220,23 @@ type GitHubReleaseConfig struct {
 	VerifySHA256       GitHubSHA256Mode    `json:"verify_sha256"`
 }
 
+// HTTPConfig 是 HTTP 文件源的非敏感配置（ADR 0009）。BaseURL 即
+// Source 的 "/"（HTTP 文件服务的 URL path 是 namespace 的一部分，
+// 不设独立 remote_root）；canonical form 为补齐尾 / 的 clean
+// http(s) URL，禁止 userinfo / query / fragment。ListingMode 是
+// 目录索引 profile（nginx / caddy / miniserve 只是表现形式差异，
+// 不是独立 Source Type）。CaddyFileLimit 是扫描完整性参数而非远端
+// 身份：与 Caddy browse.file_limit 一致，达到即整轮扫描失败。
+type HTTPConfig struct {
+	BaseURL     string          `json:"base_url"`
+	ListingMode HTTPListingMode `json:"listing_mode"`
+	AuthMethod  HTTPAuthMethod  `json:"auth_method"`
+	// Username 仅 basic 方式使用；none / bearer 归一化时清空。
+	Username string `json:"username,omitempty"`
+	// CaddyFileLimit 0 归一为 DefaultCaddyFileLimit。
+	CaddyFileLimit int `json:"caddy_file_limit,omitempty"`
+}
+
 // Credentials 是一次写入或构造远端客户端的 secret 集合，按 Type
 // 严格单选。仅在 CreateInput / UpdateInput / Repository 凭据查询 /
 // Remote 构造路径流转，绝不进入 Source 对象与 API 响应。
@@ -197,6 +246,7 @@ type Credentials struct {
 	SFTP          *SFTPCredentials
 	SMB           *SMBCredentials
 	GitHubRelease *GitHubReleaseCredentials
+	HTTP          *HTTPCredentials
 }
 
 // GitHubReleaseCredentials 是 GitHub Release 的 secret。Token 可为空
@@ -233,6 +283,16 @@ type SMBCredentials struct {
 	Password string
 }
 
+// HTTPCredentials 是 HTTP 文件源的 secret，按 AuthMethod 二选一：
+// basic 用 Password，bearer 用 BearerToken。生命周期与 WebDAV
+// password 一致：明文只存在于 credentials_json，普通 API 永不回显。
+type HTTPCredentials struct {
+	// Password 用于 auth_method=basic。
+	Password string
+	// BearerToken 用于 auth_method=bearer。
+	BearerToken string
+}
+
 // CredentialState 是各 secret 是否已设置的布尔集合，协议无关地用于
 // API 回显与 UI 状态展示；按 Type 严格单选，与 Config 对应。
 type CredentialState struct {
@@ -241,6 +301,7 @@ type CredentialState struct {
 	SFTP          *SFTPCredentialState          `json:"sftp,omitempty"`
 	SMB           *SMBCredentialState           `json:"smb,omitempty"`
 	GitHubRelease *GitHubReleaseCredentialState `json:"github_release,omitempty"`
+	HTTP          *HTTPCredentialState          `json:"http,omitempty"`
 }
 
 // WebDAVCredentialState 是 WebDAV 的凭据状态。
@@ -263,6 +324,12 @@ type SFTPCredentialState struct {
 // SMBCredentialState 是 SMB 的凭据状态。
 type SMBCredentialState struct {
 	PasswordSet bool `json:"password_set"`
+}
+
+// HTTPCredentialState 是 HTTP 文件源的凭据状态。
+type HTTPCredentialState struct {
+	PasswordSet    bool `json:"password_set"`
+	BearerTokenSet bool `json:"bearer_token_set"`
 }
 
 // GitHubReleaseCredentialState 是 GitHub Release 的凭据状态。
@@ -302,6 +369,7 @@ type CredentialsUpdate struct {
 	SFTP          *SFTPCredentialsUpdate
 	SMB           *SMBCredentialsUpdate
 	GitHubRelease *GitHubReleaseCredentialsUpdate
+	HTTP          *HTTPCredentialsUpdate
 }
 
 // GitHubReleaseCredentialsUpdate 是 GitHub Release secret 的更新输入。
@@ -331,6 +399,13 @@ type SMBCredentialsUpdate struct {
 	Password *string
 }
 
+// HTTPCredentialsUpdate 是 HTTP 文件源 secret 的更新输入；两个字段
+// 独立三态。
+type HTTPCredentialsUpdate struct {
+	Password    *string
+	BearerToken *string
+}
+
 // UpdateInput 是更新 Source 的输入，指针字段区分「未提供」与「零值」：
 // nil 表示保留现有值；Credentials 组内 secret 为三态（nil 保留、
 // 空串清除、非空替换）。Type 不支持修改，输入结构不携带 Type。
@@ -346,8 +421,10 @@ type UpdateInput struct {
 // remote_root 空串取 "/"、signing 空值取 required（持久化后 SMB
 // 配置保持 canonical form），GitHub Release 的 policy 空值取
 // latest、verify_sha256 空值取 if_available，非对应策略下的 Tag /
-// RecentCount 归一为零值（身份比较与持久化因此形态稳定）。调用前必须
-// 已通过 ValidateConfig。
+// RecentCount 归一为零值（身份比较与持久化因此形态稳定），HTTP 的
+// BaseURL 归一为补齐尾 / 的 clean http(s) URL、listing_mode 空值取
+// auto、auth_method 空值取 none、none / bearer 下 username 清空、
+// caddy_file_limit 零值取 10000。调用前必须已通过 ValidateConfig。
 func (c Config) Normalized(t Type) Config {
 	switch t {
 	case TypeLocal:
@@ -424,7 +501,62 @@ func (c Config) Normalized(t Type) Config {
 			gh.VerifySHA256 = SHA256IfAvailable
 		}
 		return Config{GitHubRelease: &gh}
+	case TypeHTTP:
+		if c.HTTP == nil {
+			return c
+		}
+		h := *c.HTTP
+		h.BaseURL = canonicalHTTPBaseURL(h.BaseURL)
+		if h.ListingMode == "" {
+			h.ListingMode = HTTPListingAuto
+		}
+		if h.AuthMethod == "" {
+			h.AuthMethod = HTTPAuthNone
+		}
+		if h.AuthMethod != HTTPAuthBasic {
+			h.Username = ""
+		}
+		if h.CaddyFileLimit == 0 {
+			h.CaddyFileLimit = DefaultCaddyFileLimit
+		}
+		return Config{HTTP: &h}
 	default:
 		return c
 	}
+}
+
+// canonicalHTTPBaseURL 把 BaseURL 归一为 canonical form：去首尾空白、
+// scheme 与 host 小写、path 补齐尾 /（dot segment 不在此清理——
+// 非 clean path 由 ValidateConfig 拒绝，归一化不静默改写 namespace）。
+// 不合法输入（scheme / host 缺失、query / fragment 等）原样返回，
+// 由 ValidateConfig 拒绝——归一化不得先于校验吞掉错误形态。
+func canonicalHTTPBaseURL(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	u, err := url.Parse(trimmed)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return trimmed
+	}
+	// %2F 等经解码改变层级的编码（RawPath 非空）同样原样返回：
+	// 归一化清掉 RawPath 会把 "%2F" 静默变成真实分隔符，必须由
+	// ValidateConfig 拒绝而不是重写。
+	if u.RawQuery != "" || u.Fragment != "" || u.User != nil || u.RawPath != "" {
+		return trimmed
+	}
+	u.Scheme = strings.ToLower(u.Scheme)
+	u.Host = strings.ToLower(u.Host)
+	u.Path = withTrailingSlash(u.Path)
+	// 清空 RawPath 后 String() 按解码 path 重新转义，形态唯一。
+	u.RawPath = ""
+	return u.String()
+}
+
+// withTrailingSlash 返回以 / 结尾的绝对 path；空 path 视为根 "/"。
+func withTrailingSlash(p string) string {
+	if p == "" {
+		return "/"
+	}
+	if strings.HasSuffix(p, "/") {
+		return p
+	}
+	return p + "/"
 }

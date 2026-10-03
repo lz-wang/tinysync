@@ -20,7 +20,7 @@ const sftpDefaultPort = 22
 // ValidateType 校验协议类型。
 func ValidateType(t Type) error {
 	switch t {
-	case TypeWebDAV, TypeS3, TypeSFTP, TypeSMB, TypeGitHubRelease, TypeLocal:
+	case TypeWebDAV, TypeS3, TypeSFTP, TypeSMB, TypeGitHubRelease, TypeLocal, TypeHTTP:
 		return nil
 	case "":
 		return fmt.Errorf("%w: type is required", ErrInvalid)
@@ -93,6 +93,8 @@ func ValidateConfig(t Type, c Config) error {
 		return validateSMBConfig(*c.SMB)
 	case TypeGitHubRelease:
 		return validateGitHubReleaseConfig(*c.GitHubRelease)
+	case TypeHTTP:
+		return validateHTTPConfig(*c.HTTP)
 	}
 	return nil
 }
@@ -117,6 +119,8 @@ func validateConfigUnion(t Type, c Config) error {
 		missing = c.GitHubRelease == nil
 	case TypeLocal:
 		missing = c.Local == nil
+	case TypeHTTP:
+		missing = c.HTTP == nil
 	case "":
 		return fmt.Errorf("%w: type is required", ErrInvalid)
 	default:
@@ -144,6 +148,8 @@ func configTypeName(t Type) string {
 		return "smb"
 	case TypeGitHubRelease:
 		return "github_release"
+	case TypeHTTP:
+		return "http"
 	}
 	return string(t)
 }
@@ -163,6 +169,7 @@ func (c Config) foreignGroupSet(t Type) bool {
 		{TypeSMB, c.SMB != nil},
 		{TypeGitHubRelease, c.GitHubRelease != nil},
 		{TypeLocal, c.Local != nil},
+		{TypeHTTP, c.HTTP != nil},
 	} {
 		if g.typ != t && g.set {
 			return true
@@ -321,6 +328,67 @@ func validateGitHubReleaseConfig(c GitHubReleaseConfig) error {
 	return nil
 }
 
+// validateHTTPConfig 校验 HTTP 文件源配置（ADR 0009 canonical form）：
+// scheme 限 http/https、host 必填、禁止 userinfo / query / fragment、
+// path 必须是 clean 绝对路径（dot segment 拒绝，不做静默清理）且不带
+// 经解码改变层级的非标准 percent-encoding（%2F / %5C）；listing_mode
+// 与 auth_method 取值合法，basic 要求 username（none / bearer 下的
+// username 由 Normalized 清空，此处不重复拒绝——校验同时接受归一化
+// 前后的形态）。尾斜杠两种形态均接受，canonical form 由 Normalized
+// 补齐。
+func validateHTTPConfig(c HTTPConfig) error {
+	u, err := url.Parse(c.BaseURL)
+	if err != nil {
+		return fmt.Errorf("%w: parse http base_url %q: %v", ErrInvalid, c.BaseURL, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("%w: http base_url scheme must be http or https, got %q", ErrInvalid, u.Scheme)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("%w: http base_url host is required", ErrInvalid)
+	}
+	if u.User != nil {
+		return fmt.Errorf("%w: http base_url must not embed credentials; use the username field and credentials", ErrInvalid)
+	}
+	if u.RawQuery != "" {
+		return fmt.Errorf("%w: http base_url must not contain a query string; authentication goes through credentials", ErrInvalid)
+	}
+	if u.Fragment != "" {
+		return fmt.Errorf("%w: http base_url must not contain a fragment", ErrInvalid)
+	}
+	// 路径中不得出现经解码改变层级的编码或字符：RawPath 非空意味着
+	// 原始 path 无法经默认转义从解码 path 复原（如 %2F）；%5C 经
+	// 默认转义可复原、RawPath 为空，需对 escaped 形态再显式检查；
+	// 解码后的反斜杠与 NUL 同理在边界整体拒绝。
+	if u.RawPath != "" {
+		return fmt.Errorf("%w: http base_url %q must not contain percent-encoded path separators", ErrInvalid, c.BaseURL)
+	}
+	if esc := strings.ToLower(u.EscapedPath()); strings.Contains(esc, "%2f") || strings.Contains(esc, "%5c") ||
+		strings.Contains(u.Path, `\`) || strings.Contains(u.Path, "\x00") {
+		return fmt.Errorf("%w: http base_url %q must not contain path separators or NUL", ErrInvalid, c.BaseURL)
+	}
+	if trimmed := strings.TrimSuffix(u.Path, "/"); trimmed != "" && path.Clean(trimmed) != trimmed {
+		return fmt.Errorf("%w: http base_url path %q must be a clean absolute path", ErrInvalid, u.Path)
+	}
+	switch c.ListingMode {
+	case "", HTTPListingAuto, HTTPListingNginx, HTTPListingCaddy, HTTPListingMiniserve:
+	default:
+		return fmt.Errorf("%w: unsupported http listing_mode %q", ErrInvalid, c.ListingMode)
+	}
+	switch c.AuthMethod {
+	case "", HTTPAuthNone, HTTPAuthBasic, HTTPAuthBearer:
+	default:
+		return fmt.Errorf("%w: unsupported http auth_method %q", ErrInvalid, c.AuthMethod)
+	}
+	if c.AuthMethod == HTTPAuthBasic && strings.TrimSpace(c.Username) == "" {
+		return fmt.Errorf("%w: http username is required for auth_method=basic", ErrInvalid)
+	}
+	if c.CaddyFileLimit < 0 {
+		return fmt.Errorf("%w: http caddy_file_limit must not be negative", ErrInvalid)
+	}
+	return nil
+}
+
 // ValidateGitHubRepository 校验 repository 字段：接受 owner/repo 或
 // github.com / www.github.com 的仓库 URL（可带 .git 后缀与深层 path，
 // 解析由 adapter 承担）。owner 与 repo 段限定 GitHub 允许的字符集，
@@ -475,6 +543,27 @@ func ValidateCredentials(t Type, c Config, creds Credentials) error {
 			return fmt.Errorf("%w: credentials must only contain github_release fields for type github_release", ErrInvalid)
 		}
 		// Token 可为空（公开仓库匿名访问），无必填约束。
+	case TypeHTTP:
+		if creds.foreignGroupSet(t) {
+			return fmt.Errorf("%w: credentials must only contain http fields for type http", ErrInvalid)
+		}
+		// 认证方式显式声明，secret 与之严格匹配（不做空值推断）：
+		// none 不接受任何 secret；basic 要求 password；bearer 要求
+		// bearer token。none/bearer 下的 username 由 Normalized 清空。
+		switch c.HTTP.AuthMethod {
+		case HTTPAuthNone:
+			if creds.HTTP != nil && (creds.HTTP.Password != "" || creds.HTTP.BearerToken != "") {
+				return fmt.Errorf("%w: http auth_method=none does not accept credentials", ErrInvalid)
+			}
+		case HTTPAuthBasic:
+			if creds.HTTP == nil || creds.HTTP.Password == "" {
+				return fmt.Errorf("%w: http password is required for auth_method=basic", ErrInvalid)
+			}
+		case HTTPAuthBearer:
+			if creds.HTTP == nil || creds.HTTP.BearerToken == "" {
+				return fmt.Errorf("%w: http bearer token is required for auth_method=bearer", ErrInvalid)
+			}
+		}
 	case "":
 		return fmt.Errorf("%w: type is required", ErrInvalid)
 	default:
@@ -495,6 +584,7 @@ func (c Credentials) foreignGroupSet(t Type) bool {
 		{TypeSFTP, c.SFTP != nil},
 		{TypeSMB, c.SMB != nil},
 		{TypeGitHubRelease, c.GitHubRelease != nil},
+		{TypeHTTP, c.HTTP != nil},
 	} {
 		if g.typ != t && g.set {
 			return true
@@ -538,6 +628,13 @@ func CredentialStateOf(t Type, creds Credentials) CredentialState {
 			set = creds.GitHubRelease.Token != ""
 		}
 		return CredentialState{GitHubRelease: &GitHubReleaseCredentialState{TokenSet: set}}
+	case TypeHTTP:
+		st := HTTPCredentialState{}
+		if creds.HTTP != nil {
+			st.PasswordSet = creds.HTTP.Password != ""
+			st.BearerTokenSet = creds.HTTP.BearerToken != ""
+		}
+		return CredentialState{HTTP: &st}
 	default:
 		return CredentialState{}
 	}
@@ -575,6 +672,10 @@ func ValidateCredentialsUpdate(t Type, creds *CredentialsUpdate) error {
 		if creds.foreignGroupSet(t) {
 			return fmt.Errorf("%w: credentials update must only contain github_release fields for type github_release", ErrInvalid)
 		}
+	case TypeHTTP:
+		if creds.foreignGroupSet(t) {
+			return fmt.Errorf("%w: credentials update must only contain http fields for type http", ErrInvalid)
+		}
 	case "":
 		return fmt.Errorf("%w: type is required", ErrInvalid)
 	default:
@@ -595,6 +696,7 @@ func (c CredentialsUpdate) foreignGroupSet(t Type) bool {
 		{TypeSFTP, c.SFTP != nil},
 		{TypeSMB, c.SMB != nil},
 		{TypeGitHubRelease, c.GitHubRelease != nil},
+		{TypeHTTP, c.HTTP != nil},
 	} {
 		if g.typ != t && g.set {
 			return true
@@ -672,6 +774,21 @@ func applyCredentialsUpdate(t Type, current CredentialState, update *Credentials
 		c := *current.GitHubRelease
 		c.TokenSet = set
 		return CredentialState{GitHubRelease: &c}
+	case TypeHTTP:
+		if update.HTTP == nil {
+			return current
+		}
+		if current.HTTP == nil {
+			current.HTTP = &HTTPCredentialState{}
+		}
+		c := *current.HTTP
+		if update.HTTP.Password != nil {
+			c.PasswordSet = *update.HTTP.Password != ""
+		}
+		if update.HTTP.BearerToken != nil {
+			c.BearerTokenSet = *update.HTTP.BearerToken != ""
+		}
+		return CredentialState{HTTP: &c}
 	default:
 		return current
 	}

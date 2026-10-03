@@ -46,6 +46,9 @@ const credentialStateExpr = `CASE type
 		'password_set', CASE WHEN COALESCE(json_extract(credentials_json, '$.password'), '') != '' THEN json('true') ELSE json('false') END))
 	WHEN 'github_release' THEN json_object('github_release', json_object(
 		'token_set', CASE WHEN COALESCE(json_extract(credentials_json, '$.token'), '') != '' THEN json('true') ELSE json('false') END))
+	WHEN 'http' THEN json_object('http', json_object(
+		'password_set', CASE WHEN COALESCE(json_extract(credentials_json, '$.password'), '') != '' THEN json('true') ELSE json('false') END,
+		'bearer_token_set', CASE WHEN COALESCE(json_extract(credentials_json, '$.bearer_token'), '') != '' THEN json('true') ELSE json('false') END))
 	WHEN 'local' THEN '{}'
 	ELSE '{}'
 END`
@@ -241,6 +244,17 @@ func mergeCredentials(t source.Type, oldRaw string, update *source.CredentialsUp
 			return old, nil
 		}
 		old.GitHubRelease.Token = *update.GitHubRelease.Token
+		return old, nil
+	case source.TypeHTTP:
+		if update.HTTP == nil {
+			return old, nil
+		}
+		if update.HTTP.Password != nil {
+			old.HTTP.Password = *update.HTTP.Password
+		}
+		if update.HTTP.BearerToken != nil {
+			old.HTTP.BearerToken = *update.HTTP.BearerToken
+		}
 		return old, nil
 	default:
 		return source.Credentials{}, fmt.Errorf("%w: %q", source.ErrUnsupportedType, t)

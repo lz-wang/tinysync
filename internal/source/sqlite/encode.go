@@ -27,6 +27,8 @@ func encodeConfig(t source.Type, c source.Config) (string, error) {
 		data = c.SMB
 	case source.TypeGitHubRelease:
 		data = c.GitHubRelease
+	case source.TypeHTTP:
+		data = c.HTTP
 	default:
 		return "", fmt.Errorf("encode source config: %w: %q", source.ErrUnsupportedType, t)
 	}
@@ -79,6 +81,12 @@ func decodeConfig(t source.Type, raw string) (source.Config, error) {
 			return source.Config{}, fmt.Errorf("decode github_release config: %w", err)
 		}
 		return source.Config{GitHubRelease: c}, nil
+	case source.TypeHTTP:
+		c := &source.HTTPConfig{}
+		if err := json.Unmarshal([]byte(raw), c); err != nil {
+			return source.Config{}, fmt.Errorf("decode http config: %w", err)
+		}
+		return source.Config{HTTP: c}, nil
 	default:
 		return source.Config{}, fmt.Errorf("decode source config: %w: %q", source.ErrUnsupportedType, t)
 	}
@@ -92,6 +100,7 @@ type credentialsJSON struct {
 	PrivateKey           *string `json:"private_key,omitempty"`
 	PrivateKeyPassphrase *string `json:"private_key_passphrase,omitempty"`
 	Token                *string `json:"token,omitempty"`
+	BearerToken          *string `json:"bearer_token,omitempty"`
 }
 
 // encodeCredentials 把凭据集合编码为当前协议的扁平 JSON 对象。
@@ -125,6 +134,14 @@ func encodeCredentials(t source.Type, c source.Credentials) (string, error) {
 	case source.TypeGitHubRelease:
 		if c.GitHubRelease != nil {
 			raw.Token = strPtr(c.GitHubRelease.Token)
+		}
+	case source.TypeHTTP:
+		// password 键复用 webdav / sftp / smb 的同名键；bearer 专属
+		// bearer_token 键。type 列已承载判别符，扁平 JSON 不需要协议
+		// 前缀。
+		if c.HTTP != nil {
+			raw.Password = strPtr(c.HTTP.Password)
+			raw.BearerToken = strPtr(c.HTTP.BearerToken)
 		}
 	default:
 		return "", fmt.Errorf("encode source credentials: %w: %q", source.ErrUnsupportedType, t)
@@ -167,6 +184,11 @@ func decodeCredentials(t source.Type, raw string) (source.Credentials, error) {
 	case source.TypeGitHubRelease:
 		return source.Credentials{GitHubRelease: &source.GitHubReleaseCredentials{
 			Token: derefStr(data.Token),
+		}}, nil
+	case source.TypeHTTP:
+		return source.Credentials{HTTP: &source.HTTPCredentials{
+			Password:    derefStr(data.Password),
+			BearerToken: derefStr(data.BearerToken),
 		}}, nil
 	default:
 		return source.Credentials{}, fmt.Errorf("decode source credentials: %w: %q", source.ErrUnsupportedType, t)

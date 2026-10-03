@@ -47,6 +47,8 @@ func toSourceSummary(s source.Source) (sourceSummary, error) {
 		config = s.Config.SMB
 	case source.TypeGitHubRelease:
 		config = s.Config.GitHubRelease
+	case source.TypeHTTP:
+		config = s.Config.HTTP
 	default:
 		return sourceSummary{}, fmt.Errorf("unsupported source type %q", s.Type)
 	}

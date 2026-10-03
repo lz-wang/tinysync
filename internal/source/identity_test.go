@@ -122,4 +122,30 @@ func TestRemoteIdentityEqual(t *testing.T) {
 			t.Errorf("webdav %s = %v, want %v", name, got, want)
 		}
 	}
+
+	// HTTP：base_url / listing_mode / auth_method / username 是身份；
+	// caddy_file_limit 是扫描安全参数，不属于身份。
+	httpBase := Source{Type: TypeHTTP, Config: Config{HTTP: ptrHTTP(validHTTPConfig())}}
+	httpCases := []struct {
+		name string
+		cfg  HTTPConfig
+		want bool
+	}{
+		{"same", validHTTPConfig(), true},
+		{"base_url", httpWith(func(c *HTTPConfig) { c.BaseURL = "https://mirror.example.com/other/" }), false},
+		{"base_url trailing slash", httpWith(func(c *HTTPConfig) { c.BaseURL = "https://mirror.example.com/releases" }), false},
+		{"listing mode", httpWith(func(c *HTTPConfig) { c.ListingMode = HTTPListingNginx }), false},
+		{"auth method", httpWith(func(c *HTTPConfig) { c.AuthMethod = HTTPAuthBearer }), false},
+		{"username", httpWith(func(c *HTTPConfig) {
+			c.AuthMethod = HTTPAuthBasic
+			c.Username = "tinysync"
+		}), false},
+		{"caddy file limit only", httpWith(func(c *HTTPConfig) { c.CaddyFileLimit = 100000 }), true},
+	}
+	for _, tc := range httpCases {
+		other := Source{Type: TypeHTTP, Config: Config{HTTP: ptrHTTP(tc.cfg)}}
+		if got := RemoteIdentityEqual(httpBase, other); got != tc.want {
+			t.Errorf("http %s = %v, want %v", tc.name, got, tc.want)
+		}
+	}
 }
