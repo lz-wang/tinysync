@@ -24,7 +24,7 @@ export interface VersionResponse {
 }
 
 // SourceType 是 Source 支持的协议类型；创建后不可变。
-export type SourceType = 'webdav' | 's3' | 'sftp' | 'smb' | 'github_release' | 'local'
+export type SourceType = 'webdav' | 's3' | 'sftp' | 'smb' | 'github_release' | 'local' | 'http'
 
 // LocalConfig 使用运行主机的 native 文件系统路径，无凭据字段。
 export interface LocalConfig {
@@ -98,6 +98,24 @@ export interface GitHubReleaseConfig {
     verify_sha256: GitHubSHA256Mode
 }
 
+// HTTPListingMode 是 HTTP 文件源的目录索引表现形式（ADR 0009）：
+// nginx / Caddy / miniserve 只是 profile 差异，不是 Source 类型。
+export type HTTPListingMode = 'auto' | 'nginx' | 'caddy' | 'miniserve'
+
+// HTTPAuthMethod 是 HTTP 文件源的认证方式，显式声明不推断。
+export type HTTPAuthMethod = 'none' | 'basic' | 'bearer'
+
+// HTTPConfig 是 HTTP 文件源的非敏感配置。base_url 即源的 "/"（无
+// 独立 remote_root）；caddy_file_limit 与服务器 browse.file_limit 一致，
+// 达到即整轮扫描失败（fail-closed）。
+export interface HTTPConfig {
+    base_url: string
+    listing_mode: HTTPListingMode
+    auth_method: HTTPAuthMethod
+    username?: string
+    caddy_file_limit?: number
+}
+
 // SourceConfig 是按 type 判别的协议配置（请求与响应均为扁平单选对象）。
 export type SourceConfig =
     | WebDAVConfig
@@ -106,6 +124,7 @@ export type SourceConfig =
     | SMBConfig
     | GitHubReleaseConfig
     | LocalConfig
+    | HTTPConfig
 
 // CredentialState 回显各 secret 是否设置；任何 secret 不回显明文。
 export interface CredentialState {
@@ -118,6 +137,7 @@ export interface CredentialState {
     }
     smb?: { password_set: boolean }
     github_release?: { token_set: boolean }
+    http?: { password_set: boolean; bearer_token_set: boolean }
 }
 
 // SourceResponse 是 Source 的 API 表示；绝不包含 secret 明文，
@@ -170,6 +190,11 @@ export interface GitHubReleaseCredentials {
     token?: string
 }
 
+export interface HTTPCredentials {
+    password?: string
+    bearer_token?: string
+}
+
 // SourceCredentials 按 type 单选的 secret 组。
 export type SourceCredentials =
     | WebDAVCredentials
@@ -177,6 +202,7 @@ export type SourceCredentials =
     | SFTPCredentials
     | SMBCredentials
     | GitHubReleaseCredentials
+    | HTTPCredentials
 
 // CreateSourceInput 对应 POST /api/v1/sources 请求体。
 export interface CreateSourceInput {

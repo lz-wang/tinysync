@@ -35,6 +35,7 @@ import { Link as RouterLink } from 'react-router-dom'
 import {
     deleteSource,
     type GitHubReleaseConfig,
+    type HTTPConfig,
     type LocalConfig,
     listSources,
     type S3Config,
@@ -343,6 +344,7 @@ function SourceTable({
                     <MenuItem value="smb">SMB</MenuItem>
                     <MenuItem value="github_release">GitHub Release</MenuItem>
                     <MenuItem value="local">本地</MenuItem>
+                    <MenuItem value="http">HTTP</MenuItem>
                 </TextField>
                 <TextField
                     select
@@ -577,6 +579,14 @@ function locationSummary(source: SourceResponse): string {
                 default:
                     return `${cfg.repository} · 最新稳定版`
             }
+        }
+        case 'http': {
+            const cfg = config as HTTPConfig
+            const mode =
+                cfg.listing_mode && cfg.listing_mode !== 'auto' ? ` · ${cfg.listing_mode}` : ''
+            const auth =
+                cfg.auth_method && cfg.auth_method !== 'none' ? ` · ${cfg.auth_method}` : ''
+            return `${cfg.base_url}${mode}${auth}`
         }
     }
 }

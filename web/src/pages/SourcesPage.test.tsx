@@ -98,3 +98,32 @@ it('本地源显示 LOCAL 与原生路径，并可筛选和直达源端文件树
     await waitFor(() => expect(screen.queryByRole('link', { name: 'NAS WebDAV' })).toBeNull())
     expect(screen.getByRole('link', { name: '本地照片' })).toBeTruthy()
 })
+
+it('HTTP 源显示 HTTP 类型与 base_url 位置摘要，并可按类型筛选', async () => {
+    mocked.listSources.mockResolvedValue([
+        webdavSource,
+        {
+            ...webdavSource,
+            id: 'src-http',
+            name: '镜像站',
+            type: 'http',
+            config: {
+                base_url: 'https://mirror.example.com/releases/',
+                listing_mode: 'caddy',
+                auth_method: 'none',
+                caddy_file_limit: 10000,
+            },
+            credential_state: { http: { password_set: false, bearer_token_set: false } },
+        },
+    ])
+    renderPage()
+    const link = await screen.findByRole('link', { name: '镜像站' })
+    expect(screen.getByText('HTTP')).toBeTruthy()
+    // 位置摘要：base_url + 非 auto 的 listing profile。
+    expect(screen.getByText('https://mirror.example.com/releases/ · caddy')).toBeTruthy()
+    expect(link.getAttribute('href')).toContain('source=src-http')
+    fireEvent.mouseDown(screen.getByRole('combobox', { name: '类型' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'HTTP' }))
+    await waitFor(() => expect(screen.queryByRole('link', { name: 'NAS WebDAV' })).toBeNull())
+    expect(screen.getByRole('link', { name: '镜像站' })).toBeTruthy()
+})

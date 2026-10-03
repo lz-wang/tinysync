@@ -26,6 +26,7 @@ import {
     checkSFTPSource,
     createSource,
     type GitHubReleaseConfig,
+    type HTTPConfig,
     type LocalConfig,
     listCredentials,
     type S3Config,
@@ -64,6 +65,8 @@ type SecretKey =
     | 'sftp.passphrase'
     | 'smb.password'
     | 'github.token'
+    | 'http.password'
+    | 'http.token'
 
 // SourceDialog 创建 / 编辑 Source。创建时选择协议类型并按类型动态
 // 表单；编辑时 Type readonly（协议不支持原地转换）。secret 绝不回填：
@@ -126,6 +129,13 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
         include_prereleases: false,
         verify_sha256: 'if_available',
     })
+    const [http, setHttp] = useState<HTTPConfig>({
+        base_url: '',
+        listing_mode: 'auto',
+        auth_method: 'none',
+        username: '',
+        caddy_file_limit: 10000,
+    })
 
     // secret 输入与三态标记：dirty 表示实际编辑，cleared 表示显式清除。
     const [secrets, setSecrets] = useState<Record<SecretKey, string>>({
@@ -136,6 +146,8 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
         'sftp.passphrase': '',
         'smb.password': '',
         'github.token': '',
+        'http.password': '',
+        'http.token': '',
     })
     const [secretsDirty, setSecretsDirty] = useState<Set<SecretKey>>(new Set())
     const [secretsCleared, setSecretsCleared] = useState<Set<SecretKey>>(new Set())
@@ -258,6 +270,26 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                       verify_sha256: 'if_available',
                   },
         )
+        setHttp(
+            source?.type === 'http'
+                ? (() => {
+                      const cfg = source.config as HTTPConfig
+                      return {
+                          base_url: cfg.base_url ?? '',
+                          listing_mode: cfg.listing_mode ?? 'auto',
+                          auth_method: cfg.auth_method ?? 'none',
+                          username: cfg.username ?? '',
+                          caddy_file_limit: cfg.caddy_file_limit ?? 10000,
+                      }
+                  })()
+                : {
+                      base_url: '',
+                      listing_mode: 'auto',
+                      auth_method: 'none',
+                      username: '',
+                      caddy_file_limit: 10000,
+                  },
+        )
         setSecrets({
             'webdav.password': '',
             's3.secret_key': '',
@@ -266,6 +298,8 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
             'sftp.passphrase': '',
             'smb.password': '',
             'github.token': '',
+            'http.password': '',
+            'http.token': '',
         })
         setSecretsDirty(new Set())
         setSecretsCleared(new Set())
@@ -341,6 +375,14 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
         if (type === 'github_release') {
             return { ...github }
         }
+        if (type === 'http') {
+            // none / bearer 不携带 username（后端归一化同样清空，
+            // 前端先行保证 PATCH 幂等比较稳定）。
+            if (http.auth_method !== 'basic') {
+                return { ...http, username: '' }
+            }
+            return { ...http }
+        }
         // 内联一次性私钥时 credential_id 恒为空：引用与内联互斥。
         return keySource === 'credential' ? { ...sftp } : { ...sftp, credential_id: '' }
     }
@@ -370,6 +412,19 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                 return { token: secrets['github.token'] }
             }
             return undefined
+        }
+        if (type === 'http') {
+            const creds: { password?: string; bearer_token?: string } = {}
+            let changed = false
+            if (secretsDirty.has('http.password')) {
+                creds.password = secrets['http.password']
+                changed = true
+            }
+            if (secretsDirty.has('http.token')) {
+                creds.bearer_token = secrets['http.token']
+                changed = true
+            }
+            return changed ? creds : undefined
         }
         if (keySource === 'credential') {
             // 引用与内联互斥：凭据库模式下残留的 dirty 内联输入一律丢弃。
@@ -507,6 +562,26 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                 passwordReady
             )
         }
+        if (type === 'http') {
+            if (http.base_url.trim() === '') {
+                return false
+            }
+            if (http.auth_method === 'basic') {
+                if ((http.username ?? '').trim() === '') {
+                    return false
+                }
+                // 创建时密码必填；编辑时存量已配置（未清除）即可。
+                return source !== null
+                    ? (source.credential_state.http?.password_set ?? false)
+                    : secrets['http.password'].trim() !== ''
+            }
+            if (http.auth_method === 'bearer') {
+                return source !== null
+                    ? (source.credential_state.http?.bearer_token_set ?? false)
+                    : secrets['http.token'].trim() !== ''
+            }
+            return true
+        }
         if (type === 'github_release') {
             if (github.repository.trim() === '') {
                 return false
@@ -605,6 +680,7 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                             <MenuItem value="smb">SMB (SMB2/SMB3)</MenuItem>
                             <MenuItem value="github_release">GitHub Release</MenuItem>
                             <MenuItem value="local">本地文件</MenuItem>
+                            <MenuItem value="http">HTTP 文件服务</MenuItem>
                         </Select>
                     </FormControl>
                     {source !== null && (
@@ -881,6 +957,119 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                             onTokenClear={() => clearSecret('github.token')}
                             source={source}
                         />
+                    )}
+
+                    {type === 'http' && (
+                        <>
+                            <TextField
+                                label="服务地址"
+                                value={http.base_url}
+                                onChange={e => setHttp({ ...http, base_url: e.target.value })}
+                                required
+                                placeholder="https://mirror.example.com/releases/"
+                                sx={{ '& input': { fontFamily: 'monospace' } }}
+                                helperText="该 URL 即同步源根目录；不要携带 query 或锚点。"
+                            />
+                            <Box
+                                sx={{
+                                    display: 'grid',
+                                    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                                    gap: 2,
+                                }}
+                            >
+                                <FormControl fullWidth>
+                                    <InputLabel id="http-listing-label">服务类型</InputLabel>
+                                    <Select
+                                        labelId="http-listing-label"
+                                        value={http.listing_mode}
+                                        label="服务类型"
+                                        onChange={e =>
+                                            setHttp({
+                                                ...http,
+                                                listing_mode: e.target
+                                                    .value as HTTPConfig['listing_mode'],
+                                            })
+                                        }
+                                    >
+                                        <MenuItem value="auto">自动识别</MenuItem>
+                                        <MenuItem value="nginx">nginx</MenuItem>
+                                        <MenuItem value="caddy">Caddy</MenuItem>
+                                        <MenuItem value="miniserve">miniserve</MenuItem>
+                                    </Select>
+                                </FormControl>
+                                <FormControl fullWidth>
+                                    <InputLabel id="http-auth-label">认证方式</InputLabel>
+                                    <Select
+                                        labelId="http-auth-label"
+                                        value={http.auth_method}
+                                        label="认证方式"
+                                        onChange={e =>
+                                            setHttp({
+                                                ...http,
+                                                auth_method: e.target
+                                                    .value as HTTPConfig['auth_method'],
+                                            })
+                                        }
+                                    >
+                                        <MenuItem value="none">无认证</MenuItem>
+                                        <MenuItem value="basic">Basic</MenuItem>
+                                        <MenuItem value="bearer">Bearer Token</MenuItem>
+                                    </Select>
+                                </FormControl>
+                            </Box>
+                            {http.auth_method === 'basic' && (
+                                <Box
+                                    sx={{
+                                        display: 'grid',
+                                        gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                                        gap: 2,
+                                    }}
+                                >
+                                    <TextField
+                                        label="用户名"
+                                        value={http.username ?? ''}
+                                        onChange={e =>
+                                            setHttp({ ...http, username: e.target.value })
+                                        }
+                                        required
+                                    />
+                                    <SecretField
+                                        label="密码"
+                                        value={secrets['http.password']}
+                                        dirty={secretsDirty.has('http.password')}
+                                        cleared={secretsCleared.has('http.password')}
+                                        chip={secretChip('http.password', '密码')}
+                                        onChange={v => setSecret('http.password', v)}
+                                        onClear={() => clearSecret('http.password')}
+                                    />
+                                </Box>
+                            )}
+                            {http.auth_method === 'bearer' && (
+                                <SecretField
+                                    label="Token"
+                                    value={secrets['http.token']}
+                                    dirty={secretsDirty.has('http.token')}
+                                    cleared={secretsCleared.has('http.token')}
+                                    chip={secretChip('http.token', 'Token')}
+                                    onChange={v => setSecret('http.token', v)}
+                                    onClear={() => clearSecret('http.token')}
+                                />
+                            )}
+                            {(http.listing_mode === 'caddy' || http.listing_mode === 'auto') && (
+                                <TextField
+                                    label="Caddy directory file_limit"
+                                    type="number"
+                                    value={http.caddy_file_limit ?? 10000}
+                                    onChange={e =>
+                                        setHttp({
+                                            ...http,
+                                            caddy_file_limit: Number(e.target.value),
+                                        })
+                                    }
+                                    helperText="必须与服务器 browse.file_limit 保持一致；当单目录返回条目数达到此值时，本轮同步将失败，以防止 Mirror 基于截断目录删除本地文件。"
+                                />
+                            )}
+                        </>
                     )}
 
                     {type === 'sftp' && (
@@ -1230,5 +1419,9 @@ function isSecretConfigured(source: SourceResponse, key: SecretKey): boolean {
             return state.smb?.password_set ?? false
         case 'github.token':
             return state.github_release?.token_set ?? false
+        case 'http.password':
+            return state.http?.password_set ?? false
+        case 'http.token':
+            return state.http?.bearer_token_set ?? false
     }
 }

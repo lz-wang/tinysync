@@ -1,6 +1,12 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { CredentialResponse, SFTPConfig, SMBConfig, SourceResponse } from '../../api'
+import type {
+    CredentialResponse,
+    HTTPConfig,
+    SFTPConfig,
+    SMBConfig,
+    SourceResponse,
+} from '../../api'
 import {
     checkSFTPSource,
     createLocalDirectory,
@@ -174,7 +180,7 @@ describe('SourceDialog SFTP 根目录检查', () => {
         renderDialog({
             source: {
                 ...referencingSource,
-                config: { ...referencingSource.config, credential_id: '' },
+                config: { ...(referencingSource.config as SFTPConfig), credential_id: '' },
             },
         })
         fireEvent.change(screen.getByLabelText(/^私钥（PEM）/), { target: { value: 'NEW_PEM' } })
@@ -284,19 +290,21 @@ describe('SourceDialog 凭据选择器', () => {
 // 提升为凭据：内联私钥源在编辑态可一键提升（票 #6）。
 describe('SourceDialog 提升为凭据', () => {
     it('合格源展示提升按钮，提交调用 promote API', async () => {
+        // 展开联合类型 config 后追加 SFTP 专属字段，先收窄为 SFTPConfig。
+        const referencingConfig = referencingSource.config as SFTPConfig
         const inlineSource: SourceResponse = {
             ...referencingSource,
             id: 'src-inline',
             name: '内联源',
             config: {
-                ...referencingSource.config,
+                ...referencingConfig,
                 credential_id: '',
             },
         }
         mocked.promoteSourceCredential.mockResolvedValue({
             source: {
                 ...inlineSource,
-                config: { ...inlineSource.config, credential_id: 'crd-new' },
+                config: { ...referencingConfig, credential_id: 'crd-new' },
             },
             credential: {
                 id: 'crd-new',
@@ -489,5 +497,161 @@ describe('SourceDialog 本地文件源', () => {
                 config: { root: '/data/videos' },
             }),
         )
+    })
+})
+
+const httpSource: SourceResponse = {
+    id: 'src-http',
+    name: 'Mirror HTTP',
+    type: 'http',
+    config: {
+        base_url: 'https://mirror.example.com/releases/',
+        listing_mode: 'auto',
+        auth_method: 'basic',
+        username: 'tinysync',
+        caddy_file_limit: 10000,
+    },
+    credential_state: {
+        http: { password_set: true, bearer_token_set: false },
+    },
+    enabled: true,
+    created_at: '2026-10-03T00:00:00Z',
+    updated_at: '2026-10-03T00:00:00Z',
+}
+
+describe('SourceDialog HTTP 文件服务', () => {
+    async function selectHTTP() {
+        fireEvent.mouseDown(screen.getByLabelText(/类型/))
+        fireEvent.click(await screen.findByText('HTTP 文件服务'))
+    }
+
+    it('创建：basic 提交 base_url / 认证 / caddy_file_limit，密码随 credentials 发送', async () => {
+        mocked.createSource.mockResolvedValue(httpSource)
+        renderDialog()
+
+        fireEvent.change(screen.getByLabelText(/名称/), { target: { value: 'Mirror HTTP' } })
+        await selectHTTP()
+        fireEvent.change(screen.getByPlaceholderText('https://mirror.example.com/releases/'), {
+            target: { value: 'https://mirror.example.com/releases/' },
+        })
+        // 默认无认证即可保存；切换到 Basic 出现用户名 / 密码。
+        fireEvent.mouseDown(screen.getByLabelText(/认证方式/))
+        fireEvent.click(await screen.findByText('Basic'))
+        fireEvent.change(screen.getByLabelText(/用户名/), { target: { value: 'tinysync' } })
+        fireEvent.change(screen.getByLabelText(/^密码/), { target: { value: 'http-pass' } })
+        fireEvent.click(screen.getByRole('button', { name: '保存' }))
+
+        await waitFor(() => {
+            expect(mocked.createSource).toHaveBeenCalled()
+        })
+        const input = mocked.createSource.mock.calls[0][0]
+        const config = input.config as HTTPConfig
+        expect(config.base_url).toBe('https://mirror.example.com/releases/')
+        expect(config.listing_mode).toBe('auto')
+        expect(config.auth_method).toBe('basic')
+        expect(config.username).toBe('tinysync')
+        expect(config.caddy_file_limit).toBe(10000)
+        expect(input.credentials).toEqual({ password: 'http-pass' })
+    })
+
+    it('创建：bearer 提交 token 且不携带 username；无认证无凭据可直接保存', async () => {
+        mocked.createSource.mockResolvedValue(httpSource)
+        renderDialog()
+
+        fireEvent.change(screen.getByLabelText(/名称/), { target: { value: 'Mirror Bearer' } })
+        await selectHTTP()
+        fireEvent.change(screen.getByPlaceholderText('https://mirror.example.com/releases/'), {
+            target: { value: 'https://mirror.example.com/releases/' },
+        })
+        // 无认证：填完地址即保存可用，请求不携带 credentials。
+        fireEvent.click(screen.getByRole('button', { name: '保存' }))
+        await waitFor(() => {
+            expect(mocked.createSource).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    type: 'http',
+                    credentials: undefined,
+                }),
+            )
+        })
+
+        // bearer：token 必填，username 字段不出现。
+        fireEvent.mouseDown(screen.getByLabelText(/认证方式/))
+        fireEvent.click(await screen.findByText('Bearer Token'))
+        expect(screen.queryByLabelText(/用户名/)).toBeNull()
+        await waitFor(() => {
+            expect(
+                (screen.getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled,
+            ).toBeTruthy()
+        })
+        fireEvent.change(screen.getByLabelText(/^Token/), { target: { value: 'tok' } })
+        fireEvent.click(screen.getByRole('button', { name: '保存' }))
+        await waitFor(() => {
+            const call = mocked.createSource.mock.calls.at(-1)?.[0]
+            expect(call?.credentials).toEqual({ bearer_token: 'tok' })
+            expect(call?.config).toMatchObject({ auth_method: 'bearer', username: '' })
+        })
+    })
+
+    it('创建：basic 缺密码时保存禁用', async () => {
+        renderDialog()
+
+        fireEvent.change(screen.getByLabelText(/名称/), { target: { value: 'Mirror HTTP' } })
+        await selectHTTP()
+        fireEvent.change(screen.getByPlaceholderText('https://mirror.example.com/releases/'), {
+            target: { value: 'https://mirror.example.com/releases/' },
+        })
+        fireEvent.mouseDown(screen.getByLabelText(/认证方式/))
+        fireEvent.click(await screen.findByText('Basic'))
+        fireEvent.change(screen.getByLabelText(/用户名/), { target: { value: 'tinysync' } })
+
+        await waitFor(() => {
+            expect(
+                (screen.getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled,
+            ).toBeTruthy()
+        })
+        expect(mocked.createSource).not.toHaveBeenCalled()
+    })
+
+    it('编辑：类型只读、回显配置，未触碰密码不发 credentials，改 file_limit 进 patch config', async () => {
+        mocked.updateSource.mockResolvedValue(httpSource)
+        renderDialog({ source: httpSource })
+
+        expect(screen.getByRole('combobox', { name: '类型' }).getAttribute('aria-disabled')).toBe(
+            'true',
+        )
+        // 存量密码已配置：直接可保存。
+        await waitFor(() => {
+            expect(
+                (screen.getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled,
+            ).toBeFalsy()
+        })
+        fireEvent.change(screen.getByLabelText(/Caddy directory file_limit/), {
+            target: { value: '100000' },
+        })
+        fireEvent.click(screen.getByRole('button', { name: '保存' }))
+
+        await waitFor(() => {
+            expect(mocked.updateSource).toHaveBeenCalledWith('src-http', {
+                config: expect.objectContaining({ caddy_file_limit: 100000 }),
+            })
+        })
+        const call = mocked.updateSource.mock.calls[0]
+        expect(call[1].credentials).toBeUndefined()
+    })
+
+    it('编辑：输入新密码后显式清除，提交空串（清除语义）', async () => {
+        mocked.updateSource.mockResolvedValue(httpSource)
+        renderDialog({ source: httpSource })
+
+        // 清除按钮只在 dirty 后出现：先输入再清除。
+        fireEvent.change(screen.getByLabelText(/^密码/), { target: { value: 'draft-pass' } })
+        fireEvent.click(screen.getByRole('button', { name: '清除' }))
+        fireEvent.click(screen.getByRole('button', { name: '保存' }))
+
+        await waitFor(() => {
+            expect(mocked.updateSource).toHaveBeenCalledWith('src-http', {
+                credentials: { password: '' },
+            })
+        })
     })
 })
