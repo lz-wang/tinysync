@@ -699,17 +699,27 @@ func ValidateLogicalPath(p string) error {
 // （Create 因此保留对空白容错的既有契约：如带首尾空格的 endpoint
 // 归一后通过，与 Update 的 raw 校验语义存在已知差异）。
 func ValidateCreateInput(input CreateInput) error {
+	_, err := prepareCreateInput(input)
+	return err
+}
+
+// prepareCreateInput 校验创建输入并返回准备后的配置，供持久化复用；
+// Local 的文件系统解析只做一次，凭据校验也以同一份配置为准。
+func prepareCreateInput(input CreateInput) (Config, error) {
 	if err := ValidateName(input.Name); err != nil {
-		return err
+		return Config{}, err
 	}
 	if err := ValidateType(input.Type); err != nil {
-		return err
+		return Config{}, err
 	}
 	normalized, err := PrepareConfig(input.Type, input.Config)
 	if err != nil {
-		return err
+		return Config{}, err
 	}
-	return ValidateCredentials(input.Type, normalized, input.Credentials)
+	if err := ValidateCredentials(input.Type, normalized, input.Credentials); err != nil {
+		return Config{}, err
+	}
+	return normalized, nil
 }
 
 // PrepareConfig 先校验严格单选，再归一化配置与本地目录身份。

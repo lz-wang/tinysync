@@ -44,11 +44,7 @@ type TestResult struct {
 // Create 校验并创建 Source。Type 决定 Config / Credentials 的单选组；
 // 校验失败返回 ErrInvalid。
 func (s *Service) Create(ctx context.Context, input CreateInput) (Source, error) {
-	if err := ValidateCreateInput(input); err != nil {
-		return Source{}, err
-	}
-
-	prepared, err := PrepareConfig(input.Type, input.Config)
+	prepared, err := prepareCreateInput(input)
 	if err != nil {
 		return Source{}, err
 	}
