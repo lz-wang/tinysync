@@ -4,13 +4,18 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,6 +27,7 @@ import (
 
 	"tinysync/internal/filesafe"
 	"tinysync/internal/source"
+	httpadapter "tinysync/internal/source/http"
 	localadapter "tinysync/internal/source/local"
 	s3adapter "tinysync/internal/source/s3"
 	sftpadapter "tinysync/internal/source/sftp"
@@ -63,6 +69,7 @@ func protocolFixtures() []protocolCase {
 		{name: "sftp", fixture: newSFTPFixture},
 		{name: "smb", fixture: newSMBFixture},
 		{name: "local", fixture: newLocalFixture},
+		{name: "http", fixture: newHTTPFixture},
 	}
 }
 
@@ -280,6 +287,147 @@ func newS3Fixture(t *testing.T) matrixRemote {
 		},
 		openRemote: func() (source.Remote, error) {
 			return s3adapter.NewRemoteWithAPI(f, "matrix-bucket", ""), nil
+		},
+	}
+}
+
+// --- HTTP fixture：真实 HTTP 协议栈（进程内 Caddy 形态 JSON 文件
+// 服务；真实 nginx / Caddy / miniserve 由 integration gate 的容器
+// 集成覆盖，见 http_integration_test.go）。
+
+// httpMatrixServer 服务内存树的 Caddy 形态 JSON 目录索引与文件。
+type httpMatrixServer struct {
+	mu    sync.Mutex
+	files map[string]string
+	dirs  map[string]bool
+	srv   *httptest.Server
+}
+
+func newHTTPMatrixServer(t *testing.T) *httpMatrixServer {
+	t.Helper()
+	s := &httpMatrixServer{
+		files: map[string]string{},
+		dirs:  map[string]bool{"/": true},
+	}
+	s.srv = httptest.NewServer(http.HandlerFunc(s.handle))
+	t.Cleanup(s.srv.Close)
+	return s
+}
+
+func (s *httpMatrixServer) handle(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := strings.TrimSuffix(r.URL.Path, "/")
+	if p == "" {
+		p = "/"
+	}
+	if content, isFile := s.files[p]; isFile {
+		w.Header().Set("Content-Length", strconv.Itoa(len(content)))
+		if r.Method != http.MethodHead {
+			_, _ = w.Write([]byte(content))
+		}
+		return
+	}
+	if !s.dirs[p] || !strings.HasSuffix(r.URL.Path, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	prefix := "/"
+	if p != "/" {
+		prefix = p + "/"
+	}
+	type entry struct {
+		Name    string `json:"name"`
+		Size    int64  `json:"size"`
+		URL     string `json:"url"`
+		ModTime string `json:"mod_time"`
+		IsDir   bool   `json:"is_dir"`
+		IsSyml  bool   `json:"is_symlink"`
+	}
+	seen := map[string]bool{}
+	// 空目录也输出 []（nil slice 会被编码为 null，破坏探测）。
+	entries := make([]entry, 0, 8)
+	add := func(child, name string, isDir bool) {
+		if seen[name] {
+			return
+		}
+		seen[name] = true
+		e := entry{Name: name, URL: name, ModTime: "2026-10-01T12:00:00Z", IsDir: isDir, IsSyml: false}
+		if !isDir {
+			e.Size = int64(len(s.files[child]))
+		}
+		entries = append(entries, e)
+	}
+	for child := range s.files {
+		if strings.HasPrefix(child, prefix) && child != prefix {
+			rest := strings.TrimPrefix(child, prefix)
+			if !strings.Contains(rest, "/") {
+				add(child, rest, false)
+			}
+		}
+	}
+	for dir := range s.dirs {
+		if strings.HasPrefix(dir, prefix) && dir != prefix && dir != "/" {
+			rest := strings.TrimPrefix(dir, prefix)
+			if !strings.Contains(rest, "/") {
+				add(dir, rest, true)
+			}
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(entries)
+}
+
+// put 写入文件（登记父目录）。
+func (s *httpMatrixServer) put(logical, content string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureDirs(logical[:strings.LastIndexByte(logical, '/')])
+	s.files[logical] = content
+}
+
+func (s *httpMatrixServer) ensureDirs(dir string) {
+	if dir == "" || dir == "/" {
+		return
+	}
+	s.dirs[dir] = true
+	idx := strings.LastIndexByte(dir, '/')
+	if idx > 0 {
+		s.ensureDirs(dir[:idx])
+	}
+}
+
+// remove 删除文件。
+func (s *httpMatrixServer) remove(logical string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.files, logical)
+}
+
+// newHTTPFixture 构造进程内 HTTP 矩阵 fixture；与生产语义一致，每次
+// openRemote 经 Factory 建立独立 Client。
+func newHTTPFixture(t *testing.T) matrixRemote {
+	srv := newHTTPMatrixServer(t)
+	factory := httpadapter.NewFactory()
+	src := source.Source{
+		Name: "matrix",
+		Type: source.TypeHTTP,
+		Config: source.Config{HTTP: &source.HTTPConfig{
+			BaseURL:     srv.srv.URL + "/",
+			ListingMode: source.HTTPListingCaddy,
+		}},
+	}
+	return matrixRemote{
+		name: "http",
+		put: func(t *testing.T, logical, content string) {
+			srv.put(logical, content)
+		},
+		remove: func(t *testing.T, logical string) {
+			srv.remove(logical)
+		},
+		openRemote: func() (source.Remote, error) {
+			return factory.Create(context.Background(), src, source.Credentials{})
 		},
 	}
 }
