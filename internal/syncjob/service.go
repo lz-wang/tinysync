@@ -62,7 +62,8 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Job, error) {
 		}
 		schedule = input.Schedule.Normalized()
 	}
-	if _, err := s.sources.Get(ctx, input.SourceID); err != nil {
+	src, err := s.sources.Get(ctx, input.SourceID)
+	if err != nil {
 		return Job{}, err
 	}
 	remoteRoot, err := normalizeRemoteRoot(input.RemoteRoot)
@@ -77,6 +78,9 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Job, error) {
 		return Job{}, err
 	}
 
+	if err := source.ValidateJobMapping(src, remoteRoot, localRoot); err != nil {
+		return Job{}, fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
 	id, err := NewID()
 	if err != nil {
 		return Job{}, err
@@ -204,6 +208,13 @@ func (s *Service) Update(ctx context.Context, id string, input UpdateInput) (Job
 		}
 	}
 
+	src, err := s.sources.Get(ctx, updated.SourceID)
+	if err != nil {
+		return Job{}, err
+	}
+	if err := source.ValidateJobMapping(src, updated.RemoteRoot, updated.LocalRoot); err != nil {
+		return Job{}, fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
 	mappingChanged := updated.SourceID != current.SourceID ||
 		updated.RemoteRoot != current.RemoteRoot ||
 		updated.LocalRoot != current.LocalRoot

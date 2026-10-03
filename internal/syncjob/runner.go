@@ -369,6 +369,15 @@ func (r *Runner) runOne(ctx context.Context, job Job, run *activeRun) {
 	// connecting 阶段覆盖拨号（含 SFTP 会话建立）；引擎接管后推进到
 	// scanning 及之后。
 	run.progress.SetPhase(RunPhaseConnecting)
+	src, err := r.sources.Get(ctx, job.SourceID)
+	if err != nil {
+		r.finalize(ctx, run, job, RunStats{}, fmt.Errorf("read source: %w", err))
+		return
+	}
+	if err := source.ValidateJobMapping(src, job.RemoteRoot, job.LocalRoot); err != nil {
+		r.finalize(ctx, run, job, RunStats{}, fmt.Errorf("validate job mapping: %w", err))
+		return
+	}
 	_, remote, err := r.sources.OpenRemote(ctx, job.SourceID)
 	if err != nil {
 		r.finalize(ctx, run, job, RunStats{}, fmt.Errorf("create remote for source %s: %w", job.SourceID, err))
