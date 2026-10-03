@@ -302,6 +302,10 @@ type httpMatrixServer struct {
 	files map[string]string
 	dirs  map[string]bool
 	srv   *httptest.Server
+	// degraded 非 nil 时，目录 listing 请求直接以 200 返回该响应体
+	// （模拟反向代理把文件服务异常吞成 JSON 状态页；fail-closed 场景
+	// 注入，见 http_mirror_failclosed_test.go）。
+	degraded *string
 }
 
 func newHTTPMatrixServer(t *testing.T) *httpMatrixServer {
@@ -331,6 +335,11 @@ func (s *httpMatrixServer) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	if !s.dirs[p] || !strings.HasSuffix(r.URL.Path, "/") {
 		http.NotFound(w, r)
+		return
+	}
+	if s.degraded != nil {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(*s.degraded))
 		return
 	}
 	prefix := "/"
@@ -404,6 +413,17 @@ func (s *httpMatrixServer) remove(logical string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.files, logical)
+}
+
+// degrade 让后续目录 listing 恒定以 200 返回 body（恢复服务则传空）。
+func (s *httpMatrixServer) degrade(body string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if body == "" {
+		s.degraded = nil
+		return
+	}
+	s.degraded = &body
 }
 
 // newHTTPFixture 构造进程内 HTTP 矩阵 fixture；与生产语义一致，每次

@@ -7,6 +7,7 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
@@ -361,16 +362,12 @@ func (c *Client) hydrationPool(ctx context.Context, dir string, entries []rawEnt
 }
 
 // isEmptyJSONArray 报告 body 是否为空 JSON 数组（空目录的形态等价）。
+// 必须真正解析并数元素：只看首个非空白字符是否为 '[' 会把任意非空
+// 数组也判成空数组，让显式 profile 下的形态不匹配静默通过。
 func isEmptyJSONArray(body []byte) bool {
-	for _, b := range body {
-		switch b {
-		case ' ', '\t', '\r', '\n':
-			continue
-		case '[':
-			return true
-		default:
-			return false
-		}
+	var entries []json.RawMessage
+	if err := json.Unmarshal(body, &entries); err != nil {
+		return false
 	}
-	return false
+	return len(entries) == 0
 }

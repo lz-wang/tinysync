@@ -9,6 +9,7 @@ package http
 import (
 	"fmt"
 	"net/url"
+	"path"
 	"strings"
 
 	"tinysync/internal/source"
@@ -108,12 +109,37 @@ func escapeSegments(logical string) string {
 // contains 判断 target 是否位于 BaseURL 子树内且同源（scheme 与
 // host[:port] 全等——https→http、跨主机、跨端口一律视为越界，防止
 // Basic / Bearer credential 被重定向到其它服务器；默认端口与省略
-// 形式语义等价）。
+// 形式语义等价）。redirect 目标与 listing href 两条入口共用本判定，
+// path 必须是 canonical 编码形态：RawPath 非空意味着存在改变层级的
+// escape（%2e%2e / %2f / %5c——Go 的 URL 解析不折叠编码 dot segment，
+// 前缀比较会放行），解码后含 dot segment / 反斜杠 / NUL / 空段的
+// path 同样拒绝——不同 Web Server 与反向代理对这类 path 的规范化
+// 方式不同，最终请求可能落到 BaseURL 之外。
 func (m *mapper) contains(target *url.URL) bool {
 	if target.Scheme != m.scheme || stripDefaultPort(target.Scheme, target.Host) != m.host {
 		return false
 	}
-	return strings.HasPrefix(trailingSlash(target.Path), m.basePath)
+	if target.RawPath != "" {
+		return false
+	}
+	return isCanonicalURLPath(target.Path) && strings.HasPrefix(trailingSlash(target.Path), m.basePath)
+}
+
+// isCanonicalURLPath 报告绝对 path 是否为 canonical 形态：不含反斜杠
+// / NUL，且与 path.Clean 的结果等价（dot segment、空段 // 与冗余尾
+// 斜杠都会让 Clean 结果不同；保留单个尾斜杠的目录语义）。
+func isCanonicalURLPath(p string) bool {
+	if strings.ContainsAny(p, "\\"+"\x00") {
+		return false
+	}
+	if p == "/" {
+		return true
+	}
+	cleaned := path.Clean(p)
+	if strings.HasSuffix(p, "/") {
+		cleaned += "/"
+	}
+	return cleaned == p
 }
 
 // stripDefaultPort 归一 origin 比较：http 的 :80 与 https 的 :443 和

@@ -140,11 +140,13 @@ func TestEntryFromHref(t *testing.T) {
 		{"/", "https://evil.example.com/releases/linux/", "escapes source base URL"},
 		{"/", "http://mirror.example.com/releases/linux/", "escapes source base URL"},
 		{"/", "https://mirror.example.com:8443/releases/linux/", "escapes source base URL"},
-		// 编码分隔符 / 编码 dot-segment 解码后跨层级或改变层级。
-		{"/", "a%2Fb%2Fc.txt", "not a single clean path segment"},
-		{"/", "%2e%2e/", "not a single clean path segment"},
-		// 反斜杠 / 自引用。
-		{"/", "a\\b.txt", "not a single clean path segment"},
+		// 编码分隔符 / 编码 dot-segment / 反斜杠：canonical path 校验
+		// （contains 内完成）即拒绝——这类形态经服务器或反向代理规范
+		// 化后可能越出子树。
+		{"/", "a%2Fb%2Fc.txt", "escapes source base URL"},
+		{"/", "%2e%2e/", "escapes source base URL"},
+		{"/", "a\\b.txt", "escapes source base URL"},
+		// 自引用。
 		{"/", "./", "not a single clean path segment"},
 	}
 	for _, tc := range invalid {
@@ -175,6 +177,16 @@ func TestMapperContains(t *testing.T) {
 		"https://mirror.example.com/releases/",
 		"https://evil.example.com:8443/releases/",
 		"http://mirror.example.com:8443/releases/",
+		// 编码 dot segment（大小写两种十六进制）/ 编码分隔符 / 明文
+		// dot segment / 空段：RawPath 非空或 path.Clean 不等价——Go
+		// 不折叠编码 dot segment，仅做解码前缀比较会放行，随后被
+		// 服务器 / 反向代理规范化到子树之外。
+		"https://mirror.example.com:8443/releases/%2e%2e/secret",
+		"https://mirror.example.com:8443/releases/%2E%2E/secret",
+		"https://mirror.example.com:8443/releases/a%2fb",
+		"https://mirror.example.com:8443/releases/a%5cb",
+		"https://mirror.example.com:8443/releases/../secret",
+		"https://mirror.example.com:8443/releases//x",
 	}
 	for _, raw := range same {
 		u := mustParseURL(t, raw)

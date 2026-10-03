@@ -97,6 +97,69 @@ func TestRedirectConfinement(t *testing.T) {
 	}
 }
 
+// redirect path 的 canonical 编码约束：encoded dot segment（大小写
+// 两种十六进制）、编码分隔符（%2f / %5c）与明文 dot segment 都会被
+// 部分 Web Server / 反向代理规范化到 BaseURL 之外，一律拒绝
+// （permanent，credential 不跟随）。明文空段（//）与明文 dot segment
+// 在 Go 的 URL 解析阶段即被折叠，但编码形态会完整保留到
+// CheckRedirect——这是 confinement 的真正缺口。canonical 编码
+// （如 %20 空格）的同子树 redirect 不受影响。
+func TestRedirectEncodedPathConfinement(t *testing.T) {
+	locations := []string{
+		"/files/%2e%2e/secret",
+		"/files/%2E%2E/secret",
+		"/files/a%2fb",
+		"/files/a%5cb",
+		"/files/../secret",
+	}
+	for _, loc := range locations {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, loc, http.StatusFound)
+		}))
+		r := newTestRequester(t, ts, authConfig{method: source.HTTPAuthBearer, token: "tok"})
+		req, err := r.newRequest(context.Background(), http.MethodGet, ts.URL+"/files/hop", "")
+		if err != nil {
+			t.Fatalf("newRequest: %v", err)
+		}
+		_, err = r.do(req)
+		if err == nil {
+			t.Errorf("redirect to %q accepted, want rejection", loc)
+			ts.Close()
+			continue
+		}
+		if !strings.Contains(err.Error(), "redirect escapes") {
+			t.Errorf("redirect to %q error = %v, want redirect escapes", loc, err)
+		}
+		if source.IsRetryable(err) {
+			t.Errorf("redirect to %q should be permanent, got %v", loc, err)
+		}
+		ts.Close()
+	}
+
+	// 对照：canonical 编码（%20）的同子树 redirect 正常跟随。
+	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/files/hop" {
+			http.Redirect(w, r, "/files/a%20b.txt", http.StatusFound)
+			return
+		}
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer ok.Close()
+	r := newTestRequester(t, ok, authConfig{method: source.HTTPAuthNone})
+	req, err := r.newRequest(context.Background(), http.MethodGet, ok.URL+"/files/hop", "")
+	if err != nil {
+		t.Fatalf("newRequest: %v", err)
+	}
+	resp, err := r.do(req)
+	if err != nil {
+		t.Fatalf("canonical-encoded redirect rejected: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+}
+
 // 压缩 representation fail-closed：请求显式 identity；服务器仍返回
 // gzip 编码时整体失败（permanent）。
 func TestCompressionFailClosed(t *testing.T) {

@@ -34,32 +34,22 @@ func detectListing(body []byte) listingKind {
 }
 
 // detectJSONListing 区分 nginx JSON（顶层数组，条目含 type/mtime/size）
-// 与 Caddy JSON（Accept: application/json 的 browse 输出，条目含
-// is_dir/is_symlink/mod_time；兼容顶层对象 + items/files 数组的包装
-// 形态）。空数组按 nginx 形态处理（空目录对两种 parser 语义等价）。
+// 与 Caddy JSON（Accept: application/json 的 browse 输出，顶层数组，
+// 条目含 is_dir/is_symlink/mod_time）。只接受正式的顶层数组：顶层
+// JSON object 一律 unknown——`{}`、`{"status":"ok"}` 这类响应无法与
+// 「字段全部缺失的包装形态」区分，把字段缺失当作空数组会授权 Mirror
+// 删除全部 managed files（fail-closed）。空数组按 nginx 形态处理
+// （空目录对两种 parser 语义等价，形态再解释由 resolveKind 按配置
+// 约束）。
 func detectJSONListing(b []byte) listingKind {
 	var arr []map[string]json.RawMessage
-	if err := json.Unmarshal(b, &arr); err == nil {
-		if len(arr) == 0 {
-			return listingNginxJSON
-		}
-		return sniffEntryFields(arr[0])
+	if err := json.Unmarshal(b, &arr); err != nil {
+		return listingUnknown
 	}
-	var obj struct {
-		Items []map[string]json.RawMessage `json:"items"`
-		Files []map[string]json.RawMessage `json:"files"`
+	if len(arr) == 0 {
+		return listingNginxJSON
 	}
-	if err := json.Unmarshal(b, &obj); err == nil {
-		entries := obj.Items
-		if len(entries) == 0 {
-			entries = obj.Files
-		}
-		if len(entries) == 0 {
-			return listingCaddyJSON
-		}
-		return sniffEntryFields(entries[0])
-	}
-	return listingUnknown
+	return sniffEntryFields(arr[0])
 }
 
 // sniffEntryFields 按首条目的字段集判定形态。

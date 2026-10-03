@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"net/http"
+	"net/http/httptest"
 	"sort"
 	"strings"
 	"testing"
@@ -236,5 +238,86 @@ func TestAutoDetectCaddy(t *testing.T) {
 	_, err = c.Stat(context.Background(), "/missing.txt")
 	if !errors.Is(err, fs.ErrNotExist) || source.IsRetryable(err) {
 		t.Errorf("Stat missing = %v, want permanent fs.ErrNotExist", err)
+	}
+}
+
+// newFixedListingServer 返回对目录请求恒定回给 body 的服务器（形态
+// 判定矩阵用；auto 模式会追加 ?raw=true 重试，同一 body 重复返回）。
+func newFixedListingServer(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+// openRemoteAt 按指定 listing mode 打开指向 ts 根的 Client。
+func openRemoteAt(t *testing.T, ts *httptest.Server, mode source.HTTPListingMode) source.Remote {
+	t.Helper()
+	remote, err := NewFactory().Create(context.Background(), source.Source{
+		Name:   "fixed",
+		Type:   source.TypeHTTP,
+		Config: source.Config{HTTP: &source.HTTPConfig{BaseURL: ts.URL + "/", ListingMode: mode}},
+	}, source.Credentials{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = remote.Close() })
+	return remote
+}
+
+// 显式 caddy + 空数组 []：按配置形态解释为空目录（空形态对两种
+// JSON parser 语义等价）。
+func TestExplicitCaddyEmptyArrayAccepted(t *testing.T) {
+	ts := newFixedListingServer(t, `[]`)
+	remote := openRemoteAt(t, ts, source.HTTPListingCaddy)
+	entries, err := remote.List(context.Background(), "/", source.ListOptions{Limit: source.MaxListLimit})
+	if err != nil {
+		t.Fatalf("List empty array with explicit caddy: %v", err)
+	}
+	if len(entries.Entries) != 0 {
+		t.Errorf("entries = %+v, want empty", entries.Entries)
+	}
+}
+
+// 显式 caddy + 非空 nginx JSON：permanent 形态不匹配。isEmptyJSONArray
+// 必须真正解析——非空数组若被误判为空数组，会按 caddy 形态重解释并
+// 送进 caddy decoder，目录条目（无 is_dir 字段）被误判为文件。
+func TestExplicitCaddyNonEmptyNginxMismatch(t *testing.T) {
+	ts := newFixedListingServer(t, `[{"name":"d/","type":"directory","mtime":"Wed, 21 Oct 2026 07:28:00 GMT"}]`)
+	remote := openRemoteAt(t, ts, source.HTTPListingCaddy)
+	_, err := remote.Stat(context.Background(), "/")
+	if err == nil {
+		t.Fatal("non-empty nginx JSON with explicit caddy accepted, want mismatch")
+	}
+	want := "does not match configured listing_mode=caddy"
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("error = %v, want containing %q", err, want)
+	}
+	if source.IsRetryable(err) {
+		t.Error("listing mismatch should be permanent")
+	}
+}
+
+// auto 模式对顶层 JSON object 明确失败：反向代理的 `200 {"status":...}`
+// 不是可识别的目录索引，绝不解释成空 Caddy 目录授权 Mirror 删除
+// （?raw=true 重试后仍失败）。
+func TestAutoModeJSONObjectUnsupported(t *testing.T) {
+	for _, body := range []string{`{}`, `{"status":"ok"}`, `{"error":"backend temporarily unavailable"}`} {
+		ts := newFixedListingServer(t, body)
+		remote := openRemoteAt(t, ts, source.HTTPListingAuto)
+		_, err := remote.Stat(context.Background(), "/")
+		if err == nil {
+			t.Errorf("auto mode accepted JSON object %s, want unsupported", body)
+			continue
+		}
+		if !strings.Contains(err.Error(), "no supported directory listing") {
+			t.Errorf("auto mode JSON object %s error = %v, want unsupported listing", body, err)
+		}
+		if source.IsRetryable(err) {
+			t.Errorf("unsupported listing should be permanent, got %v", err)
+		}
 	}
 }

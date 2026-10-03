@@ -40,18 +40,26 @@ func TestParseCaddyJSON(t *testing.T) {
 	}
 }
 
-// 兼容 {items|files: [...]} 包装形态。
-func TestParseCaddyJSONWrapped(t *testing.T) {
+// 顶层 JSON object（含 {items|files} 包装形态）不是合法的 Caddy
+// listing：字段缺失与空数组不可区分，绝不解释成零条目快照。
+func TestParseCaddyJSONRejectsWrappedObject(t *testing.T) {
 	m := newRootMapper(t)
-	for _, key := range []string{"items", "files"} {
-		body := `{"` + key + `":[` +
-			`{"name":"a","size":1,"url":"a","mod_time":"2026-10-01T12:00:00Z","is_dir":false,"is_symlink":false}]}`
-		entries, err := parseCaddyJSON(m, "/", []byte(body))
-		if err != nil {
-			t.Fatalf("wrapped (%s): %v", key, err)
+	for _, body := range []string{
+		`{}`,
+		`{"status":"ok"}`,
+		`{"items":null}`,
+		`{"files":null}`,
+		`{"items":[]}`,
+		`{"items":"bad"}`,
+		`{"items":[{"name":"a","size":1,"url":"a","mod_time":"2026-10-01T12:00:00Z","is_dir":false,"is_symlink":false}]}`,
+	} {
+		_, err := parseCaddyJSON(m, "/", []byte(body))
+		if err == nil {
+			t.Errorf("wrapped object %s accepted, want invalid caddy JSON", body)
+			continue
 		}
-		if len(entries) != 1 || entries[0].Name != "a" || entries[0].Size != 1 {
-			t.Errorf("wrapped (%s) entries = %+v", key, entries)
+		if !strings.Contains(err.Error(), "invalid caddy JSON") {
+			t.Errorf("wrapped object %s error = %v, want invalid caddy JSON", body, err)
 		}
 	}
 }
