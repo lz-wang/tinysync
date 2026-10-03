@@ -28,6 +28,7 @@ import {
     type S3Config,
     type SFTPConfig,
     type SFTPCredentials,
+    type SMBConfig,
     type SourceConfig,
     type SourceCredentials,
     type SourceResponse,
@@ -56,6 +57,7 @@ type SecretKey =
     | 'sftp.password'
     | 'sftp.private_key'
     | 'sftp.passphrase'
+    | 'smb.password'
     | 'github.token'
 
 // SourceDialog 创建 / 编辑 Source。创建时选择协议类型并按类型动态
@@ -92,6 +94,15 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
         host_key_fingerprint: '',
         credential_id: '',
     })
+    const [smb, setSmb] = useState<SMBConfig>({
+        host: '',
+        port: 445,
+        share: '',
+        remote_root: '/',
+        username: '',
+        domain: '',
+        signing: 'required',
+    })
     // keySource 决定 private_key 方式的私钥来源：凭据库引用（与内联
     // 互斥）或一次性粘贴。credentials 是凭据库可选项。
     const [keySource, setKeySource] = useState<'credential' | 'inline'>('inline')
@@ -113,6 +124,7 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
         'sftp.password': '',
         'sftp.private_key': '',
         'sftp.passphrase': '',
+        'smb.password': '',
         'github.token': '',
     })
     const [secretsDirty, setSecretsDirty] = useState<Set<SecretKey>>(new Set())
@@ -181,6 +193,30 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                       credential_id: '',
                   },
         )
+        setSmb(
+            source?.type === 'smb'
+                ? (() => {
+                      const cfg = source.config as SMBConfig
+                      return {
+                          host: cfg.host ?? '',
+                          port: cfg.port ?? 445,
+                          share: cfg.share ?? '',
+                          remote_root: cfg.remote_root ?? '/',
+                          username: cfg.username ?? '',
+                          domain: cfg.domain ?? '',
+                          signing: cfg.signing ?? 'required',
+                      }
+                  })()
+                : {
+                      host: '',
+                      port: 445,
+                      share: '',
+                      remote_root: '/',
+                      username: '',
+                      domain: '',
+                      signing: 'required',
+                  },
+        )
         // 私钥来源按现有引用态初始化；凭据列表在打开时加载。
         setKeySource(
             source?.type === 'sftp' && (source.config as SFTPConfig).credential_id
@@ -215,6 +251,7 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
             'sftp.password': '',
             'sftp.private_key': '',
             'sftp.passphrase': '',
+            'smb.password': '',
             'github.token': '',
         })
         setSecretsDirty(new Set())
@@ -280,6 +317,9 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
         if (type === 's3') {
             return { ...s3 }
         }
+        if (type === 'smb') {
+            return { ...smb }
+        }
         if (type === 'github_release') {
             return { ...github }
         }
@@ -297,6 +337,12 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
         if (type === 's3') {
             if (secretsDirty.has('s3.secret_key')) {
                 return { secret_key: secrets['s3.secret_key'] }
+            }
+            return undefined
+        }
+        if (type === 'smb') {
+            if (secretsDirty.has('smb.password')) {
+                return { password: secrets['smb.password'] }
             }
             return undefined
         }
@@ -387,6 +433,19 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                       s3.bucket.trim() !== '' &&
                       s3.access_key.trim() !== '' &&
                       secrets['s3.secret_key'].trim() !== ''
+        }
+        if (type === 'smb') {
+            // 创建时密码必填（guest 不支持）；编辑时存量已配置即可。
+            const passwordReady =
+                source !== null
+                    ? (source.credential_state.smb?.password_set ?? false)
+                    : secrets['smb.password'].trim() !== ''
+            return (
+                smb.host.trim() !== '' &&
+                smb.share.trim() !== '' &&
+                smb.username.trim() !== '' &&
+                passwordReady
+            )
         }
         if (type === 'github_release') {
             if (github.repository.trim() === '') {
@@ -483,6 +542,7 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                             <MenuItem value="webdav">WebDAV</MenuItem>
                             <MenuItem value="s3">S3</MenuItem>
                             <MenuItem value="sftp">SFTP</MenuItem>
+                            <MenuItem value="smb">SMB (SMB2/SMB3)</MenuItem>
                             <MenuItem value="github_release">GitHub Release</MenuItem>
                         </Select>
                     </FormControl>
@@ -622,6 +682,99 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                                     onClear={() => clearSecret('s3.secret_key')}
                                 />
                             </Box>
+                        </>
+                    )}
+
+                    {type === 'smb' && (
+                        <>
+                            <Box
+                                sx={{
+                                    display: 'grid',
+                                    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                                    gap: 2,
+                                }}
+                            >
+                                <TextField
+                                    label="主机"
+                                    value={smb.host}
+                                    onChange={e => setSmb({ ...smb, host: e.target.value })}
+                                    required
+                                    placeholder="192.168.2.10"
+                                    sx={{ '& input': { fontFamily: 'monospace' } }}
+                                    helperText="裸主机名 / IP，不要带 smb:// 或共享名。"
+                                />
+                                <TextField
+                                    label="端口"
+                                    type="number"
+                                    value={smb.port ?? 445}
+                                    onChange={e => setSmb({ ...smb, port: Number(e.target.value) })}
+                                />
+                            </Box>
+                            <Box
+                                sx={{
+                                    display: 'grid',
+                                    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                                    gap: 2,
+                                }}
+                            >
+                                <TextField
+                                    label="共享名称"
+                                    value={smb.share}
+                                    onChange={e => setSmb({ ...smb, share: e.target.value })}
+                                    required
+                                    placeholder="backup"
+                                    sx={{ '& input': { fontFamily: 'monospace' } }}
+                                />
+                                <TextField
+                                    label="Domain / Workgroup（可选）"
+                                    value={smb.domain ?? ''}
+                                    onChange={e => setSmb({ ...smb, domain: e.target.value })}
+                                    placeholder="WORKGROUP"
+                                />
+                            </Box>
+                            <TextField
+                                label="用户名"
+                                value={smb.username}
+                                onChange={e => setSmb({ ...smb, username: e.target.value })}
+                                required
+                            />
+                            <SecretField
+                                label="密码"
+                                value={secrets['smb.password']}
+                                dirty={secretsDirty.has('smb.password')}
+                                cleared={secretsCleared.has('smb.password')}
+                                chip={secretChip('smb.password', '密码')}
+                                onChange={v => setSecret('smb.password', v)}
+                                onClear={() => clearSecret('smb.password')}
+                            />
+                            <FormControl fullWidth>
+                                <InputLabel id="smb-signing-label">消息签名</InputLabel>
+                                <Select
+                                    labelId="smb-signing-label"
+                                    value={smb.signing}
+                                    label="消息签名"
+                                    onChange={e =>
+                                        setSmb({
+                                            ...smb,
+                                            signing: e.target.value as SMBConfig['signing'],
+                                        })
+                                    }
+                                >
+                                    <MenuItem value="required">要求签名（推荐）</MenuItem>
+                                    <MenuItem value="auto">服务器决定</MenuItem>
+                                </Select>
+                            </FormControl>
+                            <RootField
+                                value={smb.remote_root || '/'}
+                                onChange={value => setSmb({ ...smb, remote_root: value })}
+                                onBrowse={() => setRemotePickerOpen(true)}
+                                disabled={source === null}
+                                helperText={
+                                    source === null
+                                        ? '保存同步源后可浏览选择目录。'
+                                        : 'share 内的目录（/ 表示共享根）；任务中的路径相对此根目录。'
+                                }
+                            />
                         </>
                     )}
 
@@ -889,6 +1042,8 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                 onPick={path => {
                     if (type === 'webdav') {
                         setWebdav({ ...webdav, remote_root: path })
+                    } else if (type === 'smb') {
+                        setSmb({ ...smb, remote_root: path })
                     } else {
                         setSftp({ ...sftp, remote_root: path })
                     }
@@ -896,7 +1051,11 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                 }}
                 boundSourceId={source?.id}
                 initialPath={
-                    type === 'webdav' ? (webdav.remote_root ?? '/') : sftp.remote_root || '/'
+                    type === 'webdav'
+                        ? (webdav.remote_root ?? '/')
+                        : type === 'smb'
+                          ? smb.remote_root || '/'
+                          : sftp.remote_root || '/'
                 }
             />
             <PromoteCredentialDialog
@@ -963,6 +1122,8 @@ function isSecretConfigured(source: SourceResponse, key: SecretKey): boolean {
             return state.sftp?.private_key_set ?? false
         case 'sftp.passphrase':
             return state.sftp?.private_key_passphrase_set ?? false
+        case 'smb.password':
+            return state.smb?.password_set ?? false
         case 'github.token':
             return state.github_release?.token_set ?? false
     }

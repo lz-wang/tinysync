@@ -38,6 +38,7 @@ import {
     listSources,
     type S3Config,
     type SFTPConfig,
+    type SMBConfig,
     type SourceResponse,
     testSource,
     updateSource,
@@ -329,6 +330,7 @@ function SourceTable({
                     <MenuItem value="webdav">WebDAV</MenuItem>
                     <MenuItem value="s3">S3</MenuItem>
                     <MenuItem value="sftp">SFTP</MenuItem>
+                    <MenuItem value="smb">SMB</MenuItem>
                     <MenuItem value="github_release">GitHub Release</MenuItem>
                 </TextField>
                 <TextField
@@ -538,6 +540,11 @@ function locationSummary(source: SourceResponse): string {
         case 'sftp': {
             const cfg = config as SFTPConfig
             return `${cfg.host}:${cfg.port ?? 22}${cfg.remote_root}`
+        }
+        case 'smb': {
+            const cfg = config as SMBConfig
+            // secret 绝不拼入 URL；username 单独列展示。
+            return `smb://${cfg.host}:${cfg.port ?? 445}/${cfg.share}${cfg.remote_root === '/' ? '' : cfg.remote_root}`
         }
         case 'github_release': {
             const cfg = config as GitHubReleaseConfig

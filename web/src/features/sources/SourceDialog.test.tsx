@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { CredentialResponse, SFTPConfig, SourceResponse } from '../../api'
+import type { CredentialResponse, SFTPConfig, SMBConfig, SourceResponse } from '../../api'
 import { createSource, listCredentials, promoteSourceCredential, updateSource } from '../../api'
 import SourceDialog from './SourceDialog'
 
@@ -197,5 +197,108 @@ describe('SourceDialog 提升为凭据', () => {
         renderDialog({ source: referencingSource })
         await waitFor(() => expect(mocked.listCredentials).toHaveBeenCalled())
         expect(screen.queryByRole('button', { name: /提升为凭据/ })).toBeNull()
+    })
+})
+
+// SMB 表单：创建必填密码（guest 不支持）、默认值归一提交、编辑回显
+// 与 signing 调整（非身份字段）。
+const smbSource: SourceResponse = {
+    id: 'src-smb',
+    name: 'NAS SMB',
+    type: 'smb',
+    config: {
+        host: 'nas.example.com',
+        port: 445,
+        share: 'backup',
+        remote_root: '/photos',
+        username: 'tinysync',
+        domain: 'WORKGROUP',
+        signing: 'required',
+    },
+    credential_state: {
+        smb: { password_set: true },
+    },
+    enabled: true,
+    created_at: '2026-10-03T00:00:00Z',
+    updated_at: '2026-10-03T00:00:00Z',
+}
+
+describe('SourceDialog SMB', () => {
+    it('创建：默认 signing=required 提交，密码随 credentials 发送', async () => {
+        mocked.createSource.mockResolvedValue(smbSource)
+        renderDialog()
+
+        fireEvent.change(screen.getByLabelText(/名称/), { target: { value: 'NAS SMB' } })
+        fireEvent.mouseDown(screen.getByLabelText(/类型/))
+        fireEvent.click(await screen.findByText('SMB (SMB2/SMB3)'))
+        fireEvent.change(screen.getByPlaceholderText('192.168.2.10'), {
+            target: { value: 'nas.example.com' },
+        })
+        fireEvent.change(screen.getByLabelText(/共享名称/), {
+            target: { value: 'backup' },
+        })
+        fireEvent.change(screen.getByLabelText(/用户名/), {
+            target: { value: 'tinysync' },
+        })
+        fireEvent.change(screen.getByLabelText(/^密码/), { target: { value: 'smb-pass' } })
+        fireEvent.click(screen.getByRole('button', { name: '保存' }))
+
+        await waitFor(() => {
+            expect(mocked.createSource).toHaveBeenCalled()
+        })
+        const input = mocked.createSource.mock.calls[0][0]
+        const config = input.config as SMBConfig
+        expect(config.host).toBe('nas.example.com')
+        expect(config.share).toBe('backup')
+        expect(config.port).toBe(445)
+        expect(config.remote_root).toBe('/')
+        expect(config.signing).toBe('required')
+        expect(input.credentials).toEqual({ password: 'smb-pass' })
+    })
+
+    it('创建：无密码时保存禁用（guest 不支持）', async () => {
+        renderDialog()
+
+        fireEvent.change(screen.getByLabelText(/名称/), { target: { value: 'NAS SMB' } })
+        fireEvent.mouseDown(screen.getByLabelText(/类型/))
+        fireEvent.click(await screen.findByText('SMB (SMB2/SMB3)'))
+        fireEvent.change(screen.getByPlaceholderText('192.168.2.10'), {
+            target: { value: 'nas.example.com' },
+        })
+        fireEvent.change(screen.getByLabelText(/共享名称/), { target: { value: 'backup' } })
+        fireEvent.change(screen.getByLabelText(/用户名/), { target: { value: 'tinysync' } })
+
+        await waitFor(() => {
+            expect(
+                (screen.getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled,
+            ).toBeTruthy()
+        })
+        expect(mocked.createSource).not.toHaveBeenCalled()
+    })
+
+    it('编辑：回显 share / root / signing，调整 signing 后进入 patch config', async () => {
+        mocked.updateSource.mockResolvedValue(smbSource)
+        renderDialog({ source: smbSource })
+
+        // 编辑存量源（密码已配置）即使不动密码也可保存。
+        await waitFor(() => {
+            expect(
+                (screen.getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled,
+            ).toBeFalsy()
+        })
+        fireEvent.mouseDown(screen.getByLabelText(/消息签名/))
+        fireEvent.click(await screen.findByText('服务器决定'))
+        fireEvent.click(screen.getByRole('button', { name: '保存' }))
+
+        await waitFor(() => {
+            expect(mocked.updateSource).toHaveBeenCalled()
+        })
+        const input = mocked.updateSource.mock.calls[0][1]
+        const config = input.config as SMBConfig
+        expect(config.signing).toBe('auto')
+        expect(config.share).toBe('backup')
+        expect(config.remote_root).toBe('/photos')
+        // 未触碰密码：不发送 credentials。
+        expect(input.credentials).toBeUndefined()
     })
 })

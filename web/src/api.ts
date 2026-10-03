@@ -24,7 +24,7 @@ export interface VersionResponse {
 }
 
 // SourceType 是 Source 支持的协议类型；创建后不可变。
-export type SourceType = 'webdav' | 's3' | 'sftp' | 'github_release'
+export type SourceType = 'webdav' | 's3' | 'sftp' | 'smb' | 'github_release'
 
 // WebDAVConfig 是 WebDAV 的非敏感配置。
 export interface WebDAVConfig {
@@ -59,6 +59,22 @@ export interface SFTPConfig {
     credential_id?: string
 }
 
+// SMBSigningPolicy 是 SMB 消息签名策略：required 要求服务器启用
+// 签名（默认，推荐）；auto 跟随服务器协商。
+export type SMBSigningPolicy = 'required' | 'auto'
+
+// SMBConfig 是 SMB 的非敏感配置。host 是裸主机名 / IP（不带 smb://
+// 前缀与 share），remote_root 是 share 内的 POSIX 风格绝对路径。
+export interface SMBConfig {
+    host: string
+    port?: number
+    share: string
+    remote_root: string
+    username: string
+    domain?: string
+    signing: SMBSigningPolicy
+}
+
 // GitHubReleasePolicy 是 GitHub Release 的版本选择策略。
 export type GitHubReleasePolicy = 'latest' | 'tag' | 'recent' | 'all'
 
@@ -78,7 +94,7 @@ export interface GitHubReleaseConfig {
 }
 
 // SourceConfig 是按 type 判别的协议配置（请求与响应均为扁平单选对象）。
-export type SourceConfig = WebDAVConfig | S3Config | SFTPConfig | GitHubReleaseConfig
+export type SourceConfig = WebDAVConfig | S3Config | SFTPConfig | SMBConfig | GitHubReleaseConfig
 
 // CredentialState 回显各 secret 是否设置；任何 secret 不回显明文。
 export interface CredentialState {
@@ -89,6 +105,7 @@ export interface CredentialState {
         private_key_set: boolean
         private_key_passphrase_set: boolean
     }
+    smb?: { password_set: boolean }
     github_release?: { token_set: boolean }
 }
 
@@ -134,6 +151,10 @@ export interface SFTPCredentials {
     private_key_passphrase?: string
 }
 
+export interface SMBCredentials {
+    password?: string
+}
+
 export interface GitHubReleaseCredentials {
     token?: string
 }
@@ -143,6 +164,7 @@ export type SourceCredentials =
     | WebDAVCredentials
     | S3Credentials
     | SFTPCredentials
+    | SMBCredentials
     | GitHubReleaseCredentials
 
 // CreateSourceInput 对应 POST /api/v1/sources 请求体。
