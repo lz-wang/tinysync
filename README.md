@@ -6,14 +6,14 @@ TinySync 是一个面向 HomeLab 的文件同步服务：单一 Go 二进制，�
 通过 REST API 管理同步源（Sources）与同步任务（Jobs）。
 
 > 当前开发版提供：持久化的多协议 Source 管理（WebDAV / S3 / SFTP /
-> SMB / GitHub Release，创建、编辑、删除与连接测试），以及远端 → 本地单向
+> SMB / GitHub Release / Local，创建、编辑、删除与访问测试），以及源端 → 本地单向
 > 同步 Job——Copy / Mirror 模式、include / exclude 过滤、原子下载
-> 与本地文件归属保护（Mirror 只删除本 Job 管理的文件）。五种协议
+> 与本地文件归属保护（Mirror 只删除本 Job 管理的文件）。六种类型
 > 共用同一个同步引擎。Job 支持自动调度（once / interval / cron，重叠自动
 > 跳过）、受控并发（`--max-concurrent-jobs` /
 > `--max-concurrent-transfers`）与持久化运行历史（每轮运行与
 > 文件级变更明细经 Web UI 与 REST 可查，重启不丢）。文件访问与
-> 共享：远端与本地文件浏览、文件下载与把本地文件或目录（含任务
+> 共享：源端与目标本地文件浏览、文件下载与把本地文件或目录（含任务
 > 本地根）显式共享为受控 HTTP URL 与公开浏览页。GitHub Release
 > Source 把一个仓库的 Releases 转换为版本目录树（latest / 指定
 > Tag / 最近 N 个 / 全部四种选择策略，完整 Link 分页、ETag 条件
@@ -240,7 +240,7 @@ restore 流程：校验备份（非法 / 损坏 / schema 较新的备份在改�
 
 Source 配置按协议分为非敏感 `config` 与 secret `credentials` 两组；
 响应只回显 `credential_state` 布尔集合，任何 secret 永不回显。
-Type 创建后不可变。
+本地文件 Source 无凭据，省略 `credentials`，状态回显 `{}`。Type 创建后不可变。
 
 WebDAV：
 
@@ -364,22 +364,57 @@ tag 中 `/` 等字符 percent-encode），Job 的远端根目录在动态版本�
 `POST /api/v1/sources/inspect` 以表单配置（或已保存 Source 的 ID）
 预览版本发现结果，不持久化任何配置。
 
+Local（运行 TinySync 的主机目录，单向同步到另一个本地目录）：
+
+```bash
+curl -X POST http://127.0.0.1:9466/api/v1/sources \
+  -H "Authorization: Bearer $TINYSYNC_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "本地媒体",
+    "type": "local",
+    "config": {"root": "/data/media"},
+    "enabled": true
+  }'
+```
+
+- `root` 是主机上已存在的目录，创建/编辑时规范为 canonical native 绝对路径
+  后保存（如 macOS 的 `/var` 别名会解析为 `/private/var`）。Windows 使用
+  `D:\Media` 一类原生路径；Source 内部路径仍为 `/photos/2026`。
+- 无用户名、密码、私钥或凭据引用；API 显式携带 `credentials` 返回 400。
+  Web UI 选择「本地文件」，可直接填写源根目录或复用主机目录选择器浏览、建目录。
+  「测试本地目录」验证源根目录访问；文件管理「源端文件」可浏览和下载，
+  任务的源端路径选择器支持新建子目录。MCP `list_sources` 可查询该类型与 root。
+- Job 的 `remote_root` 选择源子树。例如 `root=/data/media`、
+  `remote_root=/photos`、`local_root=/backup/photos` 表示
+  `/data/media/photos → /backup/photos`。源子树与目标相同或互相包含都拒绝；
+  `/data/photos → /data/videos` 这样的 sibling 目录允许。创建、编辑以及每轮运行
+  前均检查映射；运行前拒绝危险映射会记录 failed run，不改本地文件和 managed 记录。
+- 只读取普通文件和目录，symlink（即使指向根内）和 FIFO/socket/device 等特殊文件
+  均拒绝，任何局部扫描失败都会中止本轮，Mirror 不据此删除本地文件。
+- 变更检测使用 size + mtime，不提供 checksum 扫描、文件系统 snapshot 或双向冲突
+  解决；多个 Job 之间不检测循环。自行挂载的目录经 OS 文件接口访问，TinySync
+  不管理挂载，也不为挂载协议增加特殊保证。
+- 不新增数据库迁移。**数据库保存 `type=local` 后，不应降级到不认识 Local 的旧版**。
+  降级前备份并删除 Local Source 及其引用 Job，或恢复添加 Local 之前的数据库备份。
+  设计边界见 [ADR 0008](docs/adr/0008-local-source.md)。
+
 被 Sync Job 引用的 Source 拒绝修改 remote identity（WebDAV 的
 endpoint + username、S3 的 endpoint / region / bucket / prefix /
 path-style、SFTP 的 host / port / username / remote_root / host key
 fingerprint、SMB 的 host / port / share / remote_root / username /
 domain、GitHub Release 的 repository / release_policy / tag /
-recent_count / include_prereleases），防止 Mirror 把既有本地文件误判
+recent_count / include_prereleases、Local 的 canonical root），防止 Mirror 把既有本地文件误判
 为远端消失而删除；secret 轮换、SMB 的 signing 与 GitHub Release 的
-verify_sha256 调整始终允许。更换远端的正确路径是新建 Source 后切换
+verify_sha256 调整始终允许。更换源端的正确路径是新建 Source 后切换
 Job 的 source_id。
 
 ## Files：文件浏览与共享
 
-Remote 浏览经 `GET /api/v1/sources/:id/files`（分页查询参数
-`path` / `limit` / `cursor`，limit 默认 100、上限 500）分页浏览远端
+源端浏览（所有 Source 类型，含 Local）经 `GET /api/v1/sources/:id/files`（分页查询参数
+`path` / `limit` / `cursor`，limit 默认 100、上限 500）分页浏览源端
 目录；`.../files/stat` 与 `.../files/download` 提供元信息与流式下载。
-本地浏览以 Job 为唯一入口：`GET /api/v1/jobs/:id/files` 只能访问该
+目标本地文件浏览以 Job 为唯一入口：`GET /api/v1/jobs/:id/files` 只能访问该
 Job 的 LocalRoot 之下的内容，条目携带 `managed` 标记（TinySync 当前
 管理 vs 目录原有 / 已 relinquish 的文件）；本地下载支持 Range / HEAD。
 
@@ -446,7 +481,7 @@ make setup     # 安装开发工具与依赖
 make build     # 构建当前平台二进制（含 Web UI）
 make serve     # 构建并启动
 make test      # 运行测试
-make check     # 静态检查
+make check     # 静态检查、前端组件测试与全量 Go 测试
 make help      # 查看全部 target
 ```
 

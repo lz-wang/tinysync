@@ -14,12 +14,13 @@
 | `make help` | 查看工程命令 |
 | `make setup` | 安装 goimports-reviser、Go 与 Web 依赖；Web 使用 `npm install`，执行后检查锁文件差异 |
 | `make web-ci-install` | 使用 `npm ci` 安装锁定的 Web 依赖 |
-| `make check` | Go 格式与依赖一致性、`go vet`、Web Biome、TypeScript、全量 Go 测试 |
+| `make check` | Go 格式与依赖一致性、`go vet`、Web Biome、TypeScript、Vitest 组件测试、全量 Go 测试 |
 | `make test` | 仅全量 Go 测试：`CGO_ENABLED=0 go test -timeout 30s ./...` |
 | `make web-lint` / `make web-typecheck` | 分别执行 Biome 检查与 `tsc -b` |
 | `make coverage` | 生成 `coverage/backend.out` 与 HTML 报告 |
 | `make ci` | 安装工具及锁定的 Web 依赖、下载 Go 依赖，再执行 `make check` |
 | `make build` / `make serve` | 构建含 Web UI 的当前平台二进制 / 构建后启动服务 |
+| `make web-test` | 执行 Vitest 组件测试 |
 | `make web-build` | TypeScript 检查与 Vite 构建，产物供 Go 嵌入 |
 | `make format` / `make web-format` | 全库 Go + Web / Web 自动格式化，会修改文件；仅在任务需要时执行并审查差异 |
 
@@ -45,7 +46,8 @@
 - **启动、版本、打包或发布链路变更**：按[构建与发布](release.md)补充本机 Smoke 或平台构建；本地 cross-build 不代表其他平台运行通过。
 
 `make check` 已包含全量 Go 测试，成功后无需无故重复 `make test`。
-当前 Web 没有独立单测命令，Biome、TypeScript 和构建不能表述为浏览器行为验证；
+Web 组件测试使用 `make web-test`（Vitest），已纳入 `make check`；
+组件测试、Biome、TypeScript 和构建不能表述为真实浏览器行为验证；
 未要求时不主动执行浏览器 / E2E 验证。
 
 任一门禁失败都要定位并修复，包括既有阻塞；不得通过放宽规则、删除测试或新增跳过凑绿。

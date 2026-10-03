@@ -1,6 +1,21 @@
 # TinySync
 
-TinySync 把远端存储的文件同步到本地，并通过受控的公开 URL 把同步结果分享出去。本文件是领域术语表。
+TinySync 把同步源（网络存储或运行主机目录）的文件单向同步到本地，并通过受控的公开 URL 把同步结果分享出去。本文件是领域术语表。
+
+## 同步源域
+
+**同步源（Source）**：
+源端普通文件树的配置身份，按类型经统一 Remote 接口读取。Local 是运行主机
+的目录，与 WebDAV / S3 / SFTP / SMB / GitHub Release 共用单向同步引擎。
+_Avoid_: 本地同步引擎、双向同步
+
+**源根目录（LocalConfig.Root）**：
+Local Source 的 canonical native 绝对路径。不是 Job 的目标目录，也不是
+Source-relative 逻辑路径。
+
+**源端路径（Job.RemoteRoot）**：
+Source 内以 `/` 分隔的逻辑路径，`/` 表示源根。Local 的实际读取子树由
+LocalConfig.Root 与该逻辑路径共同决定，与 Job.LocalRoot 不得相同或互相包含。
 
 ## 共享域
 
