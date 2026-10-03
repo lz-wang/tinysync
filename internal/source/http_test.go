@@ -119,7 +119,7 @@ func TestValidateHTTPConfig(t *testing.T) {
 		{"query", httpWith(func(c *HTTPConfig) { c.BaseURL = "https://mirror.example.com/files/?token=x" }), "query"},
 		{"sort query", httpWith(func(c *HTTPConfig) { c.BaseURL = "https://mirror.example.com/files/?sort=name" }), "query"},
 		{"fragment", httpWith(func(c *HTTPConfig) { c.BaseURL = "https://mirror.example.com/files/#top" }), "fragment"},
-		{"encoded slash", httpWith(func(c *HTTPConfig) { c.BaseURL = "https://mirror.example.com/a%2Fb/" }), "percent-encoded path separators"},
+		{"encoded slash", httpWith(func(c *HTTPConfig) { c.BaseURL = "https://mirror.example.com/a%2Fb/" }), "standard URL encoding"},
 		{"encoded backslash", httpWith(func(c *HTTPConfig) { c.BaseURL = "https://mirror.example.com/a%5Cb/" }), "path separators or NUL"},
 		{"dot segment", httpWith(func(c *HTTPConfig) { c.BaseURL = "https://mirror.example.com/a/../b/" }), "clean absolute path"},
 		{"double slash", httpWith(func(c *HTTPConfig) { c.BaseURL = "https://mirror.example.com/a//b/" }), "clean absolute path"},

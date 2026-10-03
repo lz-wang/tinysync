@@ -544,6 +544,13 @@ func canonicalHTTPBaseURL(raw string) string {
 	}
 	u.Scheme = strings.ToLower(u.Scheme)
 	u.Host = strings.ToLower(u.Host)
+	// 剥离 scheme 默认端口（http:80 / https:443）：URL 语义等价，
+	// 持久化与身份比较保持单一形态。
+	if u.Scheme == "http" {
+		u.Host = strings.TrimSuffix(u.Host, ":80")
+	} else {
+		u.Host = strings.TrimSuffix(u.Host, ":443")
+	}
 	u.Path = withTrailingSlash(u.Path)
 	// 清空 RawPath 后 String() 按解码 path 重新转义，形态唯一。
 	u.RawPath = ""

@@ -356,12 +356,13 @@ func validateHTTPConfig(c HTTPConfig) error {
 	if u.Fragment != "" {
 		return fmt.Errorf("%w: http base_url must not contain a fragment", ErrInvalid)
 	}
-	// 路径中不得出现经解码改变层级的编码或字符：RawPath 非空意味着
-	// 原始 path 无法经默认转义从解码 path 复原（如 %2F）；%5C 经
-	// 默认转义可复原、RawPath 为空，需对 escaped 形态再显式检查；
-	// 解码后的反斜杠与 NUL 同理在边界整体拒绝。
+	// RawPath 非空意味着原始 path 无法经默认转义从解码 path 复原：
+	// 可能是 %2F 这类经解码改变层级的编码，也可能是未转义的特殊
+	// 字符（空格等）——一律拒绝并要求标准 URL 编码形态。%5C 经默认
+	// 转义可复原、RawPath 为空，需对 escaped 形态再显式检查；解码后
+	// 的反斜杠与 NUL 同理在边界整体拒绝。
 	if u.RawPath != "" {
-		return fmt.Errorf("%w: http base_url %q must not contain percent-encoded path separators", ErrInvalid, c.BaseURL)
+		return fmt.Errorf("%w: http base_url %q must use standard URL encoding (spaces as %%20; percent-encoded separators %%2F / %%5C are not accepted)", ErrInvalid, c.BaseURL)
 	}
 	if esc := strings.ToLower(u.EscapedPath()); strings.Contains(esc, "%2f") || strings.Contains(esc, "%5c") ||
 		strings.Contains(u.Path, `\`) || strings.Contains(u.Path, "\x00") {
