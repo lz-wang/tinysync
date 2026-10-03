@@ -63,8 +63,9 @@ func newSourceRouter(t *testing.T, remote source.Remote) testRouter {
 	return newSourceRouterWithFactory(t, fakeFactory{remote: remote})
 }
 
-// newSourceRouterWithFactory 用指定 factory 构造路由。
-func newSourceRouterWithFactory(t *testing.T, factory fakeFactory) testRouter {
+// newSourceRouterWithFactory 用指定 factory 构造路由（接受任意
+// RemoteFactory 实现，测试可覆盖协议类型）。
+func newSourceRouterWithFactory(t *testing.T, factory source.RemoteFactory) testRouter {
 	t.Helper()
 	dataDir := t.TempDir()
 	db, err := storage.Open(dataDir)
