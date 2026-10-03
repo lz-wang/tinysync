@@ -549,8 +549,10 @@ func ValidateCredentials(t Type, c Config, creds Credentials) error {
 			return fmt.Errorf("%w: credentials must only contain http fields for type http", ErrInvalid)
 		}
 		// 认证方式显式声明，secret 与之严格匹配（不做空值推断）：
-		// none 不接受任何 secret；basic 要求 password；bearer 要求
-		// bearer token。none/bearer 下的 username 由 Normalized 清空。
+		// none 不接受任何 secret；basic 要求 password 且拒绝 token；
+		// bearer 要求 token 且拒绝 password——两种方式各自拒绝对方的
+		// secret，保证存储里不存在「另一认证方式的沉睡凭据」。
+		// none/bearer 下的 username 由 Normalized 清空。
 		switch c.HTTP.AuthMethod {
 		case HTTPAuthNone:
 			if creds.HTTP != nil && (creds.HTTP.Password != "" || creds.HTTP.BearerToken != "") {
@@ -560,9 +562,15 @@ func ValidateCredentials(t Type, c Config, creds Credentials) error {
 			if creds.HTTP == nil || creds.HTTP.Password == "" {
 				return fmt.Errorf("%w: http password is required for auth_method=basic", ErrInvalid)
 			}
+			if creds.HTTP.BearerToken != "" {
+				return fmt.Errorf("%w: http auth_method=basic does not accept a bearer token", ErrInvalid)
+			}
 		case HTTPAuthBearer:
 			if creds.HTTP == nil || creds.HTTP.BearerToken == "" {
 				return fmt.Errorf("%w: http bearer token is required for auth_method=bearer", ErrInvalid)
+			}
+			if creds.HTTP.Password != "" {
+				return fmt.Errorf("%w: http auth_method=bearer does not accept a password", ErrInvalid)
 			}
 		}
 	case "":

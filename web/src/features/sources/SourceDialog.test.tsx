@@ -639,18 +639,57 @@ describe('SourceDialog HTTP 文件服务', () => {
         expect(call[1].credentials).toBeUndefined()
     })
 
-    it('编辑：输入新密码后显式清除，提交空串（清除语义）', async () => {
+    it('编辑：显式清除密码后保存禁用（basic 必须持有密码，空密码会被后端拒绝）', async () => {
         mocked.updateSource.mockResolvedValue(httpSource)
         renderDialog({ source: httpSource })
 
         // 清除按钮只在 dirty 后出现：先输入再清除。
         fireEvent.change(screen.getByLabelText(/^密码/), { target: { value: 'draft-pass' } })
         fireEvent.click(screen.getByRole('button', { name: '清除' }))
+
+        await waitFor(() => {
+            expect(
+                (screen.getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled,
+            ).toBeTruthy()
+        })
+        expect(mocked.updateSource).not.toHaveBeenCalled()
+    })
+
+    it('编辑：切换到无认证时联动清除存量密码（后端按新方式清理，前端不发送对方字段）', async () => {
+        mocked.updateSource.mockResolvedValue(httpSource)
+        renderDialog({ source: httpSource })
+
+        fireEvent.mouseDown(screen.getByLabelText(/认证方式/))
+        fireEvent.click(await screen.findByText('无认证'))
         fireEvent.click(screen.getByRole('button', { name: '保存' }))
 
         await waitFor(() => {
             expect(mocked.updateSource).toHaveBeenCalledWith('src-http', {
-                credentials: { password: '' },
+                config: expect.objectContaining({ auth_method: 'none', username: '' }),
+            })
+        })
+    })
+
+    it('编辑：basic 切换到 Bearer 时清除密码并要求提供 token', async () => {
+        mocked.updateSource.mockResolvedValue(httpSource)
+        renderDialog({ source: httpSource })
+
+        fireEvent.mouseDown(screen.getByLabelText(/认证方式/))
+        fireEvent.click(await screen.findByText('Bearer Token'))
+        // 密码字段消失；未提供 token 前保存禁用（切换已清除存量密码）。
+        expect(screen.queryByLabelText(/^密码/)).toBeNull()
+        await waitFor(() => {
+            expect(
+                (screen.getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled,
+            ).toBeTruthy()
+        })
+        fireEvent.change(screen.getByLabelText(/^Token/), { target: { value: 'tok' } })
+        fireEvent.click(screen.getByRole('button', { name: '保存' }))
+
+        await waitFor(() => {
+            expect(mocked.updateSource).toHaveBeenCalledWith('src-http', {
+                config: expect.objectContaining({ auth_method: 'bearer', username: '' }),
+                credentials: { bearer_token: 'tok' },
             })
         })
     })

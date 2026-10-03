@@ -111,7 +111,9 @@ func TestHTTPSourceLifecycleAPI(t *testing.T) {
 		t.Error("password_set = false after config-only PATCH, want true")
 	}
 
-	// PATCH：轮换 password + 清除 password 独立三态。
+	// PATCH：轮换 password 成功；清除 password（basic 唯一 secret）
+	// 被拒绝——那会保存一个下次打开 Remote 必然失败的源（存储不变
+	// 量：basic 必须持有 password）。彻底移除 secret 走 auth_method=none。
 	rec = doJSON(t, router, "PATCH", "/api/v1/sources/"+id,
 		`{"credentials": {"password": "ROTATED_HTTP"}}`)
 	if rec.Code != http.StatusOK {
@@ -120,14 +122,21 @@ func TestHTTPSourceLifecycleAPI(t *testing.T) {
 	assertNoSecret(t, rec)
 	rec = doJSON(t, router, "PATCH", "/api/v1/sources/"+id,
 		`{"credentials": {"password": ""}}`)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "password is required") {
+		t.Fatalf("PATCH clear status = %d, body = %s, want 400 password is required", rec.Code, rec.Body.String())
+	}
+	// 切换 auth_method=none：存量 password 被清除，源进入一致的
+	// 无认证形态。
+	rec = doJSON(t, router, "PATCH", "/api/v1/sources/"+id,
+		`{"config": {"base_url": "https://mirror.example.com/releases/", "listing_mode": "caddy", "auth_method": "none"}}`)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("PATCH clear status = %d, body = %s", rec.Code, rec.Body.String())
+		t.Fatalf("PATCH to none status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	cleared := decodeJSON(t, rec)
 	state, _ = cleared["credential_state"].(map[string]any)
 	httpState, _ = state["http"].(map[string]any)
 	if httpState == nil || httpState["password_set"] != false {
-		t.Error("password_set = true after clear, want false")
+		t.Error("password_set = true after switching to none, want false")
 	}
 
 	// connection test：http factory → fakeRemote.Stat("/") 成功 → ok。
@@ -247,16 +256,23 @@ func TestHTTPBearerLifecycleAPI(t *testing.T) {
 		t.Errorf("credential_state = %v, want bearer_token_set true", created["credential_state"])
 	}
 
-	// 清除 token → bearer_token_set false。
+	// 清除 token（bearer 唯一 secret）被拒绝：bearer 必须持有 token，
+	// 彻底移除 secret 走 auth_method=none。
 	rec = doJSON(t, router, "PATCH", "/api/v1/sources/"+id, `{"credentials": {"bearer_token": ""}}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("PATCH clear token status = %d, body = %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "bearer token is required") {
+		t.Fatalf("PATCH clear token status = %d, body = %s, want 400 bearer token is required", rec.Code, rec.Body.String())
 	}
-	cleared := decodeJSON(t, rec)
-	state, _ = cleared["credential_state"].(map[string]any)
+	// 同请求携带两种 secret：只保留当前认证方式（bearer）的 token。
+	rec = doJSON(t, router, "PATCH", "/api/v1/sources/"+id,
+		`{"credentials": {"password": "DORMANT", "bearer_token": "ROTATED_TOKEN"}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH dual secrets status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	rotated := decodeJSON(t, rec)
+	state, _ = rotated["credential_state"].(map[string]any)
 	httpState, _ = state["http"].(map[string]any)
-	if httpState == nil || httpState["bearer_token_set"] != false {
-		t.Error("bearer_token_set = true after clear, want false")
+	if httpState == nil || httpState["bearer_token_set"] != true || httpState["password_set"] != false {
+		t.Errorf("credential_state = %v, want token set / password cleared", rotated["credential_state"])
 	}
 }
 

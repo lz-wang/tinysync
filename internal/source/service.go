@@ -115,6 +115,22 @@ func (s *Service) Update(ctx context.Context, id string, input UpdateInput) (Sou
 		updated.Config = normalized
 	}
 
+	// HTTP auth_method ↔ secret 存储不变量：auth_method 变更时清除
+	// 非当前认证方式的存量 secret（none → 全清、basic → 清 token、
+	// bearer → 清 password），并对「存量 + 本次更新」合并后的最终
+	// 有效凭据整体校验后一次性写入。否则旧方式的 secret 沉睡在存储
+	// 里——轻则形成 dormant credential，重则（如 basic → none 不清
+	// password）让 ValidateCredentials 在下次 Factory.Create 时拒绝，
+	// Source 保存成功却无法打开 Remote。不变量由后端保证，WebUI 的
+	// 联动清除只是显示层优化。
+	if updated.Type == TypeHTTP {
+		effective, err := s.effectiveHTTPCredentials(ctx, id, updated.Config, input.Credentials)
+		if err != nil {
+			return Source{}, err
+		}
+		input.Credentials = effective
+	}
+
 	// 引用态源不接受内联 secret 写入：无论本次是否变更 config，只要
 	// 生效配置处于引用态，就强制清除同请求携带（或合并进存储）的内联
 	// secret——否则「引用 + 沉睡内联钥」会在后续解绑时静默复活旧钥，
@@ -209,6 +225,52 @@ func clearInlineSFTPUpdate(creds *CredentialsUpdate) *CredentialsUpdate {
 	}
 	creds.SFTP = clear.SFTP
 	return creds
+}
+
+// effectiveHTTPCredentials 计算 HTTP Source 更新后的最终有效凭据，
+// 返回等价的整组更新输入（两个字段全量写入，不再依赖逐字段三态）：
+// 读取存量 secret、套用本次 patch、按生效 auth_method 清除非当前
+// 认证方式的字段，再以 ValidateCredentials 校验最终组合——basic 缺
+// password / bearer 缺 token 的更新在入口拒绝，而不是保存一个下次
+// Factory.Create 会拒绝、无法打开 Remote 的 Source。
+func (s *Service) effectiveHTTPCredentials(ctx context.Context, id string, cfg Config, patch *CredentialsUpdate) (*CredentialsUpdate, error) {
+	if cfg.HTTP == nil {
+		return nil, fmt.Errorf("%w: http config is required", ErrInvalid)
+	}
+	stored, err := s.repo.GetCredentials(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	var password, token string
+	if stored.HTTP != nil {
+		password, token = stored.HTTP.Password, stored.HTTP.BearerToken
+	}
+	if patch != nil && patch.HTTP != nil {
+		if patch.HTTP.Password != nil {
+			password = *patch.HTTP.Password
+		}
+		if patch.HTTP.BearerToken != nil {
+			token = *patch.HTTP.BearerToken
+		}
+	}
+	switch cfg.HTTP.AuthMethod {
+	case HTTPAuthNone:
+		password, token = "", ""
+	case HTTPAuthBasic:
+		token = ""
+	case HTTPAuthBearer:
+		password = ""
+	}
+	if err := ValidateCredentials(TypeHTTP, cfg, Credentials{HTTP: &HTTPCredentials{
+		Password:    password,
+		BearerToken: token,
+	}}); err != nil {
+		return nil, err
+	}
+	return &CredentialsUpdate{HTTP: &HTTPCredentialsUpdate{
+		Password:    &password,
+		BearerToken: &token,
+	}}, nil
 }
 
 // OpenRemote 按 ID 读取 Source 并构造其远端客户端：凭据查询与协议

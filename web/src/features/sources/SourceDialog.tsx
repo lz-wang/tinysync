@@ -414,13 +414,16 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
             return undefined
         }
         if (type === 'http') {
+            // credentials 只描述当前认证方式的 secret：另一方式的存量
+            // 由后端在 Update 时按生效 auth_method 清理（存储不变量），
+            // 前端不发送对方字段。
             const creds: { password?: string; bearer_token?: string } = {}
             let changed = false
-            if (secretsDirty.has('http.password')) {
+            if (http.auth_method === 'basic' && secretsDirty.has('http.password')) {
                 creds.password = secrets['http.password']
                 changed = true
             }
-            if (secretsDirty.has('http.token')) {
+            if (http.auth_method === 'bearer' && secretsDirty.has('http.token')) {
                 creds.bearer_token = secrets['http.token']
                 changed = true
             }
@@ -570,15 +573,23 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                 if ((http.username ?? '').trim() === '') {
                     return false
                 }
-                // 创建时密码必填；编辑时存量已配置（未清除）即可。
-                return source !== null
-                    ? (source.credential_state.http?.password_set ?? false)
-                    : secrets['http.password'].trim() !== ''
+                // 显式清除（或经认证方式切换联动清除）后必须重新提供：
+                // basic 必须持有密码，提交「清空密码的 basic」会被后端拒绝。
+                if (secretsCleared.has('http.password')) {
+                    return secrets['http.password'].trim() !== ''
+                }
+                // 存量已配置（未清除）或本次输入了新密码即可。
+                const hasStored =
+                    source !== null && (source.credential_state.http?.password_set ?? false)
+                return hasStored || secrets['http.password'].trim() !== ''
             }
             if (http.auth_method === 'bearer') {
-                return source !== null
-                    ? (source.credential_state.http?.bearer_token_set ?? false)
-                    : secrets['http.token'].trim() !== ''
+                if (secretsCleared.has('http.token')) {
+                    return secrets['http.token'].trim() !== ''
+                }
+                const hasStoredToken =
+                    source !== null && (source.credential_state.http?.bearer_token_set ?? false)
+                return hasStoredToken || secrets['http.token'].trim() !== ''
             }
             return true
         }
@@ -1003,13 +1014,20 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                                         labelId="http-auth-label"
                                         value={http.auth_method}
                                         label="认证方式"
-                                        onChange={e =>
-                                            setHttp({
-                                                ...http,
-                                                auth_method: e.target
-                                                    .value as HTTPConfig['auth_method'],
-                                            })
-                                        }
+                                        onChange={e => {
+                                            const next = e.target.value as HTTPConfig['auth_method']
+                                            // 认证方式切换即显式清除另一方式的 secret：
+                                            // 后端 Update 会按新方式清理存量（不变量的
+                                            // 最终保证），前端先行清除让三态 PATCH 与
+                                            // 「保存后将清除」回显保持一致。
+                                            if (next !== 'basic') {
+                                                clearSecret('http.password')
+                                            }
+                                            if (next !== 'bearer') {
+                                                clearSecret('http.token')
+                                            }
+                                            setHttp({ ...http, auth_method: next })
+                                        }}
                                     >
                                         <MenuItem value="none">无认证</MenuItem>
                                         <MenuItem value="basic">Basic</MenuItem>
