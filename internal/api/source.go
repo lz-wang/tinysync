@@ -48,6 +48,7 @@ func registerSourceRoutes(group *gin.RouterGroup, svc *source.Service, jobs *syn
 	group.PATCH("/sources/:id", requireScope(auth.ScopeAdmin), h.update)
 	group.DELETE("/sources/:id", requireScope(auth.ScopeAdmin), h.delete)
 	group.POST("/sources/:id/test", requireScope(auth.ScopeAdmin), h.test)
+	group.POST("/sources/check", requireScope(auth.ScopeAdmin), h.check)
 	// 提升为凭据：把已存内联私钥转存为命名凭据并改写引用（私钥不
 	// 经手前端），编排凭据服务与源更新。
 	group.POST("/sources/:id/promote-credential", requireScope(auth.ScopeAdmin), h.promote)
@@ -537,6 +538,42 @@ func (h *sourceHandlers) test(c *gin.Context) {
 		LatencyMS: result.LatencyMS,
 		Error:     result.Error,
 	})
+}
+
+// checkRequest 是 SFTP 表单检查的请求体；config 必填，未提供的
+// credentials 沿用 source_id 的内联凭据（创建态无已存凭据）。
+type checkRequest struct {
+	SourceID    string          `json:"source_id,omitempty"`
+	Config      json.RawMessage `json:"config"`
+	Credentials json.RawMessage `json:"credentials,omitempty"`
+}
+
+// check POST /api/v1/sources/check。仅检查 SFTP，不保存任何表单值。
+func (h *sourceHandlers) check(c *gin.Context) {
+	var req checkRequest
+	if !strictBind(c, &req) {
+		return
+	}
+	cfg, err := decodeConfigPayload(source.TypeSFTP, req.Config)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	input := source.CheckSFTPInput{SourceID: req.SourceID, Config: *cfg.SFTP}
+	if req.Credentials != nil {
+		creds, err := decodeCredentialsUpdatePayload(source.TypeSFTP, req.Credentials)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		input.Credentials = creds.SFTP
+	}
+	result, err := h.svc.CheckSFTP(c.Request.Context(), input)
+	if err != nil {
+		handleSourceError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, testResultDTO{OK: result.OK, LatencyMS: result.LatencyMS, Error: result.Error})
 }
 
 // promoteCredentialRequest 是「提升为凭据」的请求体：只为新凭据起名。

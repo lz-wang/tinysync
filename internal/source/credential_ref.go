@@ -54,18 +54,23 @@ func (s *Service) credentialsFor(ctx context.Context, src Source) (Credentials, 
 	if err != nil {
 		return Credentials{}, err
 	}
-	if src.Config.SFTP == nil || src.Config.SFTP.CredentialID == "" {
+	return s.resolveCredentialReference(ctx, src.Config, creds)
+}
+
+// resolveCredentialReference 同时服务已存源与未保存的表单检查。
+func (s *Service) resolveCredentialReference(ctx context.Context, cfg Config, creds Credentials) (Credentials, error) {
+	if cfg.SFTP == nil || cfg.SFTP.CredentialID == "" {
 		return creds, nil
 	}
 	if s.Credentials == nil {
 		return Credentials{}, fmt.Errorf("%w: credential resolver is not configured", ErrInvalid)
 	}
-	ref, found, err := s.Credentials.ReferencedKeySecret(ctx, src.Config.SFTP.CredentialID)
+	ref, found, err := s.Credentials.ReferencedKeySecret(ctx, cfg.SFTP.CredentialID)
 	if err != nil {
-		return Credentials{}, fmt.Errorf("resolve referenced credential %q: %w", src.Config.SFTP.CredentialID, err)
+		return Credentials{}, fmt.Errorf("resolve referenced credential %q: %w", cfg.SFTP.CredentialID, err)
 	}
 	if !found {
-		return Credentials{}, MarkPermanent(fmt.Errorf("%w: referenced credential %q not found", ErrInvalid, src.Config.SFTP.CredentialID))
+		return Credentials{}, MarkPermanent(fmt.Errorf("%w: referenced credential %q not found", ErrInvalid, cfg.SFTP.CredentialID))
 	}
 	creds.SFTP = &SFTPCredentials{
 		PrivateKey:           ref.PrivateKey,

@@ -206,6 +206,9 @@ func (r *remote) connect(ctx context.Context) error {
 	if err != nil {
 		return normalizeCtxErr(ctx, fmt.Errorf("sftp dial %s: %w", r.addr, err))
 	}
+	// 会话初始化与 RealPath 也可能阻塞，纳入检查 / 运行的取消窗口。
+	stop := context.AfterFunc(ctx, func() { _ = client.Close() })
+	defer stop()
 	sftpClient, err := sftp.NewClient(client)
 	if err != nil {
 		_ = client.Close()

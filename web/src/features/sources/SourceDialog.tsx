@@ -1,5 +1,6 @@
 import FolderOpenOutlinedIcon from '@mui/icons-material/FolderOpenOutlined'
 import KeyOutlinedIcon from '@mui/icons-material/KeyOutlined'
+import NetworkCheckOutlinedIcon from '@mui/icons-material/NetworkCheckOutlined'
 import {
     Alert,
     Box,
@@ -19,9 +20,10 @@ import {
     TextField,
     Typography,
 } from '@mui/material'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
     type CredentialResponse,
+    checkSFTPSource,
     createSource,
     type GitHubReleaseConfig,
     listCredentials,
@@ -37,6 +39,7 @@ import {
     updateSource,
     type WebDAVConfig,
 } from '../../api'
+import { useToast } from '../../app/toast'
 import RemotePathPicker from '../files/RemotePathPicker'
 import GitHubReleaseFields from './GitHubReleaseFields'
 import PromoteCredentialDialog from './PromoteCredentialDialog'
@@ -64,10 +67,13 @@ type SecretKey =
 // 表单；编辑时 Type readonly（协议不支持原地转换）。secret 绝不回填：
 // 保持空白且未修改则不发送；输入新值即替换；Clear 明确清除（空串）。
 export default function SourceDialog({ open, source, onClose, onSaved }: SourceDialogProps) {
+    const toast = useToast()
+    const checkRequest = useRef(0)
     const [name, setName] = useState('')
     const [type, setType] = useState<SourceType>('webdav')
     const [enabled, setEnabled] = useState(true)
     const [saving, setSaving] = useState(false)
+    const [checking, setChecking] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [remotePickerOpen, setRemotePickerOpen] = useState(false)
 
@@ -131,6 +137,7 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
     const [secretsCleared, setSecretsCleared] = useState<Set<SecretKey>>(new Set())
 
     useEffect(() => {
+        checkRequest.current += 1
         if (!open) {
             return
         }
@@ -257,7 +264,11 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
         setSecretsDirty(new Set())
         setSecretsCleared(new Set())
         setSaving(false)
+        setChecking(false)
         setError(null)
+        return () => {
+            checkRequest.current += 1
+        }
     }, [open, source])
 
     // 凭据库选项：SFTP 表单打开时加载；失败按空列表降级（选择器内
@@ -372,6 +383,46 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
             }
         }
         return changed ? creds : undefined
+    }
+
+    function canCheckSFTP(): boolean {
+        if (sftp.host.trim() === '' || sftp.username.trim() === '') return false
+        const port = sftp.port ?? 22
+        if (!Number.isInteger(port) || port < 0 || port > 65535) return false
+        if (sftp.auth_method === 'private_key' && keySource === 'credential') {
+            return (sftp.credential_id ?? '') !== ''
+        }
+        const key = sftp.auth_method === 'password' ? 'sftp.password' : 'sftp.private_key'
+        return secretsDirty.has(key)
+            ? secrets[key] !== ''
+            : source !== null && isSecretConfigured(source, key)
+    }
+
+    async function handleCheckSFTP() {
+        const request = ++checkRequest.current
+        setChecking(true)
+        const config = buildConfig() as SFTPConfig
+        try {
+            const result = await checkSFTPSource({
+                source_id: source?.id,
+                config,
+                credentials: buildCredentials() as SFTPCredentials | undefined,
+            })
+            if (request !== checkRequest.current) return
+            if (result.ok) {
+                toast.success(
+                    `SFTP 检查通过：${config.host}:${config.port || 22}，远端根目录「${config.remote_root || '用户 Home'}」存在且可读取（${result.latency_ms} ms）`,
+                )
+            } else {
+                toast.error(`SFTP 检查失败：${result.error ?? '未知错误'}`)
+            }
+        } catch (e) {
+            if (request === checkRequest.current) {
+                toast.error(`SFTP 检查失败：${e instanceof Error ? e.message : String(e)}`)
+            }
+        } finally {
+            if (request === checkRequest.current) setChecking(false)
+        }
     }
 
     async function handleSave() {
@@ -565,7 +616,7 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                             <RootField
                                 value={webdav.remote_root ?? '/'}
                                 onChange={value => setWebdav({ ...webdav, remote_root: value })}
-                                onBrowse={() => setRemotePickerOpen(true)}
+                                onAction={() => setRemotePickerOpen(true)}
                                 disabled={source === null}
                                 helperText={
                                     source === null
@@ -767,7 +818,7 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                             <RootField
                                 value={smb.remote_root || '/'}
                                 onChange={value => setSmb({ ...smb, remote_root: value })}
-                                onBrowse={() => setRemotePickerOpen(true)}
+                                onAction={() => setRemotePickerOpen(true)}
                                 disabled={source === null}
                                 helperText={
                                     source === null
@@ -988,13 +1039,11 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                             <RootField
                                 value={sftp.remote_root ?? ''}
                                 onChange={value => setSftp({ ...sftp, remote_root: value })}
-                                onBrowse={() => setRemotePickerOpen(true)}
-                                disabled={source === null}
-                                helperText={
-                                    source === null
-                                        ? '留空使用该用户 Home；保存同步源后可浏览选择目录。'
-                                        : '留空使用该用户 Home；任务中的路径相对此根目录。'
-                                }
+                                onAction={() => void handleCheckSFTP()}
+                                action="check"
+                                checking={checking}
+                                disabled={saving || checking || !canCheckSFTP()}
+                                helperText="留空使用该用户 Home；检查当前连接信息及目录是否存在、可读取。"
                             />
                         </>
                     )}
@@ -1031,7 +1080,7 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
                 <Button
                     onClick={() => void handleSave()}
                     variant="contained"
-                    disabled={saving || !canSave()}
+                    disabled={saving || checking || !canSave()}
                 >
                     {saving ? '保存中…' : '保存'}
                 </Button>
@@ -1074,13 +1123,17 @@ export default function SourceDialog({ open, source, onClose, onSaved }: SourceD
 function RootField({
     value,
     onChange,
-    onBrowse,
+    onAction,
+    action = 'browse',
+    checking = false,
     disabled,
     helperText,
 }: {
     value: string
     onChange: (value: string) => void
-    onBrowse: () => void
+    onAction: () => void
+    action?: 'browse' | 'check'
+    checking?: boolean
     disabled: boolean
     helperText: string
 }) {
@@ -1097,12 +1150,14 @@ function RootField({
             <Button
                 variant="outlined"
                 size="large"
-                startIcon={<FolderOpenOutlinedIcon />}
+                startIcon={
+                    action === 'check' ? <NetworkCheckOutlinedIcon /> : <FolderOpenOutlinedIcon />
+                }
                 disabled={disabled}
-                onClick={onBrowse}
+                onClick={onAction}
                 sx={{ mt: 0.5, minWidth: 104, height: 48, flexShrink: 0 }}
             >
-                浏览
+                {action === 'check' ? (checking ? '检查中…' : '检查') : '浏览'}
             </Button>
         </Box>
     )

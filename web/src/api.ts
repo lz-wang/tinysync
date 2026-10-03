@@ -319,6 +319,18 @@ export function testSource(id: string): Promise<TestSourceResponse> {
     return requestJSON<TestSourceResponse>('POST', `/api/v1/sources/${id}/test`)
 }
 
+// SFTP 检查使用当前表单配置，不保存。编辑时未提供的 secret 沿用
+// source_id 的已存值；空串显式清除，credential_id 使用提案引用。
+export interface CheckSFTPSourceInput {
+    source_id?: string
+    config: SFTPConfig
+    credentials?: SFTPCredentials
+}
+
+export function checkSFTPSource(input: CheckSFTPSourceInput): Promise<TestSourceResponse> {
+    return requestJSON<TestSourceResponse>('POST', '/api/v1/sources/check', input)
+}
+
 // InspectSourceInput 对应 POST /api/v1/sources/inspect，语义按字段
 // 组合解释（均不持久化）：source_id only 用已存配置 + 已存凭据；
 // source_id + config 用提案配置 + 已存凭据（编辑态微调后预览，无需

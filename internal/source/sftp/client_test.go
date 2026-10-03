@@ -275,6 +275,43 @@ func TestSFTPPasswordAuthRoundTrip(t *testing.T) {
 	}
 }
 
+// 表单检查经真实 SSH/SFTP 验证根目录，不依赖持久化的 Source。
+func TestSFTPCheckCurrentConfig(t *testing.T) {
+	root := t.TempDir()
+	seedFile(t, root, "ordinary.txt", "test")
+	ts := startTestServer(t)
+	svc := source.NewService(nil, NewFactory())
+	for _, tc := range []struct {
+		name     string
+		root     string
+		method   source.SFTPAuthMethod
+		password string
+		wantOK   bool
+	}{
+		{"directory", root, source.SFTPAuthPassword, testPassword, true},
+		{"missing root", filepath.Join(root, "missing"), source.SFTPAuthPassword, testPassword, false},
+		{"file root", filepath.Join(root, "ordinary.txt"), source.SFTPAuthPassword, testPassword, false},
+		{"bad password", root, source.SFTPAuthPassword, "wrong", false},
+		{"encrypted private key", root, source.SFTPAuthPrivateKey, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := sftpSourceConfig(ts, tc.root, tc.method)
+			update := &source.SFTPCredentialsUpdate{Password: &tc.password}
+			if tc.method == source.SFTPAuthPrivateKey {
+				key, passphrase := ts.clientKeyPEM, testPassphr
+				update = &source.SFTPCredentialsUpdate{PrivateKey: &key, PrivateKeyPassphrase: &passphrase}
+			}
+			result, err := svc.CheckSFTP(context.Background(), source.CheckSFTPInput{Config: cfg, Credentials: update})
+			if err != nil || result.OK != tc.wantOK {
+				t.Fatalf("CheckSFTP = %+v, %v; want ok=%v", result, err, tc.wantOK)
+			}
+			if !tc.wantOK && result.Error == "" {
+				t.Fatal("failed check has no error detail")
+			}
+		})
+	}
+}
+
 // private key 认证（含 passphrase）端到端。
 func TestSFTPPrivateKeyAuth(t *testing.T) {
 	root := t.TempDir()

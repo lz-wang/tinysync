@@ -300,6 +300,14 @@ curl -X POST http://127.0.0.1:9466/api/v1/sources \
   }'
 ```
 
+SFTP 表单的「检查」使用当前连接配置与根目录，在保存前验证认证、目录
+存在性及读取权限；根目录留空时检查登录用户 Home。对应接口
+`POST /api/v1/sources/check`（需 `admin`）接受 SFTP `config` 与可选
+`credentials`，编辑时可传 `source_id` 沿用未修改的内联凭据，显式 secret
+临时覆盖、空串清除，`credential_id` 按当前配置解析。检查最多 10 秒，
+不保存任何表单值；远端连接或目录检查失败返回 `ok=false` 与 `error`，
+请求配置无效返回 400。
+
 SMB / CIFS（SMB2/SMB3 + NTLMv2 用户名密码；`host` 是裸主机名 / IP，
 `share` 与 `remote_root` 分离，`remote_root` 是 share 内的 `/` 风格
 路径；消息签名默认 `required`，可显式放宽为 `auto`；symlink /

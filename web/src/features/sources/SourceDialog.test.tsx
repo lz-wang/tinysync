@@ -1,11 +1,19 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CredentialResponse, SFTPConfig, SMBConfig, SourceResponse } from '../../api'
-import { createSource, listCredentials, promoteSourceCredential, updateSource } from '../../api'
+import {
+    checkSFTPSource,
+    createSource,
+    listCredentials,
+    promoteSourceCredential,
+    updateSource,
+} from '../../api'
+import { ToastProvider } from '../../app/toast'
 import SourceDialog from './SourceDialog'
 
 // mock 整个 API 模块：SourceDialog 与 RemotePathPicker 都引用它。
 vi.mock('../../api', () => ({
+    checkSFTPSource: vi.fn(),
     createRemoteDirectory: vi.fn(),
     createSource: vi.fn(),
     listCredentials: vi.fn(),
@@ -16,6 +24,7 @@ vi.mock('../../api', () => ({
 }))
 
 const mocked = vi.mocked({
+    checkSFTPSource,
     createRemoteDirectory: await import('../../api').then(m => m.createRemoteDirectory),
     createSource,
     listCredentials,
@@ -60,11 +69,14 @@ const referencingSource: SourceResponse = {
 
 function renderDialog(props: Partial<Parameters<typeof SourceDialog>[0]> = {}) {
     return render(
-        <SourceDialog open source={null} onClose={() => {}} onSaved={() => {}} {...props} />,
+        <ToastProvider>
+            <SourceDialog open source={null} onClose={() => {}} onSaved={() => {}} {...props} />
+        </ToastProvider>,
     )
 }
 
 beforeEach(() => {
+    mocked.checkSFTPSource.mockResolvedValue({ ok: true, latency_ms: 8 })
     mocked.listCredentials.mockResolvedValue([credential])
     mocked.listSources.mockResolvedValue([referencingSource])
 })
@@ -72,6 +84,117 @@ beforeEach(() => {
 afterEach(() => {
     cleanup()
     vi.clearAllMocks()
+})
+
+describe('SourceDialog SFTP 根目录检查', () => {
+    async function fillPasswordForm() {
+        renderDialog()
+        fireEvent.mouseDown(screen.getByLabelText(/类型/))
+        fireEvent.click(await screen.findByText('SFTP'))
+        expect(screen.queryByRole('button', { name: '浏览' })).toBeNull()
+        expect((screen.getByRole('button', { name: '检查' }) as HTMLButtonElement).disabled).toBe(
+            true,
+        )
+        fireEvent.change(screen.getByPlaceholderText('nas.example.com'), {
+            target: { value: 'new.example.com' },
+        })
+        fireEvent.change(screen.getByLabelText(/端口/), { target: { value: '2222' } })
+        fireEvent.change(screen.getByLabelText(/用户名/), { target: { value: 'new-user' } })
+        fireEvent.change(screen.getByLabelText(/^密码/), { target: { value: 'new-password' } })
+    }
+
+    it('创建前使用最新表单检查，不依赖名称、不保存同步源', async () => {
+        await fillPasswordForm()
+        fireEvent.change(screen.getByLabelText(/远端根目录/), { target: { value: '/srv/files' } })
+        fireEvent.click(screen.getByRole('button', { name: '检查' }))
+        await waitFor(() =>
+            expect(mocked.checkSFTPSource).toHaveBeenCalledWith({
+                source_id: undefined,
+                config: {
+                    host: 'new.example.com',
+                    port: 2222,
+                    username: 'new-user',
+                    remote_root: '/srv/files',
+                    auth_method: 'password',
+                    host_key_fingerprint: '',
+                    credential_id: '',
+                },
+                credentials: { password: 'new-password' },
+            }),
+        )
+        expect(await screen.findByText(/SFTP 检查通过.*srv\/files/)).toBeTruthy()
+        expect(mocked.createSource).not.toHaveBeenCalled()
+        expect(mocked.updateSource).not.toHaveBeenCalled()
+    })
+
+    it('根目录留空检查 Home，检查中禁止重复提交，失败经 toast 展示', async () => {
+        let finish: ((result: Awaited<ReturnType<typeof checkSFTPSource>>) => void) | undefined
+        mocked.checkSFTPSource.mockImplementation(
+            () =>
+                new Promise(resolve => {
+                    finish = resolve
+                }),
+        )
+        await fillPasswordForm()
+        fireEvent.click(screen.getByRole('button', { name: '检查' }))
+        expect(
+            (screen.getByRole('button', { name: '检查中…' }) as HTMLButtonElement).disabled,
+        ).toBe(true)
+        expect(mocked.checkSFTPSource.mock.calls[0][0].config.remote_root).toBe('')
+        finish?.({ ok: false, latency_ms: 10, error: 'permission denied' })
+        expect(await screen.findByText('SFTP 检查失败：permission denied')).toBeTruthy()
+        await waitFor(() =>
+            expect(
+                (screen.getByRole('button', { name: '检查' }) as HTMLButtonElement).disabled,
+            ).toBe(false),
+        )
+    })
+
+    it('编辑使用提案根目录及引用，未改动的秘密字段不回填', async () => {
+        renderDialog({ source: referencingSource })
+        fireEvent.change(screen.getByLabelText(/远端根目录/), { target: { value: '/new-root' } })
+        fireEvent.click(screen.getByRole('button', { name: '检查' }))
+        await waitFor(() =>
+            expect(mocked.checkSFTPSource).toHaveBeenCalledWith({
+                source_id: 'src-1',
+                config: { ...referencingSource.config, remote_root: '/new-root' },
+                credentials: undefined,
+            }),
+        )
+        expect(mocked.updateSource).not.toHaveBeenCalled()
+    })
+
+    it('内联私钥及解密口令随当前表单提交，显式清除私钥后禁止检查', async () => {
+        renderDialog({
+            source: {
+                ...referencingSource,
+                config: { ...referencingSource.config, credential_id: '' },
+            },
+        })
+        fireEvent.change(screen.getByLabelText(/^私钥（PEM）/), { target: { value: 'NEW_PEM' } })
+        fireEvent.change(screen.getByLabelText(/^私钥口令/), {
+            target: { value: 'NEW_PASSPHRASE' },
+        })
+        fireEvent.click(screen.getByRole('button', { name: '检查' }))
+        await waitFor(() =>
+            expect(mocked.checkSFTPSource.mock.calls[0][0].credentials).toEqual({
+                private_key: 'NEW_PEM',
+                private_key_passphrase: 'NEW_PASSPHRASE',
+            }),
+        )
+        await screen.findByText(/SFTP 检查通过/)
+        fireEvent.click(screen.getAllByRole('button', { name: /清除/ })[0])
+        expect((screen.getByRole('button', { name: '检查' }) as HTMLButtonElement).disabled).toBe(
+            true,
+        )
+    })
+
+    it('请求异常显示失败通知', async () => {
+        mocked.checkSFTPSource.mockRejectedValueOnce(new Error('invalid remote_root'))
+        await fillPasswordForm()
+        fireEvent.click(screen.getByRole('button', { name: '检查' }))
+        expect(await screen.findByText('SFTP 检查失败：invalid remote_root')).toBeTruthy()
+    })
 })
 
 // 编辑引用态源：私钥来源为凭据库并回显凭据名与指纹；换绑另一凭据
