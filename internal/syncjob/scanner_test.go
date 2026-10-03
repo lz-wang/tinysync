@@ -55,27 +55,6 @@ func TestRemoteRelPath(t *testing.T) {
 	}
 }
 
-// containment 判定对根路径同样正确："/" 包含一切绝对路径，
-// 不因前缀拼接产生 "//" 而漏判；兄弟目录前缀歧义不误判。
-// Windows 卷根（自带 trailing separator）走同一 filepath.Rel 路径。
-func TestSameOrUnderRootContainment(t *testing.T) {
-	if !sameOrUnder("/", "/") {
-		t.Error(`sameOrUnder("/", "/") = false, want true`)
-	}
-	if !sameOrUnder("/", "/home/user/tinysync") {
-		t.Error(`sameOrUnder("/", "/home/user/tinysync") = false, want true`)
-	}
-	if !sameOrUnder("/home/user", "/home/user/tinysync") {
-		t.Error("direct child should be contained")
-	}
-	if sameOrUnder("/home/user", "/homeusers") {
-		t.Error("prefix ambiguity must not count as containment")
-	}
-	if sameOrUnder("/a/b", "/a/c") {
-		t.Error("sibling directory must not count as containment")
-	}
-}
-
 // fakeRemote 可编程的 source.Remote：按目录返回条目或错误。
 type fakeRemote struct {
 	entries map[string][]source.FileInfo

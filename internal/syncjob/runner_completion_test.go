@@ -96,11 +96,11 @@ func TestRunnerDoesNotPublishWhenFinalizeFails(t *testing.T) {
 	env.runner.CompletionHook = hook
 	job := env.mustJob(t, "photos")
 
+	env.history.finalizeErr = errors.New("disk full")
 	runID, err := env.runner.Start(context.Background(), job.ID)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	env.history.finalizeErr = errors.New("disk full")
 	if _, err := env.runner.Wait(context.Background(), runID); err != nil {
 		t.Fatalf("Wait: %v", err)
 	}

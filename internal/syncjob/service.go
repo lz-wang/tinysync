@@ -6,10 +6,10 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
+	"tinysync/internal/filesafe"
 	"tinysync/internal/source"
 )
 
@@ -258,16 +258,9 @@ func (s *Service) canonicalLocalRoot(root string, createIfMissing bool) (string,
 			return "", fmt.Errorf("%w: create local root %s: %w", ErrInvalid, root, err)
 		}
 	}
-	resolved, err := filepath.EvalSymlinks(abs)
+	resolved, err := filesafe.CanonicalExistingDir(abs)
 	if err != nil {
 		return "", fmt.Errorf("%w: resolve local root %s: %w", ErrInvalid, root, err)
-	}
-	info, err := os.Stat(resolved)
-	if err != nil {
-		return "", fmt.Errorf("%w: stat local root %s: %w", ErrInvalid, root, err)
-	}
-	if !info.IsDir() {
-		return "", fmt.Errorf("%w: local root %s is not a directory", ErrInvalid, root)
 	}
 	return resolved, nil
 }
@@ -283,14 +276,14 @@ func (s *Service) checkRootAvailable(ctx context.Context, localRoot, skipID stri
 	if err != nil {
 		return err
 	}
-	if rootsOverlap(localRoot, dataDir) {
+	if filesafe.PathsOverlap(localRoot, dataDir) {
 		return fmt.Errorf("%w: %s overlaps tinysync data dir %s", ErrRootOverlap, localRoot, dataDir)
 	}
 	for _, job := range jobs {
 		if job.ID == skipID {
 			continue
 		}
-		if rootsOverlap(localRoot, job.LocalRoot) {
+		if filesafe.PathsOverlap(localRoot, job.LocalRoot) {
 			return fmt.Errorf("%w: %s overlaps %q local root %s", ErrRootOverlap, localRoot, job.Name, job.LocalRoot)
 		}
 	}
@@ -307,26 +300,4 @@ func (s *Service) canonicalDataDir() (string, error) {
 		return resolved, nil
 	}
 	return abs, nil
-}
-
-// rootsOverlap 判断两个 canonical 绝对路径是否相等或存在父子包含；
-// Windows 路径大小写不敏感。
-func rootsOverlap(a, b string) bool {
-	if runtime.GOOS == "windows" {
-		a = strings.ToLower(a)
-		b = strings.ToLower(b)
-	}
-	return sameOrUnder(a, b) || sameOrUnder(b, a)
-}
-
-// sameOrUnder 判断 child 是否等于 parent 或位于 parent 之下。
-// 用 filepath.Rel 做 containment 判定，对 "/" 与 Windows 卷根等
-// 自带 trailing separator 的根路径同样正确（前缀拼接会把 parent+"/"
-// 变成 "//" 而漏判）。
-func sameOrUnder(parent, child string) bool {
-	rel, err := filepath.Rel(parent, child)
-	if err != nil {
-		return false
-	}
-	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }

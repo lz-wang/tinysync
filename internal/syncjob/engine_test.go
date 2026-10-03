@@ -19,6 +19,7 @@ import (
 // overrides 允许注入特殊 reader（如挂起，一次性生效）；
 // openErrs 让 Open 持续报错（跨重试，模拟持续性传输故障）。
 type engineRemote struct {
+	mu        sync.Mutex // 并发下载会消费一次性 overrides。
 	entries   map[string][]source.FileInfo
 	contents  map[string]string
 	overrides map[string]io.ReadCloser
@@ -38,6 +39,8 @@ func (e *engineRemote) List(ctx context.Context, path string, opts source.ListOp
 }
 
 func (e *engineRemote) Open(ctx context.Context, path string) (io.ReadCloser, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if err := e.openErrs[path]; err != nil {
 		return nil, err
 	}
