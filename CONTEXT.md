@@ -6,7 +6,8 @@ TinySync 把同步源（网络存储或运行主机目录）的文件单向同�
 
 **同步源（Source）**：
 源端普通文件树的配置身份，按类型经统一 Remote 接口读取。Local 是运行主机
-的目录，与 WebDAV / S3 / SFTP / SMB / GitHub Release 共用单向同步引擎。
+的目录，与 WebDAV / S3 / SFTP / SMB / GitHub Release / HTTP 文件服务共用
+单向同步引擎。
 _Avoid_: 本地同步引擎、双向同步
 
 **源根目录（LocalConfig.Root）**：
@@ -16,6 +17,24 @@ Source-relative 逻辑路径。
 **源端路径（Job.RemoteRoot）**：
 Source 内以 `/` 分隔的逻辑路径，`/` 表示源根。Local 的实际读取子树由
 LocalConfig.Root 与该逻辑路径共同决定，与 Job.LocalRoot 不得相同或互相包含。
+
+## HTTP 文件源域
+
+**服务地址（HTTPConfig.BaseURL）**：
+HTTP 文件源的只读根 URL，canonical form 为补齐尾 `/` 的 clean http(s)
+URL；该 URL 本身即 Source 的 `/`，不设独立 remote_root（ADR 0009）。
+_Avoid_: endpoint（WebDAV/S3 语境）、remote_root
+
+**服务类型（HTTPConfig.ListingMode）**：
+目录索引的表现形式：auto（按响应形态自动识别）/ nginx / caddy /
+miniserve。nginx 与 miniserve 等只是 profile 差异，不是 Source 类型。
+_Avoid_: 协议类型（Source Type 只有 http）
+
+**目录条目上限（HTTPConfig.CaddyFileLimit）**：
+与 Caddy `file_server browse.file_limit` 一致的扫描完整性参数
+（默认 10000）；单目录 caddy listing 达到该值即整轮扫描失败，
+防止截断快照授权 Mirror 误删除。属于安全参数，不是远端身份。
+_Avoid_: 分页大小、软限制
 
 ## 共享域
 
