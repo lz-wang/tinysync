@@ -14,7 +14,7 @@ import (
 
 // resumeFixture 假 GitHub：asset 1001 的下载端点经 http.ServeContent
 // 服务（标准 Range / 206 语义），asset 1002 忽略 Range 返回 200
-//（降级路径），asset 1004 返回 416。
+// （降级路径），asset 1004 返回 416。
 type resumeFixture struct {
 	r *remote
 }

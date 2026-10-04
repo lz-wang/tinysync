@@ -294,6 +294,9 @@ type resumeRemote struct {
 	// failAfter > 0 时首次 OpenFrom 返回读 failAfter 字节后断流的
 	// reader；后续调用返回完整后缀。
 	failAfter int
+	// failAt 非空时按绝对进度序列连续断流：第 n 次 OpenFrom 在
+	// offset < failAt[n] 时交付到 failAt[n] 后断流（连续故障矩阵）。
+	failAt []int64
 	// unsupported 为 true 时 OpenFrom 一律返回 ErrResumeUnsupported。
 	unsupported bool
 	// changedFrom >= 0 时 offset 达到该值的 OpenFrom 返回
@@ -303,7 +306,8 @@ type resumeRemote struct {
 
 func (r *resumeRemote) OpenFrom(ctx context.Context, path string, offset int64, expected source.Fingerprint) (io.ReadCloser, error) {
 	r.mu.Lock()
-	first := len(r.openFroms) == 0
+	n := len(r.openFroms)
+	first := n == 0
 	r.openFroms = append(r.openFroms, offset)
 	r.mu.Unlock()
 	if r.unsupported {
@@ -311,6 +315,13 @@ func (r *resumeRemote) OpenFrom(ctx context.Context, path string, offset int64, 
 	}
 	if r.changedFrom > 0 && offset >= r.changedFrom {
 		return nil, source.ErrRemoteChanged
+	}
+	if n < len(r.failAt) && offset < r.failAt[n] {
+		return io.NopCloser(&cappedErrReader{
+			data:  r.content,
+			start: int(offset),
+			max:   int(r.failAt[n] - offset),
+		}), nil
 	}
 	if first && r.failAfter > 0 {
 		return io.NopCloser(&cappedErrReader{
@@ -574,5 +585,34 @@ func assertNoTempFiles(t *testing.T, root string) {
 	})
 	if err != nil {
 		t.Fatalf("walk: %v", err)
+	}
+}
+
+// 连续故障矩阵：attempt 1 断在 4、attempt 2 断在 8，attempt 3 必须从
+// 第二次的结束位置（8）继续——每次重试都从最新断点续传。
+func TestDownloadResumesAcrossRepeatedFailures(t *testing.T) {
+	root := t.TempDir()
+	remote := &resumeRemote{
+		content: "0123456789abcdef",
+		failAt:  []int64{4, 8},
+	}
+	d := newTestDownloader(remote)
+
+	spec := testSpec("/a.bin", root, "a.bin", source.Fingerprint{Size: 16})
+	if err := d.Download(context.Background(), spec); err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	want := []int64{0, 4, 8}
+	if len(remote.openFroms) != len(want) {
+		t.Fatalf("OpenFrom offsets = %v, want %v", remote.openFroms, want)
+	}
+	for i := range want {
+		if remote.openFroms[i] != want[i] {
+			t.Fatalf("OpenFrom offsets = %v, want %v", remote.openFroms, want)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(root, "a.bin"))
+	if err != nil || string(data) != "0123456789abcdef" {
+		t.Fatalf("target = %q (%v)", data, err)
 	}
 }
