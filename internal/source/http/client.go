@@ -41,10 +41,12 @@ type Client struct {
 	kind listingKind
 }
 
-// 编译期契约断言：只读 Remote + TreeScanner；不实现 DirectoryCreator。
+// 编译期契约断言：只读 Remote + TreeScanner + ResumableRemote；不实现
+// DirectoryCreator。
 var (
-	_ source.Remote      = (*Client)(nil)
-	_ source.TreeScanner = (*Client)(nil)
+	_ source.Remote          = (*Client)(nil)
+	_ source.ResumableRemote = (*Client)(nil)
+	_ source.TreeScanner     = (*Client)(nil)
 )
 
 // newClient 构造 Client（Factory 的生产路径；测试直接复用）。
@@ -145,6 +147,87 @@ func (c *Client) Open(ctx context.Context, logicalPath string) (io.ReadCloser, e
 		return nil, classifyResponseError("open", resp)
 	}
 	return resp.Body, nil
+}
+
+// OpenFrom 实现 source.ResumableRemote（ADR 0010）。offset=0 走无
+// Range 的 GET（起点天然 0）；offset>0 携带 Range: bytes=N- 与
+// If-Range（strong ETag 优先，否则 Last-Modified）。响应严格校验：
+//
+//   - 206 且 Content-Range start==offset、total==快照 Size → 通过；
+//   - 200（服务器忽略 Range）→ Stat 复核：指纹漂移 →
+//     ErrRemoteChanged；未变 → ErrResumeUnsupported（服务器不支持
+//     Range，保守降级完整下载）——绝不能把 200 body 当 offset 流
+//     交给 Downloader append（prefix + 完整文件 = 确定性损坏）；
+//   - 416（offset 越过当前资源末尾）→ 远端缩小 → ErrRemoteChanged；
+//   - Content-Range 畸形 / 起点错误 / total 不符 → ErrRemoteChanged。
+func (c *Client) OpenFrom(ctx context.Context, logicalPath string, offset int64, expected source.Fingerprint) (io.ReadCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := source.ValidateLogicalPath(logicalPath); err != nil {
+		return nil, err
+	}
+	if logicalPath == "/" {
+		return nil, fmt.Errorf("%w: cannot open directory root", source.ErrInvalid)
+	}
+	if offset < 0 {
+		return nil, fmt.Errorf("%w: negative resume offset %d for %s", source.ErrInvalid, offset, logicalPath)
+	}
+	if offset == 0 {
+		return c.Open(ctx, logicalPath)
+	}
+	req, err := c.req.newRequest(ctx, http.MethodGet, c.req.fileURL(logicalPath), "")
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
+	if v := source.IfRangeValue(expected); v != "" {
+		req.Header.Set("If-Range", v)
+	}
+	resp, err := c.req.do(req)
+	if err != nil {
+		return nil, err
+	}
+	switch resp.StatusCode {
+	case http.StatusPartialContent:
+		start, total, ok := source.ParseContentRange(resp.Header.Get("Content-Range"))
+		if !ok {
+			_ = resp.Body.Close()
+			return nil, fmt.Errorf("http resume %s: %w (malformed Content-Range %q)",
+				logicalPath, source.ErrRemoteChanged, resp.Header.Get("Content-Range"))
+		}
+		if start != offset {
+			_ = resp.Body.Close()
+			return nil, fmt.Errorf("http resume %s: %w (Content-Range starts at %d, want %d)",
+				logicalPath, source.ErrRemoteChanged, start, offset)
+		}
+		if total != expected.Size {
+			_ = resp.Body.Close()
+			return nil, fmt.Errorf("http resume %s: %w (Content-Range total %d, want %d)",
+				logicalPath, source.ErrRemoteChanged, total, expected.Size)
+		}
+		return resp.Body, nil
+	case http.StatusOK:
+		// 排空并关闭 body（连接复用）后 Stat 复核，分辨「对象变了」
+		// 与「服务器不支持 Range」（ADR 0010）。
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+		fi, err := c.Stat(ctx, logicalPath)
+		if err != nil {
+			return nil, err
+		}
+		if !source.SameFingerprint(fi.Fingerprint, expected) {
+			return nil, fmt.Errorf("http resume %s: %w", logicalPath, source.ErrRemoteChanged)
+		}
+		return nil, fmt.Errorf("http resume %s at %d: %w (server ignored Range)", logicalPath, offset, source.ErrResumeUnsupported)
+	case http.StatusRequestedRangeNotSatisfiable:
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("http resume %s at %d: %w (offset beyond current resource)", logicalPath, offset, source.ErrRemoteChanged)
+	default:
+		_ = resp.Body.Close()
+		return nil, classifyResponseError("open", resp)
+	}
 }
 
 // Close 实现 source.Remote：无持久会话，释放空闲连接，幂等。

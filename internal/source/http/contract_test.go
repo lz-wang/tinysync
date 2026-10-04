@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path"
 	"strings"
 	"sync"
 	"testing"
@@ -29,7 +30,10 @@ type fakeCaddyServer struct {
 	listings map[string]int
 	// failDir 命中时该目录 listing 返回 500（部分失败场景注入）。
 	failDir string
-	srv     *httptest.Server
+	// ignoreRange 命中时 GET 剥离 Range 头（模拟不支持 Range 的
+	// 文件服务，OpenFrom 的降级路径注入）。
+	ignoreRange bool
+	srv         *httptest.Server
 }
 
 func newFakeCaddyServer(t testing.TB) *fakeCaddyServer {
@@ -95,18 +99,18 @@ func (f *fakeCaddyServer) handle(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(entries)
 }
 
-// serveFile 服务文件内容（GET）或元数据（HEAD）。
+// serveFile 服务文件内容（GET）或元数据（HEAD）。经标准库
+// http.ServeContent 服务：Range / If-Range / 206 / Content-Range 的
+// 语义与 nginx / Caddy 等真实文件服务一致（断点续传契约依赖）。
 func (f *fakeCaddyServer) serveFile(w http.ResponseWriter, r *http.Request, p string) {
 	content := f.files[p]
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Last-Modified", f.modTime(p).UTC().Format(http.TimeFormat))
 	w.Header().Set("ETag", fmt.Sprintf(`"fake-%d"`, len(content)))
-	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
-	if r.Method == http.MethodHead {
-		w.WriteHeader(http.StatusOK)
-		return
+	if f.ignoreRange {
+		r = r.Clone(r.Context())
+		r.Header.Del("Range")
 	}
-	_, _ = w.Write([]byte(content))
+	http.ServeContent(w, r, path.Base(p), f.modTime(p), strings.NewReader(content))
 }
 
 func (f *fakeCaddyServer) modTime(p string) time.Time {
@@ -221,4 +225,5 @@ func (h fakeHarness) Mkdir(t *testing.T, logical string) {
 // 同一套断言。
 func TestRemoteContract(t *testing.T) {
 	remotetest.RunSuite(t, fakeHarness{newFakeCaddyServer(t)})
+	remotetest.RunResumeSuite(t, fakeHarness{newFakeCaddyServer(t)})
 }

@@ -82,6 +82,8 @@ func (f *Factory) Create(ctx context.Context, s source.Source, credentials sourc
 	root := path.Clean("/" + cfg.RemoteRoot)
 	return &remote{
 		client:     client,
+		auth:       auth,
+		endpoint:   endpoint,
 		root:       root,
 		hrefPrefix: normalizeHrefPrefix(path.Join(endpoint.Path, root)),
 	}, nil
@@ -135,6 +137,13 @@ func redirectPolicy(req *http.Request, via []*http.Request) error {
 // remote 是 source.Remote 的 WebDAV 实现。
 type remote struct {
 	client *webdav.Client
+	// auth 是经认证包装的 HTTP 客户端（OpenFrom 的直接 GET 复用它
+	// 发送 Basic 认证，不另写一套），与 client 共用同一 transport
+	// 安全边界（分段超时、redirect 收敛、错误分类）。
+	auth webdav.HTTPClient
+	// endpoint 是解析后的 endpoint URL（OpenFrom 构造 GET 地址用，
+	// 与 go-webdav 的 ResolveHref 同一拼接语义）。
+	endpoint *url.URL
 	// root 是配置的 WebDAV 子目录；Source 逻辑根目录始终映射到这里。
 	root string
 	// hrefPrefix 是 endpoint 路径的归一化前缀（无尾斜杠，root 为空串），
@@ -218,6 +227,129 @@ func (r *remote) Open(ctx context.Context, path string) (io.ReadCloser, error) {
 	return rc, nil
 }
 
+// OpenFrom 实现 source.ResumableRemote（ADR 0010）。go-webdav 未暴露
+// Range 参数，offset>0 时经保留的 webdav.HTTPClient（认证与 transport
+// 安全边界与 Open 共用）直接发 GET，携带 Range: bytes=N- 与
+// If-Range。响应校验与 HTTP Source 同一铁律：206 且 Content-Range
+// start==offset、total==快照 Size 才通过；200（服务器忽略 Range）经
+// Stat 复核分辨「对象变了」（ErrRemoteChanged）与「不支持 Range」
+// （ErrResumeUnsupported，保守降级完整下载）——绝不能把 200 body
+// 当 offset 流交给 Downloader append；416（offset 越过当前资源末尾）
+// 是远端缩小 → ErrRemoteChanged；非 identity 的 Content-Encoding 一律
+// 拒绝（压缩 representation 破坏字节数语义）。
+func (r *remote) OpenFrom(ctx context.Context, logicalPath string, offset int64, expected source.Fingerprint) (io.ReadCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := source.ValidateLogicalPath(logicalPath); err != nil {
+		return nil, err
+	}
+	if offset < 0 {
+		return nil, fmt.Errorf("%w: negative resume offset %d for %s", source.ErrInvalid, offset, logicalPath)
+	}
+	if offset == 0 {
+		return r.Open(ctx, logicalPath)
+	}
+	// 与 go-webdav 的 ResolveHref 同一拼接语义：endpoint.Path join
+	// endpoint-relative logicalPath（u.Path 为 decoded 形式，请求发出时由
+	// net/http 重新编码）。
+	u := *r.endpoint
+	u.Path = path.Join(u.Path, r.resolveRelative(logicalPath))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("webdav build resume request %s: %w", logicalPath, err)
+	}
+	req.Header.Set("Accept-Encoding", "identity")
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
+	if v := webdavIfRangeValue(expected); v != "" {
+		req.Header.Set("If-Range", v)
+	}
+	resp, err := r.auth.Do(req)
+	if err != nil {
+		// 416 由 transport 层转为带状态码的分类错误：偏移越过当前
+		// 资源末尾说明远端已缩小。
+		if isStatusError(err, http.StatusRequestedRangeNotSatisfiable) {
+			return nil, fmt.Errorf("webdav resume %s at %d: %w (offset beyond current resource)", logicalPath, offset, source.ErrRemoteChanged)
+		}
+		return nil, wrapOp("resume", logicalPath, err)
+	}
+	if enc := strings.TrimSpace(resp.Header.Get("Content-Encoding")); enc != "" &&
+		!strings.EqualFold(enc, "identity") {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+		return nil, source.MarkPermanent(fmt.Errorf(
+			"webdav resume %s: content-encoding %q is not identity; compressed representations would break size verification",
+			logicalPath, enc))
+	}
+	switch resp.StatusCode {
+	case http.StatusPartialContent:
+		start, total, ok := source.ParseContentRange(resp.Header.Get("Content-Range"))
+		if !ok {
+			_ = resp.Body.Close()
+			return nil, fmt.Errorf("webdav resume %s: %w (malformed Content-Range %q)",
+				logicalPath, source.ErrRemoteChanged, resp.Header.Get("Content-Range"))
+		}
+		if start != offset {
+			_ = resp.Body.Close()
+			return nil, fmt.Errorf("webdav resume %s: %w (Content-Range starts at %d, want %d)",
+				logicalPath, source.ErrRemoteChanged, start, offset)
+		}
+		if total != expected.Size {
+			_ = resp.Body.Close()
+			return nil, fmt.Errorf("webdav resume %s: %w (Content-Range total %d, want %d)",
+				logicalPath, source.ErrRemoteChanged, total, expected.Size)
+		}
+		return resp.Body, nil
+	case http.StatusOK:
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+		fi, err := r.client.Stat(ctx, r.resolveRelative(logicalPath))
+		if err != nil {
+			return nil, wrapOp("stat", logicalPath, err)
+		}
+		actual, err := r.toFileInfo(*fi)
+		if err != nil {
+			return nil, err
+		}
+		if !source.SameFingerprint(actual.Fingerprint, expected) {
+			return nil, fmt.Errorf("webdav resume %s: %w", logicalPath, source.ErrRemoteChanged)
+		}
+		return nil, fmt.Errorf("webdav resume %s at %d: %w (server ignored Range)", logicalPath, offset, source.ErrResumeUnsupported)
+	default:
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+		return nil, wrapOp("resume", logicalPath, classifyWebDAVStatus(resp.StatusCode))
+	}
+}
+
+// isStatusError 判定错误链上是否携带指定 HTTP 状态码（416 在 transport
+// 层已被 classifyingTransport 转为 webdavStatusError，不再以响应形态
+// 出现）。
+func isStatusError(err error, code int) bool {
+	var se *webdavStatusError
+	if errors.As(err, &se) {
+		return se.code == code
+	}
+	return false
+}
+
+// webdavIfRangeValue 从快照指纹选择 If-Range 值。WebDAV 的特殊性：
+// go-webdav 的 FileInfo.ETag 是 PROPFIND getetag 剥引号后的 raw 值，
+// 而 If-Range 的 entity-tag 必须带引号（主流 WebDAV 服务的 PROPFIND
+// getetag 本就带引号）——raw 直传会因形态不符被服务器判为 If-Range
+// 不匹配而退回 200。weak ETag 不得用于 If-Range，退化为 Last-Modified
+// （与 source.IfRangeValue 同规则）。
+func webdavIfRangeValue(expected source.Fingerprint) string {
+	raw := strings.Trim(expected.ETag, `"`)
+	if raw != "" && !strings.HasPrefix(expected.ETag, "W/") {
+		return `"` + raw + `"`
+	}
+	if !expected.ModifiedAt.IsZero() {
+		return expected.ModifiedAt.UTC().Format(http.TimeFormat)
+	}
+	return ""
+}
+
 // Mkdir 实现 source.DirectoryCreator，在逻辑路径对应的 WebDAV 目录
 // 建立直接子目录。
 func (r *remote) Mkdir(ctx context.Context, path string) error {
@@ -239,8 +371,11 @@ func (r *remote) Close() error {
 	return nil
 }
 
-// 编译期断言：ScanTree 可选能力。
-var _ source.TreeScanner = (*remote)(nil)
+// 编译期断言：可选能力 ScanTree / ResumableRemote。
+var (
+	_ source.TreeScanner     = (*remote)(nil)
+	_ source.ResumableRemote = (*remote)(nil)
+)
 
 // ScanTree 实现 source.TreeScanner：全树扫描 root 子树，文件与目录
 // 都 visit（root 自身除外）。每个目录恰好一次 Depth:1 PROPFIND——
