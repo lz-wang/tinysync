@@ -48,4 +48,5 @@ func (h *sftpContractHarness) Mkdir(t *testing.T, logical string) {
 // TestRemoteContractSuite 以统一契约套件验证 SFTP adapter。
 func TestRemoteContractSuite(t *testing.T) {
 	remotetest.RunSuite(t, &sftpContractHarness{})
+	remotetest.RunResumeSuite(t, &sftpContractHarness{})
 }

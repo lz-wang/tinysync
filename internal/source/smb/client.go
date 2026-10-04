@@ -165,6 +165,7 @@ type remote struct {
 // 编译期契约断言。
 var (
 	_ source.Remote           = (*remote)(nil)
+	_ source.ResumableRemote  = (*remote)(nil)
 	_ source.TreeScanner      = (*remote)(nil)
 	_ source.DirectoryCreator = (*remote)(nil)
 )
@@ -355,6 +356,62 @@ func (r *remote) Open(ctx context.Context, logicalPath string) (io.ReadCloser, e
 	f, err := c.open(ctx, native)
 	if err != nil {
 		wrapped := normalizeCtxErr(ctx, wrapOp("open", logicalPath, classifyError(err)))
+		r.maybeTeardown(c, wrapped)
+		return nil, wrapped
+	}
+	return f, nil
+}
+
+// OpenFrom 实现 source.ResumableRemote（ADR 0010）。conn.open 的返回
+// 保持 io.ReadCloser（现有 fake 无需改造成 SMB 类型）：生产 *smb2.File
+// 实现 io.Seeker，直接 Seek；不可 seek 的实现（测试 fake）返回
+// ErrResumeUnsupported。身份校验走 open 前的 Lstat + expected 指纹
+// （go-smb2 未暴露 handle 级 Stat）。
+func (r *remote) OpenFrom(ctx context.Context, logicalPath string, offset int64, expected source.Fingerprint) (io.ReadCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := source.ValidateLogicalPath(logicalPath); err != nil {
+		return nil, err
+	}
+	if offset < 0 {
+		return nil, fmt.Errorf("%w: negative resume offset %d for %s", source.ErrInvalid, offset, logicalPath)
+	}
+	c, err := r.session(ctx)
+	if err != nil {
+		return nil, err
+	}
+	native, err := remotePath(r.root(), logicalPath)
+	if err != nil {
+		return nil, err
+	}
+	info, err := c.lstat(ctx, native)
+	if err != nil {
+		wrapped := normalizeCtxErr(ctx, wrapOp("stat", logicalPath, classifyError(err)))
+		r.maybeTeardown(c, wrapped)
+		return nil, wrapped
+	}
+	fi, err := toFileInfo(logicalPath, info)
+	if err != nil {
+		return nil, err
+	}
+	if !source.SameFingerprint(fi.Fingerprint, expected) {
+		return nil, fmt.Errorf("smb %s: %w", logicalPath, source.ErrRemoteChanged)
+	}
+	f, err := c.open(ctx, native)
+	if err != nil {
+		wrapped := normalizeCtxErr(ctx, wrapOp("open", logicalPath, classifyError(err)))
+		r.maybeTeardown(c, wrapped)
+		return nil, wrapped
+	}
+	seeker, ok := f.(io.Seeker)
+	if !ok {
+		_ = f.Close()
+		return nil, fmt.Errorf("smb resume %s: %w", logicalPath, source.ErrResumeUnsupported)
+	}
+	if _, err := seeker.Seek(offset, io.SeekStart); err != nil {
+		_ = f.Close()
+		wrapped := normalizeCtxErr(ctx, wrapOp("seek", logicalPath, classifyError(err)))
 		r.maybeTeardown(c, wrapped)
 		return nil, wrapped
 	}

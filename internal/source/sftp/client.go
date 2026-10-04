@@ -198,7 +198,10 @@ type remote struct {
 }
 
 // 编译期断言。
-var _ source.Remote = (*remote)(nil)
+var (
+	_ source.Remote          = (*remote)(nil)
+	_ source.ResumableRemote = (*remote)(nil)
+)
 
 // connect 建立 SSH 连接、SFTP 会话并解析真实 root；调用方持有写锁。
 func (r *remote) connect(ctx context.Context) error {
@@ -462,6 +465,53 @@ func (r *remote) Open(ctx context.Context, logicalPath string) (io.ReadCloser, e
 	// 超时回调与连接代际绑定：该文件的 ctx 超时只拆除它打开时所用
 	// 的会话快照，重连后的新代际不受 stale 回调影响（闭包持有的旧
 	// client 指针使其地址不可被新连接复用，指针比较可靠）。
+	return newCtxFile(ctx, f, func() { r.teardownSession(c) }), nil
+}
+
+// OpenFrom 实现 source.ResumableRemote（ADR 0010）：打开后以
+// *sftp.File 自身的 Stat 验证指纹（Handle 级元数据，无需再发 Lstat，
+// 缩小 TOCTOU 窗口），Seek 到精确 offset 后返回。ctx 取消经连接代际
+// 拆除中断阻塞中的读取，语义与 Open 一致。
+func (r *remote) OpenFrom(ctx context.Context, logicalPath string, offset int64, expected source.Fingerprint) (io.ReadCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := source.ValidateLogicalPath(logicalPath); err != nil {
+		return nil, err
+	}
+	if offset < 0 {
+		return nil, fmt.Errorf("%w: negative resume offset %d for %s", source.ErrInvalid, offset, logicalPath)
+	}
+	c, root, err := r.session(ctx)
+	if err != nil {
+		return nil, err
+	}
+	abs, err := remoteAbs(root, logicalPath)
+	if err != nil {
+		return nil, err
+	}
+	f, err := c.Open(abs)
+	if err != nil {
+		return nil, normalizeCtxErr(ctx, wrapOp("open", logicalPath, err))
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, normalizeCtxErr(ctx, wrapOp("stat", logicalPath, err))
+	}
+	// handle 级指纹校验：symlink 拒绝语义与 toFileInfo 一致（打开的
+	// 是文件句柄，此处防御性重复判定）；Size / mtime 与快照不一致
+	// 即远端变化。
+	if info.Mode()&fs.ModeSymlink != 0 || !source.SameFingerprint(
+		source.Fingerprint{Size: info.Size(), ModifiedAt: info.ModTime()},
+		expected) {
+		_ = f.Close()
+		return nil, fmt.Errorf("sftp %s: %w", logicalPath, source.ErrRemoteChanged)
+	}
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		_ = f.Close()
+		return nil, normalizeCtxErr(ctx, wrapOp("seek", logicalPath, err))
+	}
 	return newCtxFile(ctx, f, func() { r.teardownSession(c) }), nil
 }
 

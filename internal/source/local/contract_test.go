@@ -40,3 +40,8 @@ func (h *localContractHarness) Mkdir(t *testing.T, logical string) {
 func TestRemoteContractSuite(t *testing.T) {
 	remotetest.RunSuite(t, &localContractHarness{})
 }
+
+// TestRemoteResumeContractSuite 以断点续传契约套件验证 OpenFrom。
+func TestRemoteResumeContractSuite(t *testing.T) {
+	remotetest.RunResumeSuite(t, &localContractHarness{})
+}

@@ -95,6 +95,53 @@ func (r *Remote) Open(ctx context.Context, logical string) (io.ReadCloser, error
 	return &contextFile{ctx: ctx, f: f}, nil
 }
 
+// OpenFrom 实现 source.ResumableRemote（ADR 0010）：以打开后 handle
+// 自身的 Stat 验证指纹（尽可能缩小 resolve→open 之间的 TOCTOU 窗口），
+// Seek 到精确 offset 后返回——读取的第一个字节就是 offset。
+func (r *Remote) OpenFrom(ctx context.Context, logical string, offset int64, expected source.Fingerprint) (io.ReadCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := source.ValidateLogicalPath(logical); err != nil {
+		return nil, err
+	}
+	if offset < 0 {
+		return nil, fmt.Errorf("%w: negative resume offset %d for %s", source.ErrInvalid, offset, logical)
+	}
+	native, info, err := r.resolve(ctx, logical)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%w: %s", filesafe.ErrNotRegularFile, logical)
+	}
+	f, opened, err := filesafe.OpenCanonicalRegularFile(native)
+	if err != nil {
+		return nil, fmt.Errorf("open local %s: %w", logical, err)
+	}
+	if !os.SameFile(info, opened) {
+		_ = f.Close()
+		return nil, fmt.Errorf("local file %s changed while opening", logical)
+	}
+	// handle 级指纹校验：SameFile 只证明同一 inode，内容可能已被替换
+	// 写入；Size / mtime 与快照不一致即远端变化。
+	if !source.SameFingerprint(
+		source.Fingerprint{Size: opened.Size(), ModifiedAt: opened.ModTime()},
+		expected) {
+		_ = f.Close()
+		return nil, fmt.Errorf("local %s: %w", logical, source.ErrRemoteChanged)
+	}
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("seek local %s to %d: %w", logical, offset, err)
+	}
+	if err := ctx.Err(); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return &contextFile{ctx: ctx, f: f}, nil
+}
+
 // Mkdir 只创建一级目录，父组件全部重验且不得含 symlink。
 func (r *Remote) Mkdir(ctx context.Context, logical string) error {
 	if err := ctx.Err(); err != nil {
@@ -139,6 +186,7 @@ func (f *contextFile) Close() error { return f.f.Close() }
 var (
 	_ source.RemoteFactory    = (*Factory)(nil)
 	_ source.Remote           = (*Remote)(nil)
+	_ source.ResumableRemote  = (*Remote)(nil)
 	_ source.TreeScanner      = (*Remote)(nil)
 	_ source.DirectoryCreator = (*Remote)(nil)
 )

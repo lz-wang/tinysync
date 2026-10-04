@@ -565,3 +565,39 @@ func TestNormalizeCtxErr(t *testing.T) {
 		t.Errorf("normalizeCtxErr with live ctx = %v, want original", got)
 	}
 }
+
+// OpenFrom 的身份校验：expected 指纹与 Lstat 不一致（远端变化）时
+// 返回 ErrRemoteChanged，且不发起 open。
+func TestOpenFromRemoteChanged(t *testing.T) {
+	r, c := seededRemote(t)
+	stale := source.Fingerprint{Size: 3, ModifiedAt: time.Unix(1600000000, 0)}
+	if _, err := r.OpenFrom(context.Background(), "/hello.txt", 0, stale); !errors.Is(err, source.ErrRemoteChanged) {
+		t.Fatalf("OpenFrom with stale fingerprint = %v, want ErrRemoteChanged", err)
+	}
+	_ = c
+}
+
+// OpenFrom 的能力降级：fake conn 的 open 返回不可 seek 的实现，
+// OpenFrom 返回 ErrResumeUnsupported（生产 *smb2.File 实现 io.Seeker，
+// 真实 seek 行为由 SMB 集成测试覆盖）。
+func TestOpenFromUnsupportedWithoutSeeker(t *testing.T) {
+	r, _ := seededRemote(t)
+	fi, err := r.Stat(context.Background(), "/hello.txt")
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if _, err := r.OpenFrom(context.Background(), "/hello.txt", 2, fi.Fingerprint); !errors.Is(err, source.ErrResumeUnsupported) {
+		t.Fatalf("OpenFrom on non-seeker conn = %v, want ErrResumeUnsupported", err)
+	}
+}
+
+// OpenFrom 入口校验：负 offset 与非法 logical path 直接拒绝。
+func TestOpenFromInvalidInput(t *testing.T) {
+	r, _ := seededRemote(t)
+	if _, err := r.OpenFrom(context.Background(), "/hello.txt", -1, source.Fingerprint{}); !errors.Is(err, source.ErrInvalid) {
+		t.Fatalf("OpenFrom(-1) = %v, want ErrInvalid", err)
+	}
+	if _, err := r.OpenFrom(context.Background(), "not-absolute", 0, source.Fingerprint{}); !errors.Is(err, source.ErrInvalid) {
+		t.Fatalf("OpenFrom(relative path) = %v, want ErrInvalid", err)
+	}
+}

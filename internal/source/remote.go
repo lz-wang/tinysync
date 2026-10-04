@@ -165,6 +165,30 @@ type ResumableRemote interface {
 	OpenFrom(ctx context.Context, path string, offset int64, expected Fingerprint) (io.ReadCloser, error)
 }
 
+// SameFingerprint 报告实际远端对象元数据与 expected 指纹是否指向同一
+// 状态：Size 恒参与比较（断点续传的 total 语义基础），其余身份字段
+// 在 expected 中非零 / 非空时必须一致——协议只填充自己能提供的字段，
+// 零值字段不参与比较。ResumableRemote 实现方在打开句柄上做此校验，
+// 不一致时返回 ErrRemoteChanged，绝不返回另一个对象的字节流。
+func SameFingerprint(actual, expected Fingerprint) bool {
+	if actual.Size != expected.Size {
+		return false
+	}
+	if !expected.ModifiedAt.IsZero() && !actual.ModifiedAt.Equal(expected.ModifiedAt) {
+		return false
+	}
+	if expected.ETag != "" && actual.ETag != expected.ETag {
+		return false
+	}
+	if expected.Checksum != "" && actual.Checksum != expected.Checksum {
+		return false
+	}
+	if expected.Version != "" && actual.Version != expected.Version {
+		return false
+	}
+	return true
+}
+
 // TreeScanner 是 Remote 可选的全树扫描能力：面向同步引擎的批量枚举，
 // 把「浏览分页」（List，供 Files / API 使用）与「同步扫描」（ScanTree）
 // 两个访问模式分离。WebDAV / SFTP 的 List 是伪分页（协议层每次请求
