@@ -169,7 +169,7 @@ type countingListener struct {
 	written int64
 }
 
-func (l *countingListener) AttemptStart() { l.written = 0 }
+func (l *countingListener) AttemptStart(offset int64) { l.written = offset }
 
 func (l *countingListener) Write(n int64) { l.written += n }
 

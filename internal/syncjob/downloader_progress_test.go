@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -53,17 +55,20 @@ func (r *failMidwayReader) Read(p []byte) (int, error) {
 	return 0, io.ErrUnexpectedEOF
 }
 
-// recordingListener 记录 AttemptStart 次数与写入事件序列。
+// recordingListener 记录 AttemptStart 次数（含断点 offset）与写入
+// 事件序列。
 type recordingListener struct {
-	mu     sync.Mutex
-	starts int
-	writes []int64
+	mu           sync.Mutex
+	starts       int
+	startOffsets []int64
+	writes       []int64
 }
 
-func (l *recordingListener) AttemptStart() {
+func (l *recordingListener) AttemptStart(offset int64) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.starts++
+	l.startOffsets = append(l.startOffsets, offset)
 }
 
 func (l *recordingListener) Write(n int64) {
@@ -282,5 +287,49 @@ func TestCopyCountingWriteErrorCountsWrittenBytesOnly(t *testing.T) {
 	}
 	if got := fp.BytesDone(); got != 32*1024+8*1024 {
 		t.Errorf("bytes done = %d, want %d（首次整写 + 部分写入）", got, 32*1024+8*1024)
+	}
+}
+
+// 断点续传的进度对齐：预置 partial 的传输，AttemptStart 携带断点
+// offset（bytes_done 从断点起计，含已有前缀），写入只计新增后缀——
+// 终值 = 断点 + 新写入 = 总大小。
+func TestDownloadProgressStartsAtResumeOffset(t *testing.T) {
+	content := "0123456789abcdef"
+	root := t.TempDir()
+	remote := &resumeRemote{content: content}
+	spec := testSpec("/r.bin", root, "r.bin", source.Fingerprint{Size: int64(len(content))})
+	if err := os.WriteFile(filepath.Join(root, partialNameFor(spec)), []byte("0123"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d := newTestDownloader(remote)
+	rec := &recordingListener{}
+
+	if err := d.download(context.Background(), spec, rec); err != nil {
+		t.Fatalf("download: %v", err)
+	}
+	if len(rec.startOffsets) != 1 || rec.startOffsets[0] != 4 {
+		t.Fatalf("AttemptStart offsets = %v, want [4]", rec.startOffsets)
+	}
+	if got := rec.total(); got != int64(len(content))-4 {
+		t.Errorf("written = %d, want %d (only the suffix beyond the checkpoint)", got, int64(len(content))-4)
+	}
+}
+
+// FileProgress 的 setDone / ResumeFrom：断点对齐后快照输出
+// resume_from，bytes_done 从断点起累加。
+func TestFileProgressResumeFrom(t *testing.T) {
+	fp := &FileProgress{Path: "a.bin", BytesTotal: 100}
+	fp.setDone(40)
+	if fp.BytesDone() != 40 || fp.ResumeFrom() != 40 {
+		t.Fatalf("after setDone(40): done=%d resumeFrom=%d, want 40/40", fp.BytesDone(), fp.ResumeFrom())
+	}
+	fp.add(10)
+	if fp.BytesDone() != 50 {
+		t.Fatalf("after add(10): done=%d, want 50", fp.BytesDone())
+	}
+	rp := &RunProgress{activeFiles: map[string]*FileProgress{"a.bin": fp}}
+	snap := rp.Snapshot()
+	if len(snap.ActiveFiles) != 1 || snap.ActiveFiles[0].ResumeFrom != 40 {
+		t.Fatalf("snapshot resume_from = %+v, want 40", snap.ActiveFiles)
 	}
 }

@@ -111,10 +111,11 @@ type Downloader struct {
 // TransferListener 是单文件传输的字节级进度回调（协议无关）：挂在
 // Downloader 的拷贝路径上，传输路径只做 atomic 累加，无锁、无 I/O。
 type TransferListener interface {
-	// AttemptStart 在每次 attempt 开始时调用（含首次与重试）：实现应
-	// 把当前 attempt 的计数对齐断点——重试从断点继续发送，从头归零
-	// 会丢失 partial 已有前缀的进度。
-	AttemptStart()
+	// AttemptStart 在每次 attempt 开始时调用（含首次与重试），offset
+	// 为本次 attempt 的传输起点（断点位置；全量重传为 0）：实现应把
+	// 计数对齐 offset——bytes_done 从断点起累加（含 partial 已有
+	// 前缀），从头归零会把续传进度压回 0。
+	AttemptStart(offset int64)
 	// Write 在每次成功写入后调用，n 为本次写入字节数。
 	Write(n int64)
 }
@@ -176,9 +177,6 @@ func (d *Downloader) download(ctx context.Context, spec TransferSpec, listener T
 		if d.timeout > 0 {
 			attemptCtx, cancel = context.WithTimeout(ctx, d.timeout)
 		}
-		if listener != nil {
-			listener.AttemptStart()
-		}
 		lastErr = d.attempt(attemptCtx, spec, target, partialPath, listener)
 		if cancel != nil {
 			cancel()
@@ -238,6 +236,11 @@ func (d *Downloader) attempt(ctx context.Context, spec TransferSpec, target, par
 	ph := &partialHasher{path: partialPath, verifier: verifier}
 
 	transfer := func(rc io.ReadCloser) error {
+		// 进度对齐断点：bytes_done 从本次 attempt 的实际起点开始
+		//（offset 在 unsupported 截断后已是最终值）。
+		if listener != nil {
+			listener.AttemptStart(offset)
+		}
 		err := d.appendAndVerify(spec, target, partialPath, offset, ph, rc, listener)
 		if err != nil && isCorruption(err) {
 			// 确定性损坏（size / checksum mismatch）：partial 内容不可

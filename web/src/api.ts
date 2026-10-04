@@ -659,12 +659,14 @@ export interface RunJobResponse {
 export type RunPhase = 'connecting' | 'scanning' | 'planning' | 'transferring' | 'finalizing'
 
 // RunProgressFileResponse 是一个在途文件的单文件进度：后端只输出原始
-// 字节计数，百分比与显示文本由前端换算。
+// 字节计数，百分比与显示文本由前端换算。resume_from 是本次 attempt
+// 的断点起点（断点续传，仅展示；0 / 缺省 = 全新传输）。
 export interface RunProgressFileResponse {
     path: string
     action: RunItemAction
     bytes_done: number
     bytes_total: number
+    resume_from?: number
 }
 
 // RunProgressResponse 是运行中 run 的实时进度（瞬态内存快照）。

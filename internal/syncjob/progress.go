@@ -28,23 +28,36 @@ type FileProgress struct {
 	Action     RunItemAction
 	BytesTotal int64
 	done       atomic.Int64
+	// resumeFrom 是最近一次 attempt 的传输起点（断点位置；0 表示
+	// 全新传输），AttemptStart 对齐时写入。
+	resumeFrom atomic.Int64
 }
 
-// BytesDone 返回当前已传输字节数。
+// BytesDone 返回当前已传输字节数（含 partial 已有前缀）。
 func (f *FileProgress) BytesDone() int64 { return f.done.Load() }
+
+// ResumeFrom 返回最近一次 attempt 的断点起点（0 = 全新传输）。
+func (f *FileProgress) ResumeFrom() int64 { return f.resumeFrom.Load() }
 
 // add 累加本次写入的字节数。
 func (f *FileProgress) add(n int64) { f.done.Add(n) }
 
-// reset 归零当前 attempt 的计数（重试从头传输，不能跨 attempt 累加）。
-func (f *FileProgress) reset() { f.done.Store(0) }
+// setDone 把计数对齐 attempt 起点：done 与 resumeFrom 同步为 offset，
+// 后续写入在其上累加——续传时 bytes_done 从断点开始（含已有前缀），
+// 而不是从 0 重新计。
+func (f *FileProgress) setDone(offset int64) {
+	f.resumeFrom.Store(offset)
+	f.done.Store(offset)
+}
 
 // FileProgressSnapshot 是在途文件进度的只读快照（API 输出形态）。
+// ResumeFrom 为 0（全新传输）时省略。
 type FileProgressSnapshot struct {
 	Path       string `json:"path"`
 	Action     string `json:"action"`
 	BytesDone  int64  `json:"bytes_done"`
 	BytesTotal int64  `json:"bytes_total"`
+	ResumeFrom int64  `json:"resume_from,omitempty"`
 }
 
 // RunProgressSnapshot 是一轮运行进度的只读快照（API 输出形态）。
@@ -133,6 +146,7 @@ func (p *RunProgress) Snapshot() RunProgressSnapshot {
 				Action:     string(fp.Action),
 				BytesDone:  fp.BytesDone(),
 				BytesTotal: fp.BytesTotal,
+				ResumeFrom: fp.ResumeFrom(),
 			})
 		}
 		sort.Slice(snap.ActiveFiles, func(i, j int) bool {
@@ -164,7 +178,7 @@ func engineProgress(p ProgressReporter) ProgressReporter {
 }
 
 // nullProgress 是 ProgressReporter 的 no-op 实现：BeginFile 返回
-// 无人观察的丢弃句柄，add/reset 的开销为零值 atomic 操作。
+// 无人观察的丢弃句柄，add/setDone 的开销为零值 atomic 操作。
 type nullProgress struct{}
 
 func (nullProgress) SetPhase(RunPhase) {}
@@ -180,14 +194,14 @@ func (nullProgress) BeginFile(path string, action RunItemAction, totalBytes int6
 }
 
 // fileProgressListener 把 FileProgress 适配为 Downloader 的
-// TransferListener：attempt 重启归零计数，成功写入累加。值类型即可
-// （句柄语义，fp 指针共享）。
+// TransferListener：attempt 起点对齐计数（断点续传时 bytes_done 从
+// 断点开始），成功写入累加。值类型即可（句柄语义，fp 指针共享）。
 type fileProgressListener struct {
 	fp *FileProgress
 }
 
-// AttemptStart 实现 TransferListener：重试从头发送，计数归零。
-func (l fileProgressListener) AttemptStart() { l.fp.reset() }
+// AttemptStart 实现 TransferListener：计数对齐 attempt 起点。
+func (l fileProgressListener) AttemptStart(offset int64) { l.fp.setDone(offset) }
 
 // Write 实现 TransferListener：累加本次写入字节数。
 func (l fileProgressListener) Write(n int64) { l.fp.add(n) }

@@ -278,13 +278,15 @@ function RunProgressCard({ progress }: { progress: RunProgressResponse }) {
 }
 
 // FileProgressLine 是单个在途文件：环形进度按字节占比推进，文字显示
-// 原始计数「14.5 MB / 46.0 MB」（总大小未知时只显示已传输）。
+// 原始计数「14.5 MB / 46.0 MB」（总大小未知时只显示已传输）；断点
+// 续传的 attempt 追加「已从 X 处续传」（仅展示，无配置项）。
 function FileProgressLine({ file }: { file: RunProgressFileResponse }) {
     const known = file.bytes_total > 0
     const percent = known ? Math.min(100, (file.bytes_done / file.bytes_total) * 100) : undefined
     const label = known
         ? `${formatBytes(file.bytes_done)} / ${formatBytes(file.bytes_total)}`
         : formatBytes(file.bytes_done)
+    const resume = file.resume_from ? ` · 已从 ${formatBytes(file.resume_from)} 处续传` : ''
     return (
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
             <CircularProgress
@@ -302,6 +304,11 @@ function FileProgressLine({ file }: { file: RunProgressFileResponse }) {
             </Typography>
             <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>
                 {file.action} · {label}
+                {resume && (
+                    <Box component="span" sx={{ color: 'success.main' }}>
+                        {resume}
+                    </Box>
+                )}
             </Typography>
         </Box>
     )

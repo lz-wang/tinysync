@@ -522,12 +522,14 @@ const (
 )
 
 // runProgressFileDTO 是一个在途文件的实时进度（字节计数由前端换算
-// 百分比与显示文本，后端只输出原始计数）。
+// 百分比与显示文本，后端只输出原始计数）。resume_from 为本次 attempt
+// 的断点起点（ADR 0010）：0（全新传输）省略。
 type runProgressFileDTO struct {
 	Path       string `json:"path"`
 	Action     string `json:"action"`
 	BytesDone  int64  `json:"bytes_done"`
 	BytesTotal int64  `json:"bytes_total"`
+	ResumeFrom int64  `json:"resume_from,omitempty"`
 }
 
 // runProgressDTO 是运行中 run 的实时进度：phase 为生命周期阶段
@@ -555,6 +557,7 @@ func toRunProgressDTO(snap syncjob.RunProgressSnapshot) *runProgressDTO {
 				Action:     f.Action,
 				BytesDone:  f.BytesDone,
 				BytesTotal: f.BytesTotal,
+				ResumeFrom: f.ResumeFrom,
 			})
 		}
 	}
