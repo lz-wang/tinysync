@@ -20,6 +20,8 @@ func TestHTTPMirrorUnprovableSnapshotFailClosed(t *testing.T) {
 		{"status object", `{"status":"error"}`},
 		{"ambiguous empty array", `[]`},
 		{"ordinary html marker", `<html><body><script>const className = "entry-type-file";</script></body></html>`},
+		{"nginx-like maintenance page", `<html><head><title>Index of /maintenance</title></head><body><pre>temporarily unavailable</pre></body></html>`},
+		{"nginx mismatched index paths", `<html><head><title>Index of /</title></head><body><h1>Index of /maintenance</h1><pre></pre></body></html>`},
 		{"malformed later caddy directory", `[{"name":"a.txt","size":2,"url":"a.txt","mod_time":"2026-10-01T00:00:00Z","is_dir":false,"is_symlink":false},{"name":"docs","size":4096,"mod_time":"2026-10-01T00:00:00Z"}]`},
 		{"unknown miniserve row", `<table><tr class="entry-type-file"><td><a class="file" href="a.txt">a</a></td></tr><tr class="entry-type-special"><td><a class="directory" href="docs/">docs</a></td></tr></table>`},
 		{"conflicting miniserve directory", `<table><tr class="entry-type-file"><td><a class="file" href="a.txt">a</a></td></tr><tr class="entry-type-file"><td><a class="directory" href="docs/">docs</a></td></tr></table>`},

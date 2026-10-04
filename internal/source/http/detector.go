@@ -20,8 +20,7 @@ func detectListing(body []byte) listingKind {
 	if detectMiniserveHTML(trimmed) {
 		return listingMiniserveHTML
 	}
-	// nginx autoindex HTML 的稳定结构标记：标题「Index of /」。
-	if bytes.Contains(trimmed, []byte("<title>Index of /")) {
+	if detectNginxHTML(trimmed) {
 		return listingNginxHTML
 	}
 	return listingUnknown

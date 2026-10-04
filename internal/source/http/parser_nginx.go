@@ -62,10 +62,11 @@ func parseNginxHTML(m *mapper, dir string, body []byte) ([]rawEntry, error) {
 	if err != nil {
 		return nil, malformedListing(dir, fmt.Sprintf("invalid nginx HTML: %v", err))
 	}
-	pre := findFirst(doc, "pre")
-	if pre == nil {
-		return nil, malformedListing(dir, "nginx HTML has no <pre> listing")
+	// parser 独立复核，不能依赖 detector 或已缓存的 profile 授权空快照。
+	if !isNginxAutoindexDOM(doc) {
+		return nil, malformedListing(dir, "missing nginx autoindex structure")
 	}
+	pre := findFirst(findFirst(doc, "body"), "pre")
 	var (
 		raw      []rawEntry
 		parseErr error
@@ -88,6 +89,42 @@ func parseNginxHTML(m *mapper, dir string, body []byte) ([]rawEntry, error) {
 		return nil, malformedListing(dir, parseErr.Error())
 	}
 	return collect(dir, raw)
+}
+
+func detectNginxHTML(body []byte) bool {
+	doc, err := html.Parse(strings.NewReader(string(body)))
+	return err == nil && isNginxAutoindexDOM(doc)
+}
+
+// isNginxAutoindexDOM 要求 head/title、body/h1 与 body/pre，且两个
+// Index of 路径一致。合法空目录无需条目或固定的 hr 模板；维护页的
+// title + 任意 pre，以及脚本 / 注释中的模板文本，都不是目录证据。
+func isNginxAutoindexDOM(doc *html.Node) bool {
+	root := findFirst(doc, "html")
+	if root == nil {
+		return false
+	}
+	head, body := findFirst(root, "head"), findFirst(root, "body")
+	if head == nil || body == nil || findFirst(body, "pre") == nil {
+		return false
+	}
+	title, heading := findFirst(head, "title"), findFirst(body, "h1")
+	if title == nil || heading == nil {
+		return false
+	}
+	label := strings.TrimSpace(nginxIndexText(title))
+	return strings.HasPrefix(label, "Index of /") && label == strings.TrimSpace(nginxIndexText(heading))
+}
+
+func nginxIndexText(n *html.Node) string {
+	if n.Type == html.TextNode {
+		return n.Data
+	}
+	var text strings.Builder
+	for child := n.FirstChild; child != nil; child = child.NextSibling {
+		text.WriteString(nginxIndexText(child))
+	}
+	return text.String()
 }
 
 // findFirst 返回首个指定 tag 的元素。

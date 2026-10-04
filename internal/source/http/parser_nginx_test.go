@@ -131,12 +131,12 @@ func TestParseNginxHTMLSecurity(t *testing.T) {
 		body string
 		want string
 	}{
-		{"parent at root", `<html><head><title>Index of /releases/</title></head><body><pre><a href="../">../</a><a href="d/">d/</a></pre></body></html>`, ""},
-		{"path escape", `<html><head><title>Index of /</title></head><body><pre><a href="../../etc/passwd">passwd</a></pre></body></html>`, "malformed directory listing"},
-		{"absolute external", `<html><head><title>Index of /</title></head><body><pre><a href="https://evil.example.com/x">x</a></pre></body></html>`, "malformed directory listing"},
-		{"encoded slash", `<html><head><title>Index of /</title></head><body><pre><a href="a%2Fb.txt">a/b</a></pre></body></html>`, "malformed directory listing"},
-		{"no pre", `<html><head><title>Index of /</title></head><body><p>nothing</p></body></html>`, "no <pre> listing"},
-		{"duplicate", `<html><head><title>Index of /</title></head><body><pre><a href="a">a</a><a href="a">a</a></pre></body></html>`, "duplicate entry"},
+		{"parent at root", `<html><head><title>Index of /releases/</title></head><body><h1>Index of /releases/</h1><pre><a href="../">../</a><a href="d/">d/</a></pre></body></html>`, ""},
+		{"path escape", `<html><head><title>Index of /</title></head><body><h1>Index of /</h1><pre><a href="../../etc/passwd">passwd</a></pre></body></html>`, "malformed directory listing"},
+		{"absolute external", `<html><head><title>Index of /</title></head><body><h1>Index of /</h1><pre><a href="https://evil.example.com/x">x</a></pre></body></html>`, "malformed directory listing"},
+		{"encoded slash", `<html><head><title>Index of /</title></head><body><h1>Index of /</h1><pre><a href="a%2Fb.txt">a/b</a></pre></body></html>`, "malformed directory listing"},
+		{"no pre", `<html><head><title>Index of /</title></head><body><h1>Index of /</h1><p>nothing</p></body></html>`, "malformed directory listing"},
+		{"duplicate", `<html><head><title>Index of /</title></head><body><h1>Index of /</h1><pre><a href="a">a</a><a href="a">a</a></pre></body></html>`, "duplicate entry"},
 	}
 	for _, tc := range cases {
 		_, err := parseNginxHTML(m, "/", []byte(tc.body))
@@ -159,7 +159,7 @@ func TestParseNginxHTMLSecurity(t *testing.T) {
 // 子目录 listing：href 相对父目录解析。
 func TestParseNginxHTMLSubdir(t *testing.T) {
 	m := newRootMapper(t)
-	body := `<html><head><title>Index of /releases/linux/</title></head><body><pre><a href="../">../</a>
+	body := `<html><head><title>Index of /releases/linux/</title></head><body><h1>Index of /releases/linux/</h1><pre><a href="../">../</a>
 <a href="x86_64/">x86_64/</a>
 <a href="SHA256SUMS">SHA256SUMS</a>
 </pre></body></html>`
@@ -177,5 +177,45 @@ func TestParseNginxHTMLSubdir(t *testing.T) {
 		if e.Name == "SHA256SUMS" && e.IsDir {
 			t.Error("SHA256SUMS should be file")
 		}
+	}
+}
+
+// detector 与 parser 分别验证 DOM；合法空目录不依赖条目或固定的 hr 模板。
+func TestNginxHTMLStructure(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		body  string
+		valid bool
+	}{
+		{"real empty directory", `<html><head><title>Index of /</title></head><body><h1>Index of /</h1><hr><pre><a href="../">../</a></pre><hr></body></html>`, true},
+		{"empty directory without navigation or hr", `<html><head><title>Index of /releases/</title></head><body><h1>Index of /releases/</h1><pre></pre></body></html>`, true},
+		{"DOM case whitespace and entities", `<HTML><HEAD><TITLE>Index of /a&amp;b/</TITLE></HEAD><BODY><H1> Index of /a&amp;b/ </H1><PRE></PRE></BODY></HTML>`, true},
+		{"maintenance page", `<html><head><title>Index of /maintenance</title></head><body><pre>temporarily unavailable</pre></body></html>`, false},
+		{"missing title", `<html><body><h1>Index of /</h1><pre></pre></body></html>`, false},
+		{"missing pre", `<html><head><title>Index of /</title></head><body><h1>Index of /</h1></body></html>`, false},
+		{"mismatched index paths", `<html><head><title>Index of /</title></head><body><h1>Index of /other/</h1><pre></pre></body></html>`, false},
+		{"non index title and heading", `<html><head><title>Maintenance</title></head><body><h1>Maintenance</h1><pre></pre></body></html>`, false},
+		{"relative index path", `<html><head><title>Index of releases</title></head><body><h1>Index of releases</h1><pre></pre></body></html>`, false},
+		{"comment markers", `<html><body><!-- <title>Index of /</title><h1>Index of /</h1> --><pre></pre></body></html>`, false},
+		{"script markers", `<html><body><script>const template = '<title>Index of /</title><h1>Index of /</h1>';</script><pre></pre></body></html>`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wantKind := listingUnknown
+			if tc.valid {
+				wantKind = listingNginxHTML
+			}
+			if got := detectListing([]byte(tc.body)); got != wantKind {
+				t.Errorf("detectListing = %s, want %s", got, wantKind)
+			}
+			// 直接调用 parser，确保未经过 detector 时同样 fail-closed。
+			entries, err := parseNginxHTML(newRootMapper(t), "/", []byte(tc.body))
+			if tc.valid {
+				if err != nil || len(entries) != 0 {
+					t.Fatalf("empty directory: entries = %+v, err = %v", entries, err)
+				}
+			} else if err == nil || source.IsRetryable(err) || entries != nil {
+				t.Fatalf("unproven listing: entries = %+v, err = %v, want permanent failure", entries, err)
+			}
+		})
 	}
 }

@@ -7,6 +7,7 @@ package http
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -174,8 +175,14 @@ func (c *Client) fetchDir(ctx context.Context, dir string) ([]rawEntry, error) {
 	kind := detectListing(body)
 	if kind == listingUnknown && !raw && c.mode == source.HTTPListingAuto {
 		// 未识别的 HTML 可能是 miniserve 完整 UI 页：以 ?raw=true
-		// 再探测一次（仍失败则明确 unsupported）。
-		if rawBody, rawErr := c.getListingBody(ctx, dir, true); rawErr == nil {
+		// 再探测一次；保留临时故障与调用方取消 / 超时语义，永久
+		// 失败才收敛为 unsupported。
+		rawBody, rawErr := c.getListingBody(ctx, dir, true)
+		if rawErr != nil {
+			if source.IsRetryable(rawErr) || errors.Is(rawErr, context.Canceled) || errors.Is(rawErr, context.DeadlineExceeded) {
+				return nil, rawErr
+			}
+		} else {
 			if rawKind := detectListing(rawBody); rawKind != listingUnknown {
 				body, kind = rawBody, rawKind
 			}

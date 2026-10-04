@@ -5,11 +5,11 @@
 
 ## 背景
 
-第六种 Source 类型：大量镜像站与内网文件服务以普通 HTTP 文件服务
+第七种 Source 类型：大量镜像站与内网文件服务以普通 HTTP 文件服务
 （nginx `autoindex`、Caddy `file_server browse`、miniserve）提供只读
 目录下载。它们不是新的文件访问协议，而是 **HTTP 上不同的目录索引
 表现形式**。既有架构 `Source → RemoteFactory → Remote → Scanner →
-Planner → Downloader` 的协议边界保持不变，HTTP 作为第六个 adapter
+Planner → Downloader` 的协议边界保持不变，HTTP 作为第七个 adapter
 接入 `RemoteRegistry`——同步业务层（Runner / Scanner / Planner /
 Downloader / Browser）不出现任何 HTTP 分支。
 
@@ -66,8 +66,8 @@ adapter 自己控制（如 miniserve 的 `?raw=true`）。
   DOM）。无法识别的 HTML 明确失败（`unsupported HTTP directory
   listing`），绝不加入 generic HTML crawler 作为静默 fallback——
   普通网页的 `<a href>` 不是目录索引。
-- **每次 listing 必须独立证明结构完整**：`auto` 下裸 `[]` 无法区分 nginx / Caddy 与普通 JSON API，返回永久错误并提示显式配置；仅显式 nginx / caddy 接受空数组。非空 JSON 所有条目必须满足同一 profile 的必填字段，Caddy 要求 `name` / `size` / `url` / `mod_time` / `is_dir` / `is_symlink` 存在且非 null。miniserve 由 DOM 中的条目行与带类型锚点，或同一 table 的完整 `thead` 三列表头与 `tbody` 识别；parser 独立复核结构，未知 `entry-type-*`、行 / 锚点 / href 类型冲突均整轮失败。
-- **可识别 symlink 一律拒绝**（Caddy JSON 的 `is_symlink`）：
+- **每次 listing 必须独立证明结构完整**：`auto` 下裸 `[]` 无法区分 nginx / Caddy 与普通 JSON API，返回永久错误并提示显式配置；仅显式 nginx / caddy 接受空数组。非空 JSON 所有条目必须满足同一 profile 的必填字段，Caddy 要求 `name` / `size` / `url` / `mod_time` / `is_dir` / `is_symlink` 存在且非 null。nginx HTML 要求 DOM 中 `head/title` 与 `body/h1` 的 `Index of /...` 路径一致，并有 `body/pre`；detector 与 parser 均独立校验，不能将维护页解释为空目录。miniserve 由 DOM 中的条目行与带类型锚点，或同一 table 的完整 `thead` 三列表头与 `tbody` 识别；parser 独立复核结构，未知 `entry-type-*`、行 / 锚点 / href 类型冲突均整轮失败。
+- **可识别 symlink 一律拒绝**（Caddy JSON 的 `is_symlink` / miniserve 的 `symlink` 标记）：
   Caddy 官方明确 file server root 不是文件系统 sandbox，root 内
   symlink 仍可能指向 root 外；与 Local / SMB 的 fail-closed 风格
   一致。
