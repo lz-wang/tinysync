@@ -107,16 +107,18 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 	// Job 仓库提前装配：启动期清理需要枚举已配置 Job 的 LocalRoot。
 	jobRepo := jobsqlite.NewRepository(db)
 
-	// crash 遗留的传输临时文件清理：此刻 Runner / Scheduler 尚未
-	// 启动、没有任何 active transfer，按内部临时前缀删除普通文件是
-	// 安全的。清理是尽力而为：枚举或删除失败只记录告警，不阻断启动
-	//（失败的传输本身由 pending metadata 机制在下一轮继续收敛）。
+	// crash 遗留的传输中间文件清理：此刻 Runner / Scheduler 尚未
+	// 启动、没有任何 active transfer，清理是安全的。legacy 随机
+	// 临时文件立即删除；v1 断点文件保留供断点续传，仅回收超过
+	// retention 的孤儿（ADR 0010）。清理是尽力而为：枚举或删除失败
+	// 只记录告警，不阻断启动（失败的传输本身由 pending metadata
+	// 机制在下一轮继续收敛）。
 	if jobList, lerr := jobRepo.List(context.Background()); lerr != nil {
-		logging.Warnf("enumerate jobs for stale temp cleanup: %v", lerr)
-	} else if removed, cerr := syncjob.RemoveStaleTempFiles(context.Background(), jobLocalRoots(jobList)); cerr != nil {
-		logging.Warnf("remove stale transfer temp files: %v", cerr)
+		logging.Warnf("enumerate jobs for transfer temp cleanup: %v", lerr)
+	} else if removed, cerr := syncjob.CleanupTransferTemps(context.Background(), jobLocalRoots(jobList)); cerr != nil {
+		logging.Warnf("cleanup transfer temp files: %v", cerr)
 	} else if removed > 0 {
-		logging.Infof("stale_temp_files_removed=%d", removed)
+		logging.Infof("transfer_temp_files_removed=%d", removed)
 	}
 
 	// 装配 Source 领域：SQLite 仓库 + 协议注册表 + 应用服务。协议
