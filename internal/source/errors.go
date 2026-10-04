@@ -19,6 +19,20 @@ import (
 //（WebDAV 的 HTTP 状态、S3 的 API 错误码、SFTP 的 host key 等），
 // 上层（同步引擎 / downloader）只问 IsRetryable，不出现协议分支。
 
+// 断点续传契约哨兵（ADR 0010）：两者收敛语义严格不同——
+// ErrResumeUnsupported 是能力缺失（截断 partial、完整重传、不算
+// 任务失败）；ErrRemoteChanged 是身份漂移（废弃 partial、本轮失败、
+// 下一 run 重新 scan 对齐）。
+var (
+	// ErrResumeUnsupported 表示远端无法安全地从请求 offset 续传
+	//（协议不支持随机读取、服务器忽略 Range、无法证明身份）。
+	// 调用方应删除或截断已有 partial 并自动退化为完整下载。
+	ErrResumeUnsupported = errors.New("resume unsupported")
+	// ErrRemoteChanged 表示远端对象与 expected 指纹不再一致，禁止
+	// partial prefix 与新 suffix 拼接。属确定性失败，重试无意义。
+	ErrRemoteChanged = errors.New("remote changed during transfer")
+)
+
 // transientError 标记「瞬时故障，重试有意义」的协议错误。
 type transientError struct {
 	err error
@@ -96,6 +110,11 @@ func IsRetryable(err error) bool {
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return true
+	}
+	// 远端身份漂移是确定性失败：重试只会得到同一个变化后的对象，
+	// 本轮 run 失败、下一轮重新 scan 对齐后才可能恢复。
+	if errors.Is(err, ErrRemoteChanged) {
+		return false
 	}
 	if isMarkedPermanent(err) {
 		return false

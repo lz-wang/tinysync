@@ -143,6 +143,28 @@ type DirectoryCreator interface {
 	Mkdir(ctx context.Context, path string) error
 }
 
+// ResumableRemote 是 Remote 可选的断点续传能力：从精确 byte offset
+// 开始读取远端对象（契约与安全不变量见 ADR 0010）。同步引擎经
+// optional type assert 使用——HTTP / WebDAV 是否支持 Range 是服务器
+// 运行时能力，不能按 Source 类型静态判断，因此不设 SupportsResume
+// 之类的声明式接口；未实现或运行时不可用时自动退化为完整下载。
+//
+// OpenFrom 契约：
+//   - 返回数据的第一个字节就是 offset，绝不是文件开头或另一个
+//     对象的字节流；「服务器忽略 Range 后把完整文件冒充 offset
+//     stream」必须在 adapter 边界识别并拒绝；
+//   - 数据必须仍对应 expected 所代表的远端对象：实现方以协议原生
+//     身份信号（handle metadata、If-Match / If-Range、asset 身份）
+//     验证，不一致时返回 ErrRemoteChanged；
+//   - 无法安全续传（协议不支持随机读取、Range 被忽略、Content-Range
+//     起点错误）返回 ErrResumeUnsupported，由调用方截断 partial 并
+//     完整重传——能力缺失不是失败；
+//   - offset == 对象大小返回空流（立即 EOF）；offset 超过对象大小
+//     说明远端已缩小，返回 ErrRemoteChanged。
+type ResumableRemote interface {
+	OpenFrom(ctx context.Context, path string, offset int64, expected Fingerprint) (io.ReadCloser, error)
+}
+
 // TreeScanner 是 Remote 可选的全树扫描能力：面向同步引擎的批量枚举，
 // 把「浏览分页」（List，供 Files / API 使用）与「同步扫描」（ScanTree）
 // 两个访问模式分离。WebDAV / SFTP 的 List 是伪分页（协议层每次请求
