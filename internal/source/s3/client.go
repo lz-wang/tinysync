@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/http"
 	"path"
 	"strings"
 	"time"
@@ -106,7 +107,10 @@ type remote struct {
 }
 
 // 编译期断言。
-var _ source.Remote = (*remote)(nil)
+var (
+	_ source.Remote          = (*remote)(nil)
+	_ source.ResumableRemote = (*remote)(nil)
+)
 
 // NewRemoteWithAPI 用给定能力面构造 Remote：e2e 协议矩阵经它注入
 // 进程内 S3 协议模拟；生产路径经 Factory.Create 构造真实 SDK client。
@@ -371,6 +375,82 @@ func (r *remote) Open(ctx context.Context, logicalPath string) (io.ReadCloser, e
 		return nil, wrapOp("open", logicalPath, err)
 	}
 	return out.Body, nil
+}
+
+// OpenFrom 实现 source.ResumableRemote（ADR 0010）。offset 为 0 时
+// 走无 Range 的完整 GET（流的起点天然是 0，无需 206 证明）；offset
+// 大于 0 时 GetObject 携带 Range=bytes=N- 与 If-Match（快照有 ETag
+// 时），并严格校验 Content-Range：
+//
+//   - If-Match 412 → 对象身份漂移 → ErrRemoteChanged；
+//   - 响应无 Content-Range（部分 S3-compatible 服务忽略 Range 返回
+//     200 全量）→ 无法证明流起点 → ErrResumeUnsupported，保守降级
+//     为完整下载；
+//   - Content-Range 起点不等于请求 offset、或 total 与快照 Size 不
+//     一致 → ErrRemoteChanged，禁止 partial 拼接。
+func (r *remote) OpenFrom(ctx context.Context, logicalPath string, offset int64, expected source.Fingerprint) (io.ReadCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := source.ValidateLogicalPath(logicalPath); err != nil {
+		return nil, err
+	}
+	if offset < 0 {
+		return nil, fmt.Errorf("%w: negative resume offset %d for %s", source.ErrInvalid, offset, logicalPath)
+	}
+	input := &s3.GetObjectInput{
+		Bucket: aws.String(r.bucket),
+		Key:    aws.String(r.objectKey(path.Clean("/" + logicalPath))),
+	}
+	if offset > 0 {
+		input.Range = aws.String(fmt.Sprintf("bytes=%d-", offset))
+		if expected.ETag != "" {
+			input.IfMatch = aws.String(expected.ETag)
+		}
+	}
+	out, err := r.client.GetObject(ctx, input)
+	if err != nil {
+		if isPreconditionFailed(err) {
+			return nil, fmt.Errorf("s3 resume %s: %w", logicalPath, source.ErrRemoteChanged)
+		}
+		return nil, wrapOp("open", logicalPath, err)
+	}
+	if offset == 0 {
+		return out.Body, nil
+	}
+	// 无 Content-Range：服务忽略 Range 返回 200 全量流——绝不能把
+	// 完整文件冒充 offset 流交给 Downloader append。
+	contentRange := derefStr(out.ContentRange)
+	if contentRange == "" {
+		_ = out.Body.Close()
+		return nil, fmt.Errorf("s3 resume %s at %d: %w (server ignored Range)", logicalPath, offset, source.ErrResumeUnsupported)
+	}
+	start, total, ok := source.ParseContentRange(contentRange)
+	if !ok {
+		_ = out.Body.Close()
+		return nil, fmt.Errorf("s3 resume %s: %w (malformed Content-Range %q)", logicalPath, source.ErrRemoteChanged, contentRange)
+	}
+	if start != offset {
+		_ = out.Body.Close()
+		return nil, fmt.Errorf("s3 resume %s: %w (Content-Range starts at %d, want %d)", logicalPath, source.ErrRemoteChanged, start, offset)
+	}
+	if total != expected.Size {
+		_ = out.Body.Close()
+		return nil, fmt.Errorf("s3 resume %s: %w (Content-Range total %d, want %d)", logicalPath, source.ErrRemoteChanged, total, expected.Size)
+	}
+	return out.Body, nil
+}
+
+// isPreconditionFailed 判定 If-Match 失败（412 / PreconditionFailed）：
+// 对象 ETag 与快照不一致，身份已漂移。SDK 对 412 未生成专属类型，
+// 按 API 错误码与 HTTP 状态双通道判定。
+func isPreconditionFailed(err error) bool {
+	var apiErr interface{ ErrorCode() string }
+	if errors.As(err, &apiErr) && apiErr.ErrorCode() == "PreconditionFailed" {
+		return true
+	}
+	var respErr interface{ HTTPStatusCode() int }
+	return errors.As(err, &respErr) && respErr.HTTPStatusCode() == http.StatusPreconditionFailed
 }
 
 // Close 实现 source.Remote：S3 基于 HTTP、无持久会话，连接复用由
