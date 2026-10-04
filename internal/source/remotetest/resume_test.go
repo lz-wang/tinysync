@@ -17,11 +17,11 @@ import (
 // 按契约实现 ResumableRemote（offset 流 + 指纹校验），验证
 // RunResumeSuite 对正确实现的断言通过、对违约实现的断言失败。
 type resumeSuiteHarness struct {
-	mu       sync.Mutex
-	files    map[string][]byte
-	mtime    map[string]time.Time
+	mu        sync.Mutex
+	files     map[string][]byte
+	mtime     map[string]time.Time
 	newRemote func(*testing.T) source.Remote // 注入违约实现；nil 走合规实现
-	remotes  int
+	remotes   int
 }
 
 func newResumeSuiteHarness() *resumeSuiteHarness {

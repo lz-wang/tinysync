@@ -85,8 +85,8 @@ func parsePartialName(name string) (tid, rid string, ok bool) {
 	return tid, rid, true
 }
 
-// isPartialName 判定断点文件名形态。
-func isPartialName(name string) bool {
+// IsPartialName 判定断点文件名形态（导出供 e2e / 外部断言使用）。
+func IsPartialName(name string) bool {
 	_, _, ok := parsePartialName(name)
 	return ok
 }

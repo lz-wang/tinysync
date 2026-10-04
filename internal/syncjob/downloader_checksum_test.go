@@ -70,7 +70,7 @@ func TestDownloadChecksumSuccess(t *testing.T) {
 	}
 	d := NewDownloader(stubChecksumRemote{content: content})
 	fp := source.Fingerprint{Size: int64(len(content)), Checksum: "sha256:" + sha256Hex(content)}
-	if err := d.Download(t.Context(), "/a", root, "app.tar.gz", fp); err != nil {
+	if err := d.Download(t.Context(), testSpec("/a", root, "app.tar.gz", fp)); err != nil {
 		t.Fatalf("Download: %v", err)
 	}
 	got, err := os.ReadFile(target)
@@ -94,7 +94,7 @@ func TestDownloadChecksumMismatch(t *testing.T) {
 	}
 	d := NewDownloader(stubChecksumRemote{content: content})
 	fp := source.Fingerprint{Size: int64(len(content)), Checksum: "sha256:" + strings.Repeat("0", 64)}
-	err := d.Download(t.Context(), "/a", root, "app.tar.gz", fp)
+	err := d.Download(t.Context(), testSpec("/a", root, "app.tar.gz", fp))
 	if err == nil {
 		t.Fatal("Download succeeded, want checksum mismatch error")
 	}
@@ -122,7 +122,7 @@ func TestDownloadChecksumRejectsUnsupportedFormat(t *testing.T) {
 	root := t.TempDir()
 	d := NewDownloader(stubChecksumRemote{content: "x"})
 	fp := source.Fingerprint{Size: 1, Checksum: "md5:d41d8cd98f00b204e9800998ecf8427e"}
-	if err := d.Download(t.Context(), "/a", root, "new.bin", fp); err == nil {
+	if err := d.Download(t.Context(), testSpec("/a", root, "new.bin", fp)); err == nil {
 		t.Fatal("Download succeeded with unsupported checksum, want error")
 	} else if source.IsRetryable(err) {
 		t.Errorf("unsupported format should be permanent: %v", err)
@@ -139,7 +139,7 @@ func TestDownloadChecksumSizeWins(t *testing.T) {
 	root := t.TempDir()
 	d := NewDownloader(stubChecksumRemote{content: content})
 	fp := source.Fingerprint{Size: 3, Checksum: "sha256:" + sha256Hex(content)}
-	err := d.Download(t.Context(), "/a", root, "app.bin", fp)
+	err := d.Download(t.Context(), testSpec("/a", root, "app.bin", fp))
 	if err == nil || !strings.Contains(err.Error(), "size mismatch") {
 		t.Errorf("Download = %v, want size mismatch", err)
 	}
@@ -156,7 +156,7 @@ func TestDownloadChecksumWithProgress(t *testing.T) {
 	d := NewDownloader(stubChecksumRemote{content: content})
 	fp := source.Fingerprint{Size: int64(len(content)), Checksum: "sha256:" + sha256Hex(content)}
 	listener := &countingListener{}
-	if err := d.download(t.Context(), "/a", root, "app.bin", fp, listener); err != nil {
+	if err := d.download(t.Context(), testSpec("/a", root, "app.bin", fp), listener); err != nil {
 		t.Fatalf("download: %v", err)
 	}
 	if listener.written != int64(len(content)) {
@@ -179,7 +179,7 @@ func TestDownloadChecksumEmptyContent(t *testing.T) {
 	root := t.TempDir()
 	d := NewDownloader(stubChecksumRemote{content: ""})
 	fp := source.Fingerprint{Size: 0, Checksum: "sha256:" + sha256Hex("")}
-	if err := d.Download(t.Context(), "/a", root, "empty.bin", fp); err != nil {
+	if err := d.Download(t.Context(), testSpec("/a", root, "empty.bin", fp)); err != nil {
 		t.Fatalf("Download: %v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(root, "empty.bin"))

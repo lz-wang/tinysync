@@ -105,7 +105,7 @@ func BenchmarkLargeFileTransfer(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		remote := &benchRemote{files: map[string]string{"/big.bin": payload}}
 		d := NewDownloader(remote)
-		if err := d.Download(context.Background(), "/big.bin", localRoot, fmt.Sprintf("big-%d.bin", i), source.Fingerprint{Size: size}); err != nil {
+		if err := d.Download(context.Background(), testSpec("/big.bin", localRoot, fmt.Sprintf("big-%d.bin", i), source.Fingerprint{Size: size})); err != nil {
 			b.Fatalf("download: %v", err)
 		}
 		_ = os.Remove(filepath.Join(localRoot, fmt.Sprintf("big-%d.bin", i)))

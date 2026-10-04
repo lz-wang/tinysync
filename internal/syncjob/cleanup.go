@@ -63,7 +63,7 @@ func cleanupTransferTemps(ctx context.Context, roots []string, now time.Time) (i
 			// v1 断点文件：超过 retention 的孤儿才删除；条目不是
 			// regular file（symlink 等）时 retention 判定无意义，
 			// 留给 Downloader 的 validatePartial fail closed。
-			if isPartialName(name) && d.Type().IsRegular() {
+			if IsPartialName(name) && d.Type().IsRegular() {
 				info, statErr := d.Info()
 				if statErr != nil {
 					return statErr

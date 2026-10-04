@@ -113,7 +113,7 @@ func assertOpenFromZeroOffset(t *testing.T, h Harness) {
 }
 
 // assertOpenFromEndOffset 验证 offset == size 的边界：空流或错误皆可
-//（部分协议无法表达空 Range，如 HTTP 的 bytes=N- 起点 == size 返回
+// （部分协议无法表达空 Range，如 HTTP 的 bytes=N- 起点 == size 返回
 // 416），唯独不能把完整文件伪装成 offset 流。
 func assertOpenFromEndOffset(t *testing.T, h Harness) {
 	withResumeRemote(t, h, func(t *testing.T, r source.Remote, rr source.ResumableRemote) {

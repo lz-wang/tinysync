@@ -88,7 +88,7 @@ func TestCleanupTransferTemps(t *testing.T) {
 }
 
 // 超过 partialRetention 的 v1 断点文件视为孤儿删除；恰好达界的保留
-//（30 天不是协议语义，边界按「超过」判定）。
+// （30 天不是协议语义，边界按「超过」判定）。
 func TestCleanupTransferTempsExpiresOrphanPartials(t *testing.T) {
 	root := t.TempDir()
 	freshName := partialName(partialTargetID("job_1", "a.bin"), partialRemoteID("src_1", "/a.bin", testFingerprint(100)))

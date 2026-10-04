@@ -388,8 +388,12 @@ func TestSFTPDownloaderConvergesThroughCollateralInterruption(t *testing.T) {
 	dlDone := make(chan error, 1)
 	go func() {
 		d := syncjob.NewDownloader(r)
-		dlDone <- d.Download(context.Background(), "/healthy.txt", localRoot, "healthy.txt",
-			source.Fingerprint{Size: int64(len(bContent))})
+		dlDone <- d.Download(context.Background(), syncjob.TransferSpec{
+			LogicalPath: "/healthy.txt",
+			LocalRoot:   localRoot,
+			RelPath:     "healthy.txt",
+			Expected:    source.Fingerprint{Size: int64(len(bContent))},
+		})
 	}()
 	waitForInFlightTransfer(t, localRoot, 5*time.Second)
 
@@ -812,7 +816,12 @@ func TestSFTPStalledBodyReadCancelReturnsContextError(t *testing.T) {
 	d := syncjob.NewDownloader(r)
 	dlDone := make(chan error, 1)
 	go func() {
-		dlDone <- d.Download(ctx, "/big.txt", t.TempDir(), "big.txt", source.Fingerprint{Size: int64(len(content))})
+		dlDone <- d.Download(ctx, syncjob.TransferSpec{
+			LogicalPath: "/big.txt",
+			LocalRoot:   t.TempDir(),
+			RelPath:     "big.txt",
+			Expected:    source.Fingerprint{Size: int64(len(content))},
+		})
 	}()
 	select {
 	case err := <-dlDone:

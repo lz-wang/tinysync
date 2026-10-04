@@ -153,8 +153,15 @@ func TestCancelLocalLargeFileRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 0 {
-		t.Fatalf("temporary files remain: %v", entries)
+	// 取消保留可恢复断点（ADR 0010 不变量 9）：目录里允许且只允许
+	// 存留 v1 断点文件，下一次 run 从断点续传。
+	if len(entries) > 1 {
+		t.Fatalf("unexpected extra files remain: %v", entries)
+	}
+	for _, e := range entries {
+		if !syncjob.IsPartialName(e.Name()) {
+			t.Fatalf("non-partial file remains after cancel: %s", e.Name())
+		}
 	}
 	items, _, err := e.runs.Items(ctx, id, 100, 0)
 	if err != nil {

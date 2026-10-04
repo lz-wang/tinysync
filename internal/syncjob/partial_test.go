@@ -83,8 +83,8 @@ func TestPartialNameParsing(t *testing.T) {
 	if !ok || gotTid != tid || gotRid != rid {
 		t.Fatalf("parsePartialName(%q) = (%s, %s, %v), want (%s, %s, true)", name, gotTid, gotRid, ok, tid, rid)
 	}
-	if !isPartialName(name) {
-		t.Fatal("isPartialName(partialName()) = false")
+	if !IsPartialName(name) {
+		t.Fatal("IsPartialName(partialName()) = false")
 	}
 	decoys := []string{
 		".tinysync-part-0123456789ab",                    // legacy 随机临时文件
@@ -99,8 +99,8 @@ func TestPartialNameParsing(t *testing.T) {
 		"",
 	}
 	for _, d := range decoys {
-		if isPartialName(d) {
-			t.Errorf("isPartialName(%q) = true, want false", d)
+		if IsPartialName(d) {
+			t.Errorf("IsPartialName(%q) = true, want false", d)
 		}
 	}
 }

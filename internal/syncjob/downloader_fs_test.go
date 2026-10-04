@@ -46,21 +46,21 @@ func assertTargetPreserved(t *testing.T, target string) {
 	}
 }
 
-// create temp 失败（permission denied 语义）：目标完好、无临时文件、
+// open partial 失败（permission denied 语义）：目标完好、无断点文件、
 // 错误可判定为确定性失败（不重试）。
-func TestFSFailureCreateTemp(t *testing.T) {
+func TestFSFailureOpenPartial(t *testing.T) {
 	root, target := seededTarget(t)
 	remote := fsRemote("new-content")
 	d := newTestDownloader(remote)
 	d.hooks = &fileHooks{
-		createTemp: func(path string) (*os.File, error) {
+		openPartial: func(path string, truncate bool) (*os.File, error) {
 			return nil, syscall.EACCES
 		},
 	}
 
-	err := d.Download(context.Background(), "/docs/a.txt", root, "docs/a.txt", source.Fingerprint{Size: 11})
+	err := d.Download(context.Background(), testSpec("/docs/a.txt", root, "docs/a.txt", source.Fingerprint{Size: 11}))
 	if err == nil {
-		t.Fatal("Download with create-temp failure = nil, want error")
+		t.Fatal("Download with open-partial failure = nil, want error")
 	}
 	if got := remote.opens.Load(); got != 1 {
 		// EACCES → fs.ErrPermission → permanent：单次尝试。
@@ -70,10 +70,12 @@ func TestFSFailureCreateTemp(t *testing.T) {
 	assertNoTempFiles(t, root)
 }
 
-// 写入中途 ENOSPC：目标完好、临时文件清理、确定性失败不重试。
+// 写入中途 ENOSPC：目标完好、确定性失败不重试；已写入前缀保留为
+// 断点（ADR 0010：本地磁盘满不删 partial，扩容后下一轮从断点续传）。
 func TestFSFailureENOSPCMidWrite(t *testing.T) {
 	root, target := seededTarget(t)
 	remote := fsRemote("content-that-exceeds-the-budget")
+	spec := testSpec("/docs/a.txt", root, "docs/a.txt", source.Fingerprint{Size: 31})
 	d := newTestDownloader(remote)
 	d.hooks = &fileHooks{
 		wrapWriter: func(f *os.File) io.Writer {
@@ -81,7 +83,7 @@ func TestFSFailureENOSPCMidWrite(t *testing.T) {
 		},
 	}
 
-	err := d.Download(context.Background(), "/docs/a.txt", root, "docs/a.txt", source.Fingerprint{Size: 31})
+	err := d.Download(context.Background(), spec)
 	if err == nil {
 		t.Fatal("Download with ENOSPC = nil, want error")
 	}
@@ -89,42 +91,57 @@ func TestFSFailureENOSPCMidWrite(t *testing.T) {
 		t.Errorf("error = %v, want ENOSPC", err)
 	}
 	assertTargetPreserved(t, target)
-	assertNoTempFiles(t, root)
+	// 断点保留：已写入的 4 字节是有效前缀。
+	pdata, readErr := os.ReadFile(filepath.Join(root, "docs", partialNameFor(spec)))
+	if readErr != nil {
+		t.Fatalf("partial after ENOSPC: %v", readErr)
+	}
+	if string(pdata) != "cont" {
+		t.Errorf("partial = %q, want 4-byte prefix", pdata)
+	}
 }
 
-// fsync 失败：数据未确认落盘前不得替换目标；临时文件清理。
+// fsync 失败：数据未确认落盘前不得替换目标；断点保留供重试续传。
 func TestFSFailureSync(t *testing.T) {
 	root, target := seededTarget(t)
 	remote := fsRemote("new-content")
+	spec := testSpec("/docs/a.txt", root, "docs/a.txt", source.Fingerprint{Size: 11})
 	d := newTestDownloader(remote)
 	d.hooks = &fileHooks{
 		syncFile: func(*os.File) error { return errors.New("fsync: I/O error") },
 	}
 
-	err := d.Download(context.Background(), "/docs/a.txt", root, "docs/a.txt", source.Fingerprint{Size: 11})
+	err := d.Download(context.Background(), spec)
 	if err == nil {
 		t.Fatal("Download with fsync failure = nil, want error")
 	}
 	assertTargetPreserved(t, target)
-	assertNoTempFiles(t, root)
+	// 重试耗尽后断点仍在（内容完整，下一轮 finalize 快速路径直接替换）。
+	if _, statErr := os.Stat(filepath.Join(root, "docs", partialNameFor(spec))); statErr != nil {
+		t.Errorf("partial discarded after fsync failure: %v", statErr)
+	}
 }
 
-// rename 失败：旧目标完好（替换失败发生在新文件生效之前）、临时
-// 文件清理。
+// rename 失败：旧目标完好（替换失败发生在新文件生效之前）；断点内容
+// 已完整校验，保留供下一次直接原子替换。
 func TestFSFailureRename(t *testing.T) {
 	root, target := seededTarget(t)
 	remote := fsRemote("new-content")
+	spec := testSpec("/docs/a.txt", root, "docs/a.txt", source.Fingerprint{Size: 11})
 	d := newTestDownloader(remote)
 	d.hooks = &fileHooks{
 		renameFile: func(old, new string) error { return errors.New("rename: device busy") },
 	}
 
-	err := d.Download(context.Background(), "/docs/a.txt", root, "docs/a.txt", source.Fingerprint{Size: 11})
+	err := d.Download(context.Background(), spec)
 	if err == nil {
 		t.Fatal("Download with rename failure = nil, want error")
 	}
 	assertTargetPreserved(t, target)
-	assertNoTempFiles(t, root)
+	pdata, readErr := os.ReadFile(filepath.Join(root, "docs", partialNameFor(spec)))
+	if readErr != nil || string(pdata) != "new-content" {
+		t.Errorf("partial = %q (%v), want verified full content", pdata, readErr)
+	}
 }
 
 // budgetWriter 写满预算后返回 ENOSPC，模拟磁盘写满。

@@ -128,8 +128,8 @@ func TestDownloadReportsLiveByteProgress(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- d.download(context.Background(), "/live.bin", t.TempDir(), "live.bin",
-			source.Fingerprint{Size: int64(len(content))}, listener)
+		done <- d.download(context.Background(), testSpec("/live.bin", t.TempDir(), "live.bin",
+			source.Fingerprint{Size: int64(len(content))}), listener)
 	}()
 
 	// 等待前 4 字节可见（实时性断言：不等传输结束）。
@@ -166,8 +166,8 @@ func TestDownloadProgressResetsOnRetry(t *testing.T) {
 		return strings.NewReader(content)
 	})
 	rec := &recordingListener{}
-	if err := d.download(context.Background(), "/retry.bin", t.TempDir(), "retry.bin",
-		source.Fingerprint{Size: int64(len(content))}, rec); err != nil {
+	if err := d.download(context.Background(), testSpec("/retry.bin", t.TempDir(), "retry.bin",
+		source.Fingerprint{Size: int64(len(content))}), rec); err != nil {
 		t.Fatalf("download with retry: %v", err)
 	}
 	if rec.startCount() != 2 {

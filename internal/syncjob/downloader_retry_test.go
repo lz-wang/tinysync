@@ -81,7 +81,7 @@ func TestDownloadDoesNotRetryPermanentFailure(t *testing.T) {
 	}
 	d := newTestDownloader(remote)
 
-	err := d.Download(context.Background(), "/docs/a.txt", root, "docs/a.txt", source.Fingerprint{Size: 2})
+	err := d.Download(context.Background(), testSpec("/docs/a.txt", root, "docs/a.txt", source.Fingerprint{Size: 2}))
 	if err == nil || !strings.Contains(err.Error(), "401") {
 		t.Fatalf("Download = %v, want permanent error", err)
 	}
@@ -101,7 +101,7 @@ func TestDownloadDoesNotRetrySizeMismatch(t *testing.T) {
 	}
 	d := newTestDownloader(remote)
 
-	err := d.Download(context.Background(), "/docs/a.txt", root, "docs/a.txt", source.Fingerprint{Size: 100})
+	err := d.Download(context.Background(), testSpec("/docs/a.txt", root, "docs/a.txt", source.Fingerprint{Size: 100}))
 	if err == nil {
 		t.Fatal("Download size mismatch = nil, want error")
 	}
@@ -123,7 +123,7 @@ func TestDownloadRetriesAfterAttemptTimeout(t *testing.T) {
 	d := newTestDownloader(remote)
 	d.timeout = 60 * time.Millisecond
 
-	if err := d.Download(context.Background(), "/docs/a.txt", root, "docs/a.txt", source.Fingerprint{Size: 13}); err != nil {
+	if err := d.Download(context.Background(), testSpec("/docs/a.txt", root, "docs/a.txt", source.Fingerprint{Size: 13})); err != nil {
 		t.Fatalf("Download after attempt timeout: %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(root, "docs", "a.txt"))
@@ -144,7 +144,7 @@ func TestDownloadFailsAfterExhaustedTimeouts(t *testing.T) {
 	d := newTestDownloader(remote)
 	d.timeout = 40 * time.Millisecond
 
-	err := d.Download(context.Background(), "/docs/a.txt", root, "docs/a.txt", source.Fingerprint{})
+	err := d.Download(context.Background(), testSpec("/docs/a.txt", root, "docs/a.txt", source.Fingerprint{}))
 	if err == nil {
 		t.Fatal("Download with persistent timeout = nil, want error")
 	}
@@ -236,7 +236,7 @@ func TestDownloadStopsOnRunCancelDuringTimeoutRetry(t *testing.T) {
 		<-remote.entered2 // 第二次 attempt 已在阻塞读取中
 		cancel()
 	}()
-	err := d.Download(ctx, "/docs/a.txt", root, "docs/a.txt", source.Fingerprint{})
+	err := d.Download(ctx, testSpec("/docs/a.txt", root, "docs/a.txt", source.Fingerprint{}))
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("error = %v, want Canceled (run cancel wins)", err)
 	}
