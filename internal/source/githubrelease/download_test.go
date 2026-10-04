@@ -2,6 +2,8 @@ package githubrelease
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -147,5 +149,102 @@ func TestOpenAssetCancel(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("openAsset not canceled within 5s")
+	}
+}
+
+// TestOpenAssetFromRangedResume 断点续传主链路：Range 请求穿过 302
+// 至 CDN（Range 头由标准库保持），CDN 请求不携带 Authorization，
+// 206 + 正确 Content-Range 的后缀流原样返回。
+func TestOpenAssetFromRangedResume(t *testing.T) {
+	content := strings.Repeat("0123456789", 10) // 100 bytes
+	var apiRange, cdnRange, cdnAuth string
+	c := newClient("ghp_secret", "gitea", "gitea")
+	c.httpClient = &http.Client{
+		Transport: redirectTransport{serve: func(r *http.Request) *http.Response {
+			switch r.URL.Host {
+			case "api.github.com":
+				apiRange = r.Header.Get("Range")
+				return newResponse(http.StatusFound, map[string]string{
+					"Location": "https://objects.githubusercontent.com/asset/1?sig=x",
+				}, "")
+			case "objects.githubusercontent.com":
+				cdnRange = r.Header.Get("Range")
+				cdnAuth = r.Header.Get("Authorization")
+				return newResponse(http.StatusPartialContent, map[string]string{
+					"Content-Range": fmt.Sprintf("bytes 30-99/100"),
+				}, content[30:])
+			default:
+				t.Errorf("unexpected request to %s", r.URL.Host)
+				return newResponse(http.StatusBadGateway, nil, "")
+			}
+		}},
+		CheckRedirect: redirectPolicy("api.github.com"),
+	}
+	rc, err := c.openAssetFrom(t.Context(), 42, 30, 100)
+	if err != nil {
+		t.Fatalf("openAssetFrom: %v", err)
+	}
+	body, err := io.ReadAll(rc)
+	_ = rc.Close()
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(body) != content[30:] {
+		t.Fatalf("suffix = %d bytes, want 70", len(body))
+	}
+	if apiRange != "bytes=30-" {
+		t.Errorf("api Range = %q, want bytes=30-", apiRange)
+	}
+	if cdnRange != "bytes=30-" {
+		t.Errorf("cdn Range = %q, want bytes=30- (Range must survive redirect)", cdnRange)
+	}
+	if cdnAuth != "" {
+		t.Errorf("CDN request leaked Authorization: %q", cdnAuth)
+	}
+}
+
+// TestOpenAssetFromRangeIgnored CDN 忽略 Range 返回 200：降级
+// ErrResumeUnsupported，绝不把完整 body 当 offset 流。
+func TestOpenAssetFromRangeIgnored(t *testing.T) {
+	c := newClient("", "gitea", "gitea")
+	c.httpClient = &http.Client{
+		Transport: redirectTransport{serve: func(r *http.Request) *http.Response {
+			return newResponse(http.StatusOK, nil, "full-content")
+		}},
+		CheckRedirect: redirectPolicy("api.github.com"),
+	}
+	_, err := c.openAssetFrom(t.Context(), 42, 10, 100)
+	if !errors.Is(err, source.ErrResumeUnsupported) {
+		t.Fatalf("openAssetFrom with ignored Range = %v, want ErrResumeUnsupported", err)
+	}
+}
+
+// TestOpenAssetFromContentRangeViolations Content-Range 违约矩阵：
+// 畸形值、起点错误、total 与快照不符、416 → 全部 ErrRemoteChanged。
+func TestOpenAssetFromContentRangeViolations(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		header map[string]string
+	}{
+		{"malformed", http.StatusPartialContent, map[string]string{"Content-Range": "garbage"}},
+		{"wrong start", http.StatusPartialContent, map[string]string{"Content-Range": "bytes 0-99/100"}},
+		{"wrong total", http.StatusPartialContent, map[string]string{"Content-Range": "bytes 30-99/120"}},
+		{"range not satisfiable", http.StatusRequestedRangeNotSatisfiable, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newClient("", "gitea", "gitea")
+			c.httpClient = &http.Client{
+				Transport: redirectTransport{serve: func(r *http.Request) *http.Response {
+					return newResponse(tc.status, tc.header, "x")
+				}},
+				CheckRedirect: redirectPolicy("api.github.com"),
+			}
+			_, err := c.openAssetFrom(t.Context(), 42, 30, 100)
+			if !errors.Is(err, source.ErrRemoteChanged) {
+				t.Fatalf("openAssetFrom (%s) = %v, want ErrRemoteChanged", tc.name, err)
+			}
+		})
 	}
 }

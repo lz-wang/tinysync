@@ -37,10 +37,11 @@ type remote struct {
 	assets map[int64][]Asset
 }
 
-// 编译期断言：实现 Remote 与可选的 TreeScanner 能力。
+// 编译期断言：实现 Remote 与可选的 TreeScanner / ResumableRemote 能力。
 var (
-	_ source.Remote      = (*remote)(nil)
-	_ source.TreeScanner = (*remote)(nil)
+	_ source.Remote          = (*remote)(nil)
+	_ source.ResumableRemote = (*remote)(nil)
+	_ source.TreeScanner     = (*remote)(nil)
 )
 
 // selectedSnapshot 是一次版本发现的快照：选中 Release 的目录名索引
@@ -300,6 +301,45 @@ func (r *remote) Open(ctx context.Context, p string) (io.ReadCloser, error) {
 	for _, a := range assets {
 		if a.Name == asset {
 			return r.client.openAsset(ctx, a.ID)
+		}
+	}
+	return nil, notFound(p)
+}
+
+// OpenFrom 实现 source.ResumableRemote（ADR 0010）：定位 Asset 后经
+// openAssetFrom 发 Range 请求（穿过 302 至 CDN，Authorization 仍不
+// 泄漏）。offset=0 复用无 Range 的 openAsset；身份保护依赖不可变的
+// asset ID（重新上传产生新 ID）+ Content-Range total 校验 + 最终
+// SHA-256。
+func (r *remote) OpenFrom(ctx context.Context, p string, offset int64, expected source.Fingerprint) (io.ReadCloser, error) {
+	dir, asset, err := splitReleasePath(p)
+	if err != nil {
+		return nil, err
+	}
+	if dir == "" || asset == "" {
+		return nil, fmt.Errorf("%w: github_release path %s is not a file", source.ErrInvalid, p)
+	}
+	if offset < 0 {
+		return nil, fmt.Errorf("%w: negative resume offset %d for %s", source.ErrInvalid, offset, p)
+	}
+	snap, err := r.snapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rel, selected := snap.byDir[dir]
+	if !selected {
+		return nil, notFound(p)
+	}
+	assets, err := r.releaseAssets(ctx, rel.ID)
+	if err != nil {
+		return nil, fmt.Errorf("github: open %s: %w", p, err)
+	}
+	for _, a := range assets {
+		if a.Name == asset {
+			if offset == 0 {
+				return r.client.openAsset(ctx, a.ID)
+			}
+			return r.client.openAssetFrom(ctx, a.ID, offset, expected.Size)
 		}
 	}
 	return nil, notFound(p)
