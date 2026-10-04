@@ -76,6 +76,13 @@ _Avoid_: 实时统计（与最终统计 RunStats 是不同事实）
 用户手动停止导致的运行终态（run 级与文件级明细同用）；服务关闭、超时等非用户意愿的中断不属于取消，仍记失败。
 _Avoid_: 中止、终止、aborted、interrupted
 
+**断点文件（Partial File）**:
+未完成传输的确定性临时文件 `.tinysync-part-v1-<target>-<remote>`，
+文件名编码 Job + 本地路径 + 远端指纹身份；其长度即断点位置，可跨
+run 与进程重启续传（ADR 0010）。不是 managed file，永不参与 Mirror
+删除授权，完成校验前不触碰目标。
+_Avoid_: 临时文件（与 legacy 随机临时文件混淆）、checkpoint、下载会话
+
 ## 凭据域
 
 **凭据（Credential）**:
