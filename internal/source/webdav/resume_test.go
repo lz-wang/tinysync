@@ -231,7 +231,10 @@ func TestOpenFromInvalidInput(t *testing.T) {
 	}
 }
 
-// 时间兜底：formatIfRangeTime 仅供测试断言 If-Range HTTP-date 形态。
+// If-Range 选择与引号归一：strong ETag 补引号直传；weak ETag 与仅有
+// Last-Modified 的快照返回空串（RFC 9110 weak validator——秒精度的
+// HTTP-date 无法识别同一秒内的 same-size 替换，调用方降级完整下载，
+// 不再退化为 HTTP-date）。
 func TestIfRangeValueSelection(t *testing.T) {
 	mod := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
 	cases := []struct {
@@ -239,13 +242,36 @@ func TestIfRangeValueSelection(t *testing.T) {
 		want string
 	}{
 		{source.Fingerprint{ETag: `"abc"`}, `"abc"`},
-		{source.Fingerprint{ETag: `W/"abc"`, ModifiedAt: mod}, mod.Format(http.TimeFormat)},
-		{source.Fingerprint{ETag: "", ModifiedAt: mod}, mod.Format(http.TimeFormat)},
+		{source.Fingerprint{ETag: `abc`}, `"abc"`},
+		{source.Fingerprint{ETag: `W/"abc"`, ModifiedAt: mod}, ""},
+		{source.Fingerprint{ETag: "", ModifiedAt: mod}, ""},
 		{source.Fingerprint{}, ""},
 	}
 	for _, tc := range cases {
-		if got := source.IfRangeValue(tc.fp); got != tc.want {
-			t.Errorf("IfRangeValue(%+v) = %q, want %q", tc.fp, got, tc.want)
+		if got := webdavIfRangeValue(tc.fp); got != tc.want {
+			t.Errorf("webdavIfRangeValue(%+v) = %q, want %q", tc.fp, got, tc.want)
 		}
+	}
+}
+
+// 只有 Last-Modified 的快照（PROPFIND 无 getetag 的服务）在 same-size
+// 替换后：即使 Size / mtime 在秒精度内不可区分，缺少 strong ETag 一律
+// 拒绝续传——绝不凭 HTTP-date 把旧 prefix 与可能替换过的对象拼接。
+func TestOpenFromRefusesLastModifiedOnlySameSecondReplacement(t *testing.T) {
+	h := &webdavResumeHarness{}
+	r := h.NewRemote(t)
+	defer func() { _ = r.Close() }()
+	rr := r.(source.ResumableRemote)
+	h.Write(t, "/resume.bin", strings.Repeat("A", 100))
+	fi, err := r.Stat(context.Background(), "/resume.bin")
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	// 快照剥掉 ETag，只保留 Last-Modified 身份信号。
+	fp := source.Fingerprint{Size: fi.Fingerprint.Size, ModifiedAt: fi.Fingerprint.ModifiedAt}
+	h.Write(t, "/resume.bin", strings.Repeat("B", 100))
+	_, err = rr.OpenFrom(context.Background(), "/resume.bin", 40, fp)
+	if !errors.Is(err, source.ErrResumeUnsupported) {
+		t.Fatalf("OpenFrom with Last-Modified-only fingerprint = %v, want ErrResumeUnsupported", err)
 	}
 }

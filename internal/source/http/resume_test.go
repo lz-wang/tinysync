@@ -12,15 +12,18 @@ import (
 	"tinysync/internal/source"
 )
 
-// resumeFixture 装配 Range-capable 的 fake 文件服务与生产 Client。
-func resumeFixture(t *testing.T, mutate func(*fakeCaddyServer)) (*Client, *fakeCaddyServer) {
+// resumeFixture 装配 Range-capable 的 fake 文件服务与生产 Client；
+// Stat 指纹经 etagStatRemote 补全内容哈希 ETag（JSON listing 无 ETag
+// 字段，契约验证的是快照持有 strong ETag 的服务形态，见
+// etagStatRemote 注释）。
+func resumeFixture(t *testing.T, mutate func(*fakeCaddyServer)) (etagStatRemote, *fakeCaddyServer) {
 	t.Helper()
 	f := newFakeCaddyServer(t)
 	if mutate != nil {
 		mutate(f)
 	}
 	c := newClient(source.HTTPConfig{BaseURL: f.srv.URL + "/"}, newRequester(mustMapper(t, f.srv.URL+"/"), authConfig{}))
-	return c, f
+	return etagStatRemote{Remote: c, f: f}, f
 }
 
 // mustMapper 构造 URL mapper（测试基座）。
@@ -82,17 +85,22 @@ func TestHTTPOpenFromZeroOffset(t *testing.T) {
 }
 
 // 服务器忽略 Range（200 全量）：指纹未变 → ErrResumeUnsupported
-// 降级完整下载，绝不把 200 body 当 offset 流。
+// 降级完整下载，绝不把 200 body 当 offset 流。用裸 Client 的 listing
+// 指纹（无 ETag）：JSON listing 形态的快照没有 strong validator，
+// OpenFrom 在客户端直接拒绝——200 全量的 body 同样到不了 Downloader。
+// 「快照带 ETag + 服务器忽略 Range」的完整 Stat 复核路径由 WebDAV
+// 套件覆盖（PROPFIND 与 GET 的 ETag 同源，装置无需模拟）。
 func TestHTTPOpenFromRangeIgnored(t *testing.T) {
 	c, f := resumeFixture(t, func(f *fakeCaddyServer) { f.ignoreRange = true })
+	raw := c.Remote.(*Client)
 	f.mu.Lock()
 	f.files["/resume.bin"] = strings.Repeat("b", 80)
 	f.mu.Unlock()
-	fi, err := c.Stat(context.Background(), "/resume.bin")
+	fi, err := raw.Stat(context.Background(), "/resume.bin")
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}
-	_, err = c.OpenFrom(context.Background(), "/resume.bin", 10, fi.Fingerprint)
+	_, err = raw.OpenFrom(context.Background(), "/resume.bin", 10, fi.Fingerprint)
 	if !errors.Is(err, source.ErrResumeUnsupported) {
 		t.Fatalf("OpenFrom with ignored Range = %v, want ErrResumeUnsupported", err)
 	}
@@ -162,4 +170,36 @@ func TestHTTPOpenFromNotFound(t *testing.T) {
 	var respErr interface{ HTTPStatusCode() int }
 	_ = respErr
 	_ = http.StatusNotFound
+}
+
+// 只有 Last-Modified 的快照（无 strong ETag）在同一秒发生 same-size
+// 替换：HTTP-date 是 RFC 9110 weak validator，秒精度内两次写入无法
+// 区分——绝不凭日期续传，拒绝续传降级完整下载（ADR 0010 fail-closed）。
+func TestHTTPOpenFromRefusesLastModifiedOnlySameSecondReplacement(t *testing.T) {
+	c, f := resumeFixture(t, nil)
+	contentA := strings.Repeat("A", 100)
+	contentB := strings.Repeat("B", 100) // 同长度替换内容
+	mod := time.Unix(1758900000, 0).UTC()
+	f.mu.Lock()
+	f.files["/resume.bin"] = contentA
+	f.mod["/resume.bin"] = mod
+	f.mu.Unlock()
+	// 快照只含 Size + Last-Modified：与替换后的服务器状态在 Size /
+	// mtime 上完全一致（同一秒 same-size 替换前后不可区分）。
+	fp := source.Fingerprint{Size: int64(len(contentA)), ModifiedAt: mod}
+	f.mu.Lock()
+	f.files["/resume.bin"] = contentB
+	f.mu.Unlock()
+	fi, err := c.Stat(context.Background(), "/resume.bin")
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if fi.Fingerprint.Size != fp.Size || !fi.Fingerprint.ModifiedAt.Equal(fp.ModifiedAt) {
+		t.Fatalf("precondition: visible identity drifted (size %d mod %v), want identical",
+			fi.Fingerprint.Size, fi.Fingerprint.ModifiedAt)
+	}
+	_, err = c.OpenFrom(context.Background(), "/resume.bin", 40, fp)
+	if !errors.Is(err, source.ErrResumeUnsupported) {
+		t.Fatalf("OpenFrom with Last-Modified-only fingerprint = %v, want ErrResumeUnsupported", err)
+	}
 }

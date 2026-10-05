@@ -141,10 +141,18 @@ hash 状态严格对应实际落盘字节——短写（ENOSPC 写 12 KiB / 32 K
 | local | 打开 handle 后 `Seek(offset)` | handle `Stat()` 与 expected 比较 |
 | sftp | `*sftp.File.Seek` | `File.Stat()` + expected |
 | smb | `*smb2.File.Seek`（断言 io.Seeker + Stat） | handle `Stat()` + expected（Lstat → Open 的同 size 替换 TOCTOU 由 handle 级校验关闭） |
-| s3 | `GetObject Range=bytes=N-` + `If-Match: ETag`；无 ETag 退化 `If-Unmodified-Since`；两者皆无 → ErrResumeUnsupported | 412 → ErrRemoteChanged；响应 ETag / LastModified 再与快照比对（defense-in-depth）；ContentRange 必须 `start==offset && total==expected.Size` |
+| s3 | `GetObject Range=bytes=N-` + `If-Match: ETag`；无 ETag 退化 `If-Unmodified-Since`；两者皆无 → ErrResumeUnsupported | 412 → ErrRemoteChanged；所依赖的响应 validator（ETag / LastModified）必须存在且与快照一致——省略 → ErrResumeUnsupported，不一致 → ErrRemoteChanged；ContentRange 必须 `start==offset && total==expected.Size` |
 | github_release | asset 下载 `Range`（穿过 302 至 CDN） | `fingerprintOf(asset)` 与 expected 显式比对 + asset ID / Version + SHA256 |
-| http | `Range` + `If-Range`（strong ETag 或 Last-Modified）；两者皆无 → ErrResumeUnsupported | 206 + Content-Range 严格校验；200 → Stat 复核 → unsupported/changed |
+| http | `Range` + `If-Range`（仅 strong ETag）；无 strong ETag → ErrResumeUnsupported | 206 + Content-Range 严格校验；200 → Stat 复核 → unsupported/changed |
 | webdav | 直接 HTTP GET `Range`（复用 webdav.HTTPClient 认证） | 同 http |
+
+HTTP 家族只接受 strong ETag 作为 If-Range 身份断言（RFC 9110：普通
+Last-Modified 默认是 weak validator，HTTP-date 只有秒精度，同一秒内
+的 same-size 替换与未变更无法区分）。能力后果：HTTP 的 JSON 目录
+索引 profile（nginx JSON / Caddy browse）不含 etag 字段，此类 Source
+的快照天然无 strong ETag，续传自动降级完整下载；HTML profile 经
+HEAD 捕获 ETag 后可续传。WebDAV 的 PROPFIND getetag 原生携带 ETag，
+不受影响。
 
 HTTP 家族的铁律：**Range 请求返回 200 时绝不能把 body 交给
 Downloader append**（prefix + 完整文件 = 确定性损坏）；必须 206 且
@@ -153,11 +161,12 @@ Downloader append**（prefix + 完整文件 = 确定性损坏）；必须 206 �
 身份校验 fail-closed（安全不变量 5 的实现口径）：206 /
 Content-Range 只能证明「这是该 URL 当前对象的 N..EOF」，无法证明
 「这是生成 partial 时那个对象的 N..EOF」——所有协议必须先持有可
-比对的身份信号（handle metadata、strong ETag、Last-Modified、
-asset 身份），无法证明一致性时返回 ErrResumeUnsupported 降级完整
-下载，绝不以「区间大小吻合」替代对象身份。same-size 替换是这些
-不变量的最小反例：只比较 Size 的校验在旧对象与新对象 Size 相等时
-必然漏判。
+比对的身份信号（handle metadata、strong ETag、asset 身份；HTTP-date
+秒精度的 Last-Modified 是 RFC 9110 weak validator，同一秒内的
+same-size 替换不可识别，不作为 HTTP/WebDAV 的续传身份），无法证明
+一致性时返回 ErrResumeUnsupported 降级完整下载，绝不以「区间大小
+吻合」替代对象身份。same-size 替换是这些不变量的最小反例：只比较
+Size 的校验在旧对象与新对象 Size 相等时必然漏判。
 
 ### offset 边界契约
 

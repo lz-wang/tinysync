@@ -9,7 +9,8 @@ import (
 	"tinysync/internal/syncjob"
 )
 
-// 写入 legacy 随机临时文件与 v1 断点文件两种形态的中间文件。
+// 写入 legacy 随机临时文件与 v1 断点文件两种形态的中间文件，外加
+// 断点形态的 symlink 与用户文件。
 func seedTransferTemps(t *testing.T, root string) {
 	t.Helper()
 	legacy := filepath.Join(root, ".tinysync-part-0123456789ab")
@@ -20,9 +21,10 @@ func seedTransferTemps(t *testing.T, root string) {
 	if err := os.WriteFile(partial, []byte("partial"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// 断点形态的 symlink 条目不是 regular file：清理不触碰（留给
-	// Downloader 的 validatePartial fail-closed）。
-	if err := os.Symlink(legacy, filepath.Join(root, ".tinysync-part-v1-cccccccccccccccccccccccccccccccc-dddddddddddddddddddddddddddddddddd")); err != nil {
+	// 断点形态的 symlink：旧 root 退出配置面后不会再有 Downloader
+	// 访问，fail-closed 验证没有意义——清理时一并 unlink（不跟随
+	// 目标，链接指向的用户文件不受影响）。
+	if err := os.Symlink(legacy, filepath.Join(root, ".tinysync-part-v1-cccccccccccccccccccccccccccccccc-dddddddddddddddddddddddddddddddd")); err != nil {
 		t.Fatal(err)
 	}
 	normal := filepath.Join(root, "user-file.txt")
@@ -32,9 +34,9 @@ func seedTransferTemps(t *testing.T, root string) {
 }
 
 // 删除 Job：旧 LocalRoot 退出配置面后，其中的传输中间文件（legacy
-// 临时文件与 v1 断点文件）立即回收——启动期清理不再枚举这个 root，
-// partialRetention 对此类 mapping 变更孤儿实际无效。用户文件保留，
-// 非 regular 的断点形态条目（symlink）不触碰。
+// 临时文件、v1 断点文件、断点形态 symlink）立即回收——启动期清理
+// 不再枚举这个 root，partialRetention 对此类 mapping 变更孤儿实际
+// 无效。用户文件与 symlink 指向的目标保留。
 func TestDeleteJobCleansOrphanedTransferTemps(t *testing.T) {
 	env := newTestEnv(t)
 	ctx := context.Background()
@@ -56,14 +58,61 @@ func TestDeleteJobCleansOrphanedTransferTemps(t *testing.T) {
 	for _, e := range entries {
 		names[e.Name()] = true
 	}
-	if len(names) != 2 {
-		t.Fatalf("root entries after delete = %v, want only user file + symlink", names)
+	if len(names) != 1 || !names["user-file.txt"] {
+		t.Fatalf("root entries after delete = %v, want only user file", names)
 	}
-	if !names["user-file.txt"] {
-		t.Errorf("user file was removed by orphan cleanup")
+	// symlink 只摘链接本身：链接指向的用户文件原样保留。
+	if _, err := os.Stat(filepath.Join(job.LocalRoot, ".tinysync-part-0123456789ab")); !os.IsNotExist(err) {
+		t.Errorf("legacy temp survived orphan cleanup (stat err=%v)", err)
 	}
-	if !names[".tinysync-part-v1-cccccccccccccccccccccccccccccccc-dddddddddddddddddddddddddddddddddd"] {
-		t.Errorf("non-regular partial entry was removed by orphan cleanup")
+}
+
+// RemoveTransferTemps 的形态矩阵：regular / symlink / 空目录形态的
+// 断点文件回收，非空目录、非断点 symlink、用户文件保留；symlink
+// unlink 不跟随目标。
+func TestRemoveTransferTempsEntryShapes(t *testing.T) {
+	root := t.TempDir()
+	victim := filepath.Join(root, "victim.txt")
+	if err := os.WriteFile(victim, []byte("target content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	shapes := []struct {
+		name  string
+		build func(string) error
+		keep  bool
+	}{
+		{"user-file.txt", func(p string) error { return os.WriteFile(p, []byte("x"), 0o644) }, true},
+		{".tinysync-part-0123456789ab", func(p string) error { return os.WriteFile(p, []byte("x"), 0o644) }, false},
+		{".tinysync-part-v1-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", func(p string) error { return os.WriteFile(p, []byte("x"), 0o644) }, false},
+		{".tinysync-part-v1-cccccccccccccccccccccccccccccccc-dddddddddddddddddddddddddddddddd", func(p string) error { return os.Symlink(victim, p) }, false},
+		{"other-link.txt", func(p string) error { return os.Symlink(victim, p) }, true},
+		{".tinysync-part-v1-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-ffffffffffffffffffffffffffffffff", func(p string) error { return os.Mkdir(p, 0o755) }, false},
+		{".tinysync-part-v1-99999999999999999999999999999999-88888888888888888888888888888888", func(p string) error { return os.MkdirAll(filepath.Join(p, "nested"), 0o755) }, true},
+	}
+	for _, s := range shapes {
+		if err := s.build(filepath.Join(root, s.name)); err != nil {
+			t.Fatalf("seed %s: %v", s.name, err)
+		}
+	}
+	removed, err := syncjob.RemoveTransferTemps(root)
+	if err != nil {
+		t.Fatalf("RemoveTransferTemps: %v", err)
+	}
+	if removed != 4 {
+		t.Errorf("removed = %d, want 4 (legacy + partial + partial symlink + empty partial dir)", removed)
+	}
+	for _, s := range shapes {
+		_, statErr := os.Lstat(filepath.Join(root, s.name))
+		if s.keep && statErr != nil {
+			t.Errorf("entry %s was removed, want kept", s.name)
+		}
+		if !s.keep && !os.IsNotExist(statErr) {
+			t.Errorf("entry %s survived, want removed (stat err=%v)", s.name, statErr)
+		}
+	}
+	// symlink 指向的目标不受影响。
+	if _, err := os.Stat(victim); err != nil {
+		t.Errorf("symlink target was affected: %v", err)
 	}
 }
 
@@ -99,7 +148,7 @@ func TestUpdateLocalRootCleansOldRootTransferTemps(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, e := range entries {
-		if syncjob.IsPartialName(e.Name()) && e.Type().IsRegular() {
+		if syncjob.IsPartialName(e.Name()) && (e.Type().IsRegular() || e.Type()&os.ModeSymlink != 0) {
 			t.Errorf("orphaned partial survived in old root: %s", e.Name())
 		}
 		if e.Name() == ".tinysync-part-0123456789ab" {

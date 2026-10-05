@@ -44,6 +44,8 @@ type rangeBehavior struct {
 	wrongTotal       bool // Content-Range total 与对象真实大小不符
 	preconditionFail bool // 412
 	wrongETag        bool // 响应携带与对象不符的 ETag（同 size 替换后的服务实现）
+	omitETag         bool // 响应省略 ETag（无法确认 If-Match 生效的错误实现）
+	omitLastModified bool // 响应省略 LastModified（无法确认时间条件生效）
 }
 
 func (f *rangeFakeS3) GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
@@ -88,8 +90,15 @@ func (f *rangeFakeS3) GetObject(ctx context.Context, params *s3.GetObjectInput, 
 		if b.wrongETag {
 			etag = `"replaced-object-etag"`
 		}
+		if b.omitETag {
+			etag = ""
+		}
+		lastMod := &obj.lastModified
+		if b.omitLastModified {
+			lastMod = nil
+		}
 		if b.ignoreRange || rangeHeader == "" {
-			return &s3.GetObjectOutput{Body: io.NopCloser(strings.NewReader(data)), ETag: &etag, LastModified: &obj.lastModified}, nil
+			return &s3.GetObjectOutput{Body: io.NopCloser(strings.NewReader(data)), ETag: &etag, LastModified: lastMod}, nil
 		}
 		start := offset
 		if b.wrongStart {
@@ -104,7 +113,7 @@ func (f *rangeFakeS3) GetObject(ctx context.Context, params *s3.GetObjectInput, 
 			Body:         io.NopCloser(strings.NewReader(data[offset:])),
 			ContentRange: &cr,
 			ETag:         &etag,
-			LastModified: &obj.lastModified,
+			LastModified: lastMod,
 		}, nil
 	}
 	// 默认行为：合规 206。
@@ -274,6 +283,31 @@ func TestS3OpenFromResponseETagMismatch(t *testing.T) {
 	_, err := r.OpenFrom(context.Background(), "/data.bin", 4, fp(int64(len(content)), `"etag-x"`))
 	if !errors.Is(err, source.ErrRemoteChanged) {
 		t.Fatalf("OpenFrom with response ETag mismatch = %v, want ErrRemoteChanged", err)
+	}
+}
+
+// 快照带 ETag 但响应省略 ETag：无法确认 If-Match 生效（错误实现忽略
+// 条件头仍返回 206）——fail-closed 拒绝续传，降级完整下载。
+func TestS3OpenFromResponseOmitsETag(t *testing.T) {
+	r, content, _ := newRangeRemote(t, func(string, int64) rangeBehavior {
+		return rangeBehavior{omitETag: true}
+	})
+	_, err := r.OpenFrom(context.Background(), "/data.bin", 4, fp(int64(len(content)), `"etag-x"`))
+	if !errors.Is(err, source.ErrResumeUnsupported) {
+		t.Fatalf("OpenFrom with omitted response ETag = %v, want ErrResumeUnsupported", err)
+	}
+}
+
+// mtime-only 快照且响应省略 LastModified：同样无法确认时间条件生效，
+// 拒绝续传。
+func TestS3OpenFromResponseOmitsLastModified(t *testing.T) {
+	mod := time.Unix(1700000000, 0)
+	r, content, _ := newRangeRemote(t, func(string, int64) rangeBehavior {
+		return rangeBehavior{omitLastModified: true}
+	})
+	_, err := r.OpenFrom(context.Background(), "/data.bin", 4, source.Fingerprint{Size: int64(len(content)), ModifiedAt: mod})
+	if !errors.Is(err, source.ErrResumeUnsupported) {
+		t.Fatalf("OpenFrom with omitted response LastModified = %v, want ErrResumeUnsupported", err)
 	}
 }
 

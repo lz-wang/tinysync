@@ -230,9 +230,10 @@ func (r *remote) Open(ctx context.Context, path string) (io.ReadCloser, error) {
 // OpenFrom 实现 source.ResumableRemote（ADR 0010）。go-webdav 未暴露
 // Range 参数，offset>0 时经保留的 webdav.HTTPClient（认证与 transport
 // 安全边界与 Open 共用）直接发 GET，携带 Range: bytes=N- 与
-// If-Range——fail-closed：快照既无 strong ETag 也无 Last-Modified 时
-// 拒绝续传（206 无法证明对象身份，same-size 替换会与旧 prefix 拼接），
-// 降级 ErrResumeUnsupported 完整重传。响应校验与 HTTP Source 同一铁律：
+// If-Range——fail-closed：快照没有 strong ETag 时拒绝续传（206 无法
+// 证明对象身份；Last-Modified 是 RFC 9110 weak validator，秒精度内
+// 的 same-size 替换不可识别，不能作为 If-Range 身份断言），降级
+// ErrResumeUnsupported 完整重传。响应校验与 HTTP Source 同一铁律：
 // 206 且 Content-Range start==offset、total==快照 Size 才通过；200
 // （服务器忽略 Range 或 If-Range 判定对象已变）经 Stat 复核分辨
 // 「对象变了」（ErrRemoteChanged）与「不支持 Range」（ErrResumeUnsupported，
@@ -269,7 +270,7 @@ func (r *remote) OpenFrom(ctx context.Context, logicalPath string, offset int64,
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 	validator := webdavIfRangeValue(expected)
 	if validator == "" {
-		return nil, fmt.Errorf("webdav resume %s at %d: %w (no safe identity validator: strong ETag or Last-Modified required)",
+		return nil, fmt.Errorf("webdav resume %s at %d: %w (no safe identity validator: strong ETag required)",
 			logicalPath, offset, source.ErrResumeUnsupported)
 	}
 	req.Header.Set("If-Range", validator)
@@ -346,17 +347,14 @@ func isStatusError(err error, code int) bool {
 // go-webdav 的 FileInfo.ETag 是 PROPFIND getetag 剥引号后的 raw 值，
 // 而 If-Range 的 entity-tag 必须带引号（主流 WebDAV 服务的 PROPFIND
 // getetag 本就带引号）——raw 直传会因形态不符被服务器判为 If-Range
-// 不匹配而退回 200。weak ETag 不得用于 If-Range，退化为 Last-Modified
-// （与 source.IfRangeValue 同规则）。
+// 不匹配而退回 200。身份规则与 source.IfRangeValue 一致：只接受
+// strong ETag；weak ETag 与秒精度的 Last-Modified 是 RFC 9110 weak
+// validator，返回空串由调用方降级完整下载。
 func webdavIfRangeValue(expected source.Fingerprint) string {
-	raw := strings.Trim(expected.ETag, `"`)
-	if raw != "" && !strings.HasPrefix(expected.ETag, "W/") {
-		return `"` + raw + `"`
+	if source.IfRangeValue(expected) == "" {
+		return ""
 	}
-	if !expected.ModifiedAt.IsZero() {
-		return expected.ModifiedAt.UTC().Format(http.TimeFormat)
-	}
-	return ""
+	return `"` + strings.Trim(expected.ETag, `"`) + `"`
 }
 
 // Mkdir 实现 source.DirectoryCreator，在逻辑路径对应的 WebDAV 目录

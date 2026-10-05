@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path"
@@ -108,12 +109,55 @@ func (f *fakeCaddyServer) serveFile(w http.ResponseWriter, r *http.Request, p st
 	w.Header().Set("Content-Type", "application/octet-stream")
 	// ETag 随内容变化（真实服务的 ETag 在对象被替换时必然漂移）：
 	// same-size 替换测试依赖 If-Range 感知身份漂移。
-	w.Header().Set("ETag", fmt.Sprintf(`"fake-%x"`, sha256.Sum256([]byte(content))))
+	w.Header().Set("ETag", f.contentETagLocked(p))
 	if f.ignoreRange {
 		r = r.Clone(r.Context())
 		r.Header.Del("Range")
 	}
 	http.ServeContent(w, r, path.Base(p), f.modTime(p), strings.NewReader(content))
+}
+
+// contentETag 返回与 serveFile 一致的内容哈希 ETag（文件不存在返回
+// 空串）；etagStatRemote 据此补全 Stat 指纹。
+func (f *fakeCaddyServer) contentETag(p string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.contentETagLocked(p)
+}
+
+// contentETagLocked 是 contentETag 的已持锁实现（handle 持 f.mu 期间
+// 的 serveFile 复用）。
+func (f *fakeCaddyServer) contentETagLocked(p string) string {
+	content, ok := f.files[p]
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf(`"fake-%x"`, sha256.Sum256([]byte(content)))
+}
+
+// etagStatRemote 包装生产 Client：JSON 目录索引形态的 Stat 不携带
+// ETag（真实 Caddy / nginx JSON 索引没有 etag 字段，生产 hydrate 不
+// 为 ETag 额外发 HEAD），而断点续传契约验证的是「快照持有 strong
+// ETag」的形态——HTML profile 经 HEAD 自然获得，WebDAV / S3 的枚举
+// 协议原生携带。这里以 fake 的内容哈希 ETag 补全文件指纹（与
+// serveFile 的 ETag 生成规则一致），模拟「服务器提供 ETag 且被快照
+// 捕获」的服务形态。
+type etagStatRemote struct {
+	source.Remote
+	f *fakeCaddyServer
+}
+
+func (r etagStatRemote) Stat(ctx context.Context, p string) (source.FileInfo, error) {
+	fi, err := r.Remote.Stat(ctx, p)
+	if err != nil || fi.IsDir {
+		return fi, err
+	}
+	fi.Fingerprint.ETag = r.f.contentETag(p)
+	return fi, nil
+}
+
+func (r etagStatRemote) OpenFrom(ctx context.Context, p string, offset int64, fp source.Fingerprint) (io.ReadCloser, error) {
+	return r.Remote.(source.ResumableRemote).OpenFrom(ctx, p, offset, fp)
 }
 
 func (f *fakeCaddyServer) modTime(p string) time.Time {
@@ -210,7 +254,7 @@ func (h fakeHarness) NewRemote(t *testing.T) source.Remote {
 	if err != nil {
 		t.Fatalf("openRemote: %v", err)
 	}
-	return r
+	return etagStatRemote{Remote: r, f: h.f}
 }
 
 func (h fakeHarness) Write(t *testing.T, logical, content string) {

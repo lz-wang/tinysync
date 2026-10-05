@@ -18,13 +18,18 @@ import (
 )
 
 // resumeRelayServer 是支持 Range 的进程内 HTTP 文件服务（Caddy 形态
-// JSON 目录索引），并记录每次文件 GET 的 Range 头与实际发送字节数；
-// 第一次文件 GET 可注入「发送 cutAfter 字节后主动断开连接」——
-// 断点续传可靠性 E2E 的核心装置（ADR 0010）。
+// JSON 目录索引），并记录每次文件 GET 的 Range / If-Range 头与实际
+// 发送字节数；第一次文件 GET 可注入「发送 cutAfter 字节后主动断开
+// 连接」——断点续传可靠性 E2E 的核心装置（ADR 0010）。文件响应携带
+// 常量 ETag 并实现 If-Range 语义（未命中回 200 全量）——身份断言与
+// 真实文件服务一致（Caddy JSON listing 无 etag 字段，快照 ETag 由
+// 测试注入，见各测试内注释）。
 type resumeRelayServer struct {
 	mu       sync.Mutex
 	content  []byte
+	etag     string   // 文件当前 ETag（If-Range 身份断言的锚点）
 	ranges   []string // 每次文件 GET 的 Range 头（空串 = 无 Range）
+	ifRanges []string // 每次文件 GET 的 If-Range 头（空串 = 未携带）
 	sent     []int    // 每次文件 GET 实际发送的字节数
 	cutAfter int      // > 0 时第一次文件 GET 发送该字节数后中止连接
 	srv      *httptest.Server
@@ -32,7 +37,7 @@ type resumeRelayServer struct {
 
 func newResumeRelayServer(t *testing.T, content []byte) *resumeRelayServer {
 	t.Helper()
-	s := &resumeRelayServer{content: content}
+	s := &resumeRelayServer{content: content, etag: `"relay-big-bin-v1"`}
 	s.srv = httptest.NewServer(http.HandlerFunc(s.handle))
 	t.Cleanup(s.srv.Close)
 	return s
@@ -47,11 +52,13 @@ func (s *resumeRelayServer) handle(w http.ResponseWriter, r *http.Request) {
 	defer s.mu.Unlock()
 	rangeHeader := r.Header.Get("Range")
 	s.ranges = append(s.ranges, rangeHeader)
+	s.ifRanges = append(s.ifRanges, r.Header.Get("If-Range"))
 	content := s.content
 	// 第一次请求注入断流：发送 cutAfter 字节后中止连接（不写响应尾，
 	// 客户端收到 unexpected EOF，按瞬时故障重试）。
 	first := len(s.ranges) == 1
 	if first && s.cutAfter > 0 {
+		w.Header().Set("ETag", s.etag)
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(content[:s.cutAfter])
@@ -60,6 +67,15 @@ func (s *resumeRelayServer) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		s.sent = append(s.sent, s.cutAfter)
 		panic(http.ErrAbortHandler)
+	}
+	w.Header().Set("ETag", s.etag)
+	// If-Range 未命中：RFC 9110 要求回 200 全量（绝不能 206 续传）。
+	if ir := r.Header.Get("If-Range"); ir != "" && ir != s.etag {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(content)
+		s.sent = append(s.sent, len(content))
+		return
 	}
 	if rangeHeader == "" {
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
@@ -132,6 +148,10 @@ func TestResumeReliabilityE2E(t *testing.T) {
 	if fi.Fingerprint.Size != total {
 		t.Fatalf("stat size = %d, want %d", fi.Fingerprint.Size, total)
 	}
+	// JSON listing 无 etag 字段（生产 HTML profile 经 HEAD 补全 ETag）：
+	// 这里注入 relay 的 ETag 使快照持有 strong ETag，续传身份断言走
+	// If-Range 正路径。
+	fi.Fingerprint.ETag = srv.etag
 
 	root := t.TempDir()
 	d := syncjob.NewDownloader(remote)
@@ -171,6 +191,9 @@ func TestResumeReliabilityE2E(t *testing.T) {
 	second := srv.ranges[1]
 	if second != "bytes=3145728-" {
 		t.Fatalf("second request Range = %q, want bytes=3145728-", second)
+	}
+	if got := srv.ifRanges[1]; got != srv.etag {
+		t.Fatalf("second request If-Range = %q, want snapshot ETag %q", got, srv.etag)
 	}
 	sentSecond := srv.sent[1]
 	if sentSecond != total-cut {
@@ -217,6 +240,9 @@ func TestResumeAcrossDownloadInvocationsE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}
+	// 同上：JSON listing 无 etag 字段，注入 relay 的 ETag 走 If-Range
+	// 正路径（快照持有 strong ETag 的服务形态）。
+	fi.Fingerprint.ETag = srv.etag
 	root := t.TempDir()
 	d := syncjob.NewDownloader(remote)
 	spec := syncjob.TransferSpec{
@@ -237,6 +263,10 @@ func TestResumeAcrossDownloadInvocationsE2E(t *testing.T) {
 	if len(srv.ranges) < 2 || srv.ranges[1] != "bytes=1048576-" {
 		srv.mu.Unlock()
 		t.Fatalf("Range sequence = %v, want second request bytes=1048576-", srv.ranges)
+	}
+	if got := srv.ifRanges[1]; got != srv.etag {
+		srv.mu.Unlock()
+		t.Fatalf("second request If-Range = %q, want snapshot ETag %q", got, srv.etag)
 	}
 	srv.mu.Unlock()
 	got, err := os.ReadFile(filepath.Join(root, "big.bin"))

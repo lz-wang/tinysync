@@ -151,9 +151,10 @@ func (c *Client) Open(ctx context.Context, logicalPath string) (io.ReadCloser, e
 
 // OpenFrom 实现 source.ResumableRemote（ADR 0010）。offset=0 走无
 // Range 的 GET（起点天然 0）；offset>0 携带 Range: bytes=N- 与
-// If-Range——fail-closed：快照既无 strong ETag 也无 Last-Modified 时
-// 拒绝续传（206 无法证明对象身份，same-size 替换会与旧 prefix 拼接），
-// 降级 ErrResumeUnsupported 完整重传。响应严格校验：
+// If-Range——fail-closed：快照没有 strong ETag 时拒绝续传（206 无法
+// 证明对象身份；Last-Modified 是 RFC 9110 weak validator，秒精度内
+// 的 same-size 替换不可识别，不能作为 If-Range 身份断言），降级
+// ErrResumeUnsupported 完整重传。响应严格校验：
 //
 //   - 206 且 Content-Range start==offset、total==快照 Size → 通过；
 //   - 200（服务器忽略 Range 或 If-Range 判定对象已变）→ Stat 复核：
@@ -189,12 +190,12 @@ func (c *Client) OpenFrom(ctx context.Context, logicalPath string, offset int64,
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 	// 身份保护 fail-closed（ADR 0010）：206 + Content-Range 只能证明
 	//「这是该 URL 当前对象的 N..EOF」，无法证明「这是生成 partial 时
-	// 那个对象的 N..EOF」。没有 strong ETag 或 Last-Modified 可供
-	// If-Range 断言时，same-size 替换的远端对象会与旧 prefix 拼接成
-	// 静默内容错误——拒绝续传，降级完整下载。
+	// 那个对象的 N..EOF」。没有 strong ETag 可供 If-Range 断言时，
+	// same-size 替换的远端对象会与旧 prefix 拼接成静默内容错误——
+	// 拒绝续传，降级完整下载。
 	validator := source.IfRangeValue(expected)
 	if validator == "" {
-		return nil, fmt.Errorf("http resume %s at %d: %w (no safe identity validator: strong ETag or Last-Modified required)",
+		return nil, fmt.Errorf("http resume %s at %d: %w (no safe identity validator: strong ETag required)",
 			logicalPath, offset, source.ErrResumeUnsupported)
 	}
 	req.Header.Set("If-Range", validator)

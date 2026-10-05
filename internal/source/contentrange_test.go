@@ -1,6 +1,9 @@
 package source
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // ParseContentRange 的解析矩阵：标准形态、空白容忍、以及一切必须
 // 拒绝的形态（416 unsatisfied-range、越界区间、畸形值）。
@@ -37,6 +40,30 @@ func TestParseContentRange(t *testing.T) {
 	for _, v := range invalid {
 		if _, _, ok := ParseContentRange(v); ok {
 			t.Errorf("ParseContentRange(%q) = ok, want rejected", v)
+		}
+	}
+}
+
+// IfRangeValue 只接受 strong ETag：weak ETag（W/"..."）与仅有
+// Last-Modified 的快照一律返回空串——HTTP-date 是 RFC 9110 weak
+// validator（秒精度内 same-size 替换不可识别），调用方据此拒绝续传
+// 降级完整下载，绝不退化为日期断言。
+func TestIfRangeValue(t *testing.T) {
+	mod := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		fp   Fingerprint
+		want string
+	}{
+		{Fingerprint{ETag: `"abc"`}, `"abc"`},
+		{Fingerprint{ETag: "abc"}, "abc"},
+		{Fingerprint{ETag: `W/"abc"`}, ""},
+		{Fingerprint{ETag: `W/"abc"`, ModifiedAt: mod}, ""},
+		{Fingerprint{ModifiedAt: mod}, ""},
+		{Fingerprint{}, ""},
+	}
+	for _, tc := range cases {
+		if got := IfRangeValue(tc.fp); got != tc.want {
+			t.Errorf("IfRangeValue(%+v) = %q, want %q", tc.fp, got, tc.want)
 		}
 	}
 }

@@ -1,10 +1,8 @@
 package source
 
 import (
-	"net/http"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // ParseContentRange 解析 RFC 9110 Content-Range 的 byte-range 形态
@@ -45,23 +43,18 @@ func ParseContentRange(v string) (start, total int64, ok bool) {
 	return start, total, true
 }
 
-// IfRangeValue 从快照指纹选择 HTTP If-Range 头的值（RFC 9110：只允许
-// strong ETag 或 HTTP-date）：weak ETag（W/"..."）不得用于 If-Range，
-// 退化为 Last-Modified（秒精度）；两者皆无返回空串——不带 If-Range，
-// 身份校验仅靠 206 Content-Range 的 start / total 兜底。供 HTTP 与
-// WebDAV 的 ResumableRemote 实现共用。
+// IfRangeValue 从快照指纹选择 HTTP If-Range 头的值。RFC 9110 要求
+// If-Range 只能携带 strong validator：weak ETag（W/"..."）不得使用；
+// HTTP-date 只在客户端能认定其为 strong validator 时才允许，而普通
+// Last-Modified 默认是 weak validator——HTTP-date 只有秒精度，同一秒
+// 内的 same-size 替换与未变更无法区分。因此这里只接受 strong ETag，
+// 其余情况（含仅有 Last-Modified）返回空串，调用方拒绝续传并降级
+// 完整下载（ADR 0010：无法证明 remote identity 时宁可完整重传）。
+// 供 HTTP 与 WebDAV 的 ResumableRemote 实现共用。
 func IfRangeValue(expected Fingerprint) string {
 	if expected.ETag != "" && !strings.HasPrefix(expected.ETag, "W/") &&
 		!strings.HasPrefix(expected.ETag, `W/"`) {
 		return expected.ETag
 	}
-	if !expected.ModifiedAt.IsZero() {
-		return expected.ModifiedAt.UTC().Format(http.TimeFormat)
-	}
 	return ""
-}
-
-// formatIfRangeTime 是 IfRangeValue 的 HTTP-date 格式（测试断言用）。
-func formatIfRangeTime(t time.Time) string {
-	return t.UTC().Format(http.TimeFormat)
 }
