@@ -183,3 +183,70 @@ func validatePartial(path string, expected int64) (int64, error) {
 func isExpiredPartial(info fs.FileInfo, now time.Time) bool {
 	return now.Sub(info.ModTime()) > partialRetention
 }
+
+// openPartialForAppend 以 fail-closed 语义打开断点文件准备写入。
+// partial 是可预测的 deterministic 名字，validatePartial（Lstat）与
+// 打开之间存在路径被替换成 symlink 的竞争窗口：O_CREATE|O_TRUNC 会在
+// 任何校验之前跟随 symlink 截断目标文件。因此打开顺序是——
+//
+//   - 新建（truncate=true）：O_WRONLY|O_CREATE|O_EXCL 原子创建，
+//     全新 inode 无需截断；EEXIST（窗口内出现同路径条目）打开后
+//     经 verifyPartialHandle 确认身份再 Truncate(0)；
+//   - 续传（truncate=false）：O_WRONLY 打开，绝不携带 O_TRUNC，
+//     身份确认后由调用方 Seek 到断点。
+//
+// 两个分支在任何写入 / 截断发生之前都经过 verifyPartialHandle：
+// 打开的句柄与路径条目必须是同一 regular inode，symlink / 目录等
+// 替换一律拒绝。
+func openPartialForAppend(path string, truncate bool) (*os.File, error) {
+	if !truncate {
+		f, err := os.OpenFile(path, os.O_WRONLY, 0o644)
+		if err != nil {
+			return nil, err
+		}
+		if err := verifyPartialHandle(f, path); err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+		return f, nil
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err == nil {
+		return f, nil
+	}
+	if !os.IsExist(err) {
+		return nil, err
+	}
+	// 窗口内出现同路径条目：打开（不 truncate）→ 身份确认 → 截断。
+	f, err = os.OpenFile(path, os.O_WRONLY, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	if err := verifyPartialHandle(f, path); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if err := f.Truncate(0); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("truncate partial %s: %w", path, err)
+	}
+	return f, nil
+}
+
+// verifyPartialHandle 确认打开的句柄与路径上的当前条目指向同一
+// regular inode：partial 路径在验证与打开之间被替换成 symlink / 目录
+// 时在此 fail-closed，绝不跟随写入。
+func verifyPartialHandle(f *os.File, path string) error {
+	handle, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("stat partial handle %s: %w", path, err)
+	}
+	entry, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("stat partial %s: %w", path, err)
+	}
+	if !handle.Mode().IsRegular() || !entry.Mode().IsRegular() || !os.SameFile(handle, entry) {
+		return fmt.Errorf("partial %s was replaced by a non-regular entry; refusing to write", path)
+	}
+	return nil
+}

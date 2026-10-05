@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"sync"
 	"time"
 
@@ -217,12 +218,41 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 	// 组装传输任务（确定性顺序：修复 → 下载 → 更新）。
 	var jobs []transferJob
 
+	// skipReservedNamespace 处理落在内部断点文件命名空间的远端条目
+	//（.tinysync-part-v1-<hex>-<hex>，ADR 0010 保留）：这类条目一旦
+	// 同步落地，会被启动期 orphan GC 当作内部 partial 回收（超过
+	// retention 后删除）。命名空间被实现保留，计划即拒绝；记 skipped
+	// 明细，永不静默。
+	skipReservedNamespace := func(e planEntry, action RunItemAction) (bool, error) {
+		if !IsPartialName(path.Base(e.relPath)) {
+			return false, nil
+		}
+		stats.FilesSkipped++
+		progress.AddWorkDone(1)
+		if err := recordItem(RunItem{
+			Path:   e.relPath,
+			Action: action,
+			Status: ItemSkipped,
+			Error:  "path is reserved for internal partial files",
+		}); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+
 	// 6a. skip 条目校验本地文件在位：managed synced 但本地缺失时转为
 	// 修复下载；其余 unchanged 只累计 skipped（不写明细）。
 	for _, e := range plan.Skips {
 		target, err := resolveLocalTarget(job.LocalRoot, e.relPath)
 		if err == nil {
 			if _, statErr := os.Lstat(target); os.IsNotExist(statErr) {
+				reserved, recordErr := skipReservedNamespace(e, ItemCreate)
+				if recordErr != nil {
+					return stats, recordErr
+				}
+				if reserved {
+					continue
+				}
 				jobs = append(jobs, transferJob{entry: e, action: ItemCreate})
 				continue
 			}
@@ -246,11 +276,26 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 			}
 			continue
 		}
+		reserved, recordErr := skipReservedNamespace(e, ItemCreate)
+		if recordErr != nil {
+			return stats, recordErr
+		}
+		if reserved {
+			continue
+		}
 		jobs = append(jobs, transferJob{entry: e, action: ItemCreate})
 	}
 
-	// 6c. updates。
+	// 6c. updates：namespace 保留同样适用（pending 重传 / 指纹更新的
+	// 条目都会写入 partial → rename，落地名命中保留形态）。
 	for _, e := range plan.Updates {
+		reserved, recordErr := skipReservedNamespace(e, ItemUpdate)
+		if recordErr != nil {
+			return stats, recordErr
+		}
+		if reserved {
+			continue
+		}
 		jobs = append(jobs, transferJob{entry: e, action: ItemUpdate})
 	}
 

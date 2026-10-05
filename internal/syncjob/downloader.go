@@ -299,16 +299,16 @@ func (d *Downloader) appendAndVerify(spec TransferSpec, target, partialPath stri
 	if err := ph.alignTo(offset); err != nil {
 		return err
 	}
+	// 打开走 fail-closed 语义（openPartialForAppend）：deterministic
+	// partial 路径在 validatePartial 与打开之间被替换成 symlink 时，
+	// O_TRUNC 会先于校验跟随 symlink 截断目标——这里绝不在身份确认前
+	// 截断任何条目。
 	var out *os.File
 	var err error
 	if d.hooks != nil && d.hooks.openPartial != nil {
 		out, err = d.hooks.openPartial(partialPath, offset == 0)
 	} else {
-		flag := os.O_WRONLY | os.O_CREATE
-		if offset == 0 {
-			flag |= os.O_TRUNC
-		}
-		out, err = os.OpenFile(partialPath, flag, 0o644)
+		out, err = openPartialForAppend(partialPath, offset == 0)
 	}
 	if err != nil {
 		return fmt.Errorf("open partial %s: %w", partialPath, err)
@@ -369,10 +369,16 @@ func (d *Downloader) finalizePartial(spec TransferSpec, target, partialPath stri
 		return err
 	}
 	// partial 可能来自未及 fsync 的中断 attempt：rename 前确保数据
-	// 已确认落盘（崩溃一致性：数据先于 rename 生效）。
+	// 已确认落盘（崩溃一致性：数据先于 rename 生效）。打开后身份再
+	// 确认：窗口内路径被替换成 symlink 时，rename 会把 symlink 条目
+	// 本身 rename 成 target——fail-closed 拒绝。
 	f, err := os.OpenFile(partialPath, os.O_RDWR, 0o644)
 	if err != nil {
 		return fmt.Errorf("open partial %s for finalize: %w", partialPath, err)
+	}
+	if err := verifyPartialHandle(f, partialPath); err != nil {
+		_ = f.Close()
+		return err
 	}
 	syncErr := d.syncFile(f)
 	if closeErr := f.Close(); syncErr == nil {
@@ -392,9 +398,16 @@ func (d *Downloader) finalizePartial(spec TransferSpec, target, partialPath stri
 }
 
 // truncatePartial 把遗留 partial 截断为空：远端不可续传时的全量重传
-// 路径（保留 inode，截断即断点归零）。
+// 路径（保留 inode，截断即断点归零）。与打开路径同一 fail-closed
+// 语义——路径被替换成 symlink 时拒绝，绝不跟随截断。
 func (d *Downloader) truncatePartial(path string) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	var f *os.File
+	var err error
+	if d.hooks != nil && d.hooks.openPartial != nil {
+		f, err = d.hooks.openPartial(path, true)
+	} else {
+		f, err = openPartialForAppend(path, true)
+	}
 	if err != nil {
 		return fmt.Errorf("truncate partial %s: %w", path, err)
 	}
@@ -445,9 +458,18 @@ func (p *partialHasher) reset() {
 
 // alignTo 把 hash 状态推进到 partial 的 [0, size)。covered 超过
 // size（partial 被外力缩短，内部状态损坏）时重置后从磁盘整体重建。
+// 推进之前核对磁盘真实长度：partial 在 validatePartial 的 Stat 与
+// hash 之间被截短时返回错误且状态保持旧值——无 checksum 协议上
+// 假装 covered == size 会留下前缀 hole，rename 后是静默内容错误；
+// 补喂路径再核对实际读取字节数作为竞态双保险。
 func (p *partialHasher) alignTo(size int64) error {
 	if p.covered == size {
 		return nil
+	}
+	if info, err := os.Stat(p.path); err != nil {
+		return fmt.Errorf("hash partial prefix %s: %w", p.path, err)
+	} else if info.Size() < size {
+		return fmt.Errorf("hash partial prefix %s: shrank from %d to %d bytes", p.path, size, info.Size())
 	}
 	if p.verifier == nil {
 		p.covered = size
@@ -465,9 +487,15 @@ func (p *partialHasher) alignTo(size int64) error {
 			_ = f.Close()
 			return fmt.Errorf("seek partial %s to %d: %w", p.path, p.covered, err)
 		}
-		if _, err := io.Copy(p.verifier.hasher, io.LimitReader(f, size-p.covered)); err != nil {
+		want := size - p.covered
+		n, err := io.Copy(p.verifier.hasher, io.LimitReader(f, want))
+		if err != nil {
 			_ = f.Close()
 			return fmt.Errorf("hash partial prefix %s: %w", p.path, err)
+		}
+		if n != want {
+			_ = f.Close()
+			return fmt.Errorf("hash partial prefix %s: shrank from %d to %d bytes while hashing", p.path, size, p.covered+n)
 		}
 		if err := f.Close(); err != nil {
 			return fmt.Errorf("hash partial prefix %s: %w", p.path, err)
