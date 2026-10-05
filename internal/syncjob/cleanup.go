@@ -83,3 +83,46 @@ func cleanupTransferTemps(ctx context.Context, roots []string, now time.Time) (i
 	}
 	return removed, nil
 }
+
+// RemoveTransferTemps 立即回收一个 LocalRoot 下的全部传输中间文件
+// （legacy 随机临时文件与 v1 断点文件，regular 形态）。Job 删除 /
+// LocalRoot 变更后旧 root 不再出现在任何 Job 配置里，启动期
+// CleanupTransferTemps 的枚举永远扫不到它，partialRetention 对这类
+// mapping 变更孤儿实际无效——必须在 mutation 提交时主动清理。
+// LocalRoot 与 Job 一一对应（归属保护拒绝任何重叠），旧 root 的全部
+// 中间文件都属于被 mutation 的 Job，立即删除不误伤。WalkDir 不跟随
+// symlink；非 regular 条目保留给 Downloader 的 validatePartial
+// fail-closed。root 不存在（Job 从未运行）静默跳过。
+func RemoveTransferTemps(root string) (int, error) {
+	info, err := os.Lstat(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("inspect local root %s: %w", root, err)
+	}
+	if !info.IsDir() {
+		return 0, nil
+	}
+	removed := 0
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !d.Type().IsRegular() {
+			return nil
+		}
+		name := d.Name()
+		if isTransferTempName(name) || IsPartialName(name) {
+			if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) {
+				return rmErr
+			}
+			removed++
+		}
+		return nil
+	})
+	if err != nil {
+		return removed, fmt.Errorf("walk %s: %w", root, err)
+	}
+	return removed, nil
+}

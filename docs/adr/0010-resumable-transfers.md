@@ -84,8 +84,9 @@ Fingerprint 未来增删字段时 identity 不漂移。同一文件同一远端�
 跨 run 得到相同 partial 路径；远端任一身份字段变化即产生新
 remote-id，旧 partial 永不被错误复用。
 
-Downloader 开始传输前清理同一 target-id 的其它 partial（远端更新
-后不留垃圾），但绝不触碰其它 target 的 partial。
+每轮 run 传输开始前批量清理计划内各 target-id 的其它 partial
+（远端更新后不留垃圾；按目录聚合、每目录一次枚举，绝不触碰其它
+target 的 partial），独立调用的 Downloader 保留等价的单文件路径。
 
 ### 启动清理与 retention
 
@@ -95,9 +96,13 @@ Downloader 开始传输前清理同一 target-id 的其它 partial（远端更�
 | `.tinysync-part-v1-*` | 保留，供 resume |
 | v1 partial 超过 30 天 | 删除（orphan GC） |
 
-`partialRetention = 30 天`不是协议语义：正常收敛由 Downloader 主动
-清理旧 fingerprint partial，retention 只负责 Job 停用 / 删除 /
-LocalRoot 变更等孤儿。
+`partialRetention = 30 天`不是协议语义：正常收敛由传输开始前的
+partial 清理主动回收旧 fingerprint partial（run-level 批量操作，每
+目录一次枚举），retention 只负责 Job 停用等仍被配置引用的孤儿。
+Job 删除 / LocalRoot 变更会使旧 root 退出配置面——启动清理永远
+枚举不到它，retention 对这类 mapping 变更孤儿实际无效，因此在
+mutation 提交后立即回收旧 root 的传输中间文件
+（`RemoveTransferTemps`）。
 
 ### 失败后的 partial 保留策略
 
@@ -135,15 +140,39 @@ hash 状态严格对应实际落盘字节——短写（ENOSPC 写 12 KiB / 32 K
 |---|---|---|
 | local | 打开 handle 后 `Seek(offset)` | handle `Stat()` 与 expected 比较 |
 | sftp | `*sftp.File.Seek` | `File.Stat()` + expected |
-| smb | `*smb2.File.Seek`（断言 io.Seeker） | Lstat + expected |
-| s3 | `GetObject Range=bytes=N-` + `If-Match: ETag` | 412 → ErrRemoteChanged；ContentRange 必须 `start==offset && total==expected.Size` |
-| github_release | asset 下载 `Range`（穿过 302 至 CDN） | asset ID / Version + SHA256 |
-| http | `Range` + `If-Range`（strong ETag 或 Last-Modified） | 206 + Content-Range 严格校验；200 → Stat 复核 → unsupported/changed |
+| smb | `*smb2.File.Seek`（断言 io.Seeker + Stat） | handle `Stat()` + expected（Lstat → Open 的同 size 替换 TOCTOU 由 handle 级校验关闭） |
+| s3 | `GetObject Range=bytes=N-` + `If-Match: ETag`；无 ETag 退化 `If-Unmodified-Since`；两者皆无 → ErrResumeUnsupported | 412 → ErrRemoteChanged；响应 ETag / LastModified 再与快照比对（defense-in-depth）；ContentRange 必须 `start==offset && total==expected.Size` |
+| github_release | asset 下载 `Range`（穿过 302 至 CDN） | `fingerprintOf(asset)` 与 expected 显式比对 + asset ID / Version + SHA256 |
+| http | `Range` + `If-Range`（strong ETag 或 Last-Modified）；两者皆无 → ErrResumeUnsupported | 206 + Content-Range 严格校验；200 → Stat 复核 → unsupported/changed |
 | webdav | 直接 HTTP GET `Range`（复用 webdav.HTTPClient 认证） | 同 http |
 
 HTTP 家族的铁律：**Range 请求返回 200 时绝不能把 body 交给
 Downloader append**（prefix + 完整文件 = 确定性损坏）；必须 206 且
 `Content-Range` 起点等于请求 offset。
+
+身份校验 fail-closed（安全不变量 5 的实现口径）：206 /
+Content-Range 只能证明「这是该 URL 当前对象的 N..EOF」，无法证明
+「这是生成 partial 时那个对象的 N..EOF」——所有协议必须先持有可
+比对的身份信号（handle metadata、strong ETag、Last-Modified、
+asset 身份），无法证明一致性时返回 ErrResumeUnsupported 降级完整
+下载，绝不以「区间大小吻合」替代对象身份。same-size 替换是这些
+不变量的最小反例：只比较 Size 的校验在旧对象与新对象 Size 相等时
+必然漏判。
+
+### offset 边界契约
+
+`ResumableRemote.OpenFrom` 的 offset 语义跨协议统一（共享 helper
+`source.CheckResumeOffset` / `source.EmptyResumeStream`）：
+
+```text
+offset < 0     → ErrInvalid
+offset > size  → ErrRemoteChanged（远端已缩小）
+offset == size → 空流（立即 EOF，不发注定 416 的 Range 请求）
+其余           → 正常续传流程
+```
+
+契约套件按严格断言验收（空流不再容忍错误返回），覆盖 same-size
+替换、beyond-end 与 negative offset 场景。
 
 ## 安全不变量
 

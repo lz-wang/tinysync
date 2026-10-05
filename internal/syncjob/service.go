@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"tinysync/internal/filesafe"
+	"tinysync/internal/logging"
 	"tinysync/internal/source"
 )
 
@@ -234,6 +235,11 @@ func (s *Service) Update(ctx context.Context, id string, input UpdateInput) (Job
 		if err := s.repo.UpdateAndResetManaged(ctx, updated); err != nil {
 			return Job{}, err
 		}
+		// LocalRoot 变更：旧 root 随 mutation 退出配置面，其下的传输
+		// 中间文件立刻成为启动清理永远扫不到的孤儿，提交后立即回收。
+		if updated.LocalRoot != current.LocalRoot {
+			s.cleanupOrphanedRoot(current.LocalRoot)
+		}
 		return updated, nil
 	}
 	if err := s.repo.Update(ctx, updated); err != nil {
@@ -242,9 +248,40 @@ func (s *Service) Update(ctx context.Context, id string, input UpdateInput) (Job
 	return updated, nil
 }
 
-// Delete 删除 Job；managed metadata 经 FK CASCADE 清理，真实本地文件不受影响。
+// Delete 删除 Job；managed metadata 经 FK CASCADE 清理，真实本地文件
+// 不受影响。Job 的 LocalRoot 随删除退出配置面，启动期临时文件清理
+// 不再枚举它——旧 root 下的断点文件将成为永不回收的孤儿，因此在
+// 删除提交后立即回收该 root 的传输中间文件（partialRetention 不覆盖
+// mapping 变更孤儿，见 ADR 0010）。清理前重读 Job 拿 LocalRoot；
+// BeginMutation 的互斥位保证读取与删除之间配置不被并发修改。
 func (s *Service) Delete(ctx context.Context, id string) error {
-	return s.repo.Delete(ctx, id)
+	job, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := s.repo.Delete(ctx, id); err != nil {
+		return err
+	}
+	s.cleanupOrphanedRoot(job.LocalRoot)
+	return nil
+}
+
+// cleanupOrphanedRoot 回收退出配置面的 LocalRoot 的传输中间文件。
+// DB mutation 已提交，清理失败只记告警（遗留 partial 不被任何 Job
+// 引用、不参与 Mirror 授权，不影响正确性；扩容修复后可手工删除），
+// 不把已成功的 mutation 报告为失败。
+func (s *Service) cleanupOrphanedRoot(root string) {
+	if root == "" {
+		return
+	}
+	removed, err := RemoveTransferTemps(root)
+	if err != nil {
+		logging.Warnf("cleanup orphaned transfer temps in %s: %v", root, err)
+		return
+	}
+	if removed > 0 {
+		logging.Infof("orphaned_transfer_temps_removed=%d root=%s", removed, root)
+	}
 }
 
 // CountBySource 统计引用给定 Source 的 Job 数，供 Source 删除保护使用。
