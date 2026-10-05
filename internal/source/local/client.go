@@ -105,8 +105,11 @@ func (r *Remote) OpenFrom(ctx context.Context, logical string, offset int64, exp
 	if err := source.ValidateLogicalPath(logical); err != nil {
 		return nil, err
 	}
-	if offset < 0 {
-		return nil, fmt.Errorf("%w: negative resume offset %d for %s", source.ErrInvalid, offset, logical)
+	if err := source.CheckResumeOffset(offset, expected.Size); err != nil {
+		return nil, fmt.Errorf("local resume %s: %w", logical, err)
+	}
+	if offset == expected.Size {
+		return source.EmptyResumeStream(), nil
 	}
 	native, info, err := r.resolve(ctx, logical)
 	if err != nil {

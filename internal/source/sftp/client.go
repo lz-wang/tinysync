@@ -479,8 +479,11 @@ func (r *remote) OpenFrom(ctx context.Context, logicalPath string, offset int64,
 	if err := source.ValidateLogicalPath(logicalPath); err != nil {
 		return nil, err
 	}
-	if offset < 0 {
-		return nil, fmt.Errorf("%w: negative resume offset %d for %s", source.ErrInvalid, offset, logicalPath)
+	if err := source.CheckResumeOffset(offset, expected.Size); err != nil {
+		return nil, fmt.Errorf("sftp resume %s: %w", logicalPath, err)
+	}
+	if offset == expected.Size {
+		return source.EmptyResumeStream(), nil
 	}
 	c, root, err := r.session(ctx)
 	if err != nil {

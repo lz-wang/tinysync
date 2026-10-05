@@ -306,11 +306,11 @@ func (r *remote) Open(ctx context.Context, p string) (io.ReadCloser, error) {
 	return nil, notFound(p)
 }
 
-// OpenFrom 实现 source.ResumableRemote（ADR 0010）：定位 Asset 后经
-// openAssetFrom 发 Range 请求（穿过 302 至 CDN，Authorization 仍不
-// 泄漏）。offset=0 复用无 Range 的 openAsset；身份保护依赖不可变的
-// asset ID（重新上传产生新 ID）+ Content-Range total 校验 + 最终
-// SHA-256。
+// OpenFrom 实现 source.ResumableRemote（ADR 0010）：定位 Asset 后显式
+// 比对 fingerprintOf(asset) 与 expected（asset ID / updated_at / digest
+// 任一漂移 → ErrRemoteChanged），再经 openAssetFrom 发 Range 请求
+// （穿过 302 至 CDN，Authorization 仍不泄漏）。offset=0 复用无 Range
+// 的 openAsset；Content-Range total 校验 + 最终 SHA-256 构成后续防线。
 func (r *remote) OpenFrom(ctx context.Context, p string, offset int64, expected source.Fingerprint) (io.ReadCloser, error) {
 	dir, asset, err := splitReleasePath(p)
 	if err != nil {
@@ -319,8 +319,8 @@ func (r *remote) OpenFrom(ctx context.Context, p string, offset int64, expected 
 	if dir == "" || asset == "" {
 		return nil, fmt.Errorf("%w: github_release path %s is not a file", source.ErrInvalid, p)
 	}
-	if offset < 0 {
-		return nil, fmt.Errorf("%w: negative resume offset %d for %s", source.ErrInvalid, offset, p)
+	if err := source.CheckResumeOffset(offset, expected.Size); err != nil {
+		return nil, fmt.Errorf("github_release resume %s: %w", p, err)
 	}
 	snap, err := r.snapshot(ctx)
 	if err != nil {
@@ -336,6 +336,16 @@ func (r *remote) OpenFrom(ctx context.Context, p string, offset int64, expected 
 	}
 	for _, a := range assets {
 		if a.Name == asset {
+			// 显式身份断言使 ResumableRemote 契约自身完整：同一 run 的
+			// asset snapshot 已缓存、asset ID 是强身份，这里是
+			// defense-in-depth——重新上传的 Asset（新 ID / 新 digest）
+			// 绝不以旧 partial 为前缀续传。
+			if !source.SameFingerprint(fingerprintOf(a), expected) {
+				return nil, fmt.Errorf("github_release %s: %w (asset metadata changed since snapshot)", p, source.ErrRemoteChanged)
+			}
+			if offset == expected.Size {
+				return source.EmptyResumeStream(), nil
+			}
 			if offset == 0 {
 				return r.client.openAsset(ctx, a.ID)
 			}

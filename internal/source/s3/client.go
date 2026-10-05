@@ -388,6 +388,12 @@ func (r *remote) Open(ctx context.Context, logicalPath string) (io.ReadCloser, e
 //     为完整下载；
 //   - Content-Range 起点不等于请求 offset、或 total 与快照 Size 不
 //     一致 → ErrRemoteChanged，禁止 partial 拼接。
+//
+// 身份保护 fail-closed（ADR 0010）：快照既无 ETag 也无 ModifiedAt 时
+// 拒绝续传——Content-Range 只能证明区间大小，无法证明对象身份，
+// same-size 替换会与旧 prefix 拼接成静默内容错误。条件请求之外，
+// 响应元数据（ETag / LastModified）再与快照显式比对一道
+// defense-in-depth：服务忽略条件头时仍能识别身份漂移。
 func (r *remote) OpenFrom(ctx context.Context, logicalPath string, offset int64, expected source.Fingerprint) (io.ReadCloser, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -395,8 +401,11 @@ func (r *remote) OpenFrom(ctx context.Context, logicalPath string, offset int64,
 	if err := source.ValidateLogicalPath(logicalPath); err != nil {
 		return nil, err
 	}
-	if offset < 0 {
-		return nil, fmt.Errorf("%w: negative resume offset %d for %s", source.ErrInvalid, offset, logicalPath)
+	if err := source.CheckResumeOffset(offset, expected.Size); err != nil {
+		return nil, fmt.Errorf("s3 resume %s: %w", logicalPath, err)
+	}
+	if offset == expected.Size {
+		return source.EmptyResumeStream(), nil
 	}
 	input := &s3.GetObjectInput{
 		Bucket: aws.String(r.bucket),
@@ -404,8 +413,16 @@ func (r *remote) OpenFrom(ctx context.Context, logicalPath string, offset int64,
 	}
 	if offset > 0 {
 		input.Range = aws.String(fmt.Sprintf("bytes=%d-", offset))
-		if expected.ETag != "" {
+		switch {
+		case expected.ETag != "":
 			input.IfMatch = aws.String(expected.ETag)
+		case !expected.ModifiedAt.IsZero():
+			// 无 ETag 的快照退化为时间条件：对象在快照之后被写入
+			//（同 size 替换）时服务返回 412。
+			input.IfUnmodifiedSince = aws.Time(expected.ModifiedAt)
+		default:
+			return nil, fmt.Errorf("s3 resume %s at %d: %w (no safe object identity validator: ETag or Last-Modified required)",
+				logicalPath, offset, source.ErrResumeUnsupported)
 		}
 	}
 	out, err := r.client.GetObject(ctx, input)
@@ -417,6 +434,20 @@ func (r *remote) OpenFrom(ctx context.Context, logicalPath string, offset int64,
 	}
 	if offset == 0 {
 		return out.Body, nil
+	}
+	// defense-in-depth：响应元数据与快照不一致即身份漂移。LastModified
+	// 按秒粒度比较——ListObjects（毫秒精度）与 GetObject（RFC 1123
+	// 秒精度）之间的精度差不是对象变化，误报会造成永久无法续传。
+	if expected.ETag != "" && derefStr(out.ETag) != "" && derefStr(out.ETag) != expected.ETag {
+		_ = out.Body.Close()
+		return nil, fmt.Errorf("s3 resume %s: %w (response ETag %s, want %s)",
+			logicalPath, source.ErrRemoteChanged, derefStr(out.ETag), expected.ETag)
+	}
+	if out.LastModified != nil && !expected.ModifiedAt.IsZero() &&
+		out.LastModified.Truncate(time.Second) != expected.ModifiedAt.Truncate(time.Second) {
+		_ = out.Body.Close()
+		return nil, fmt.Errorf("s3 resume %s: %w (response LastModified %s, want %s)",
+			logicalPath, source.ErrRemoteChanged, out.LastModified.Format(time.RFC3339), expected.ModifiedAt.Format(time.RFC3339))
 	}
 	// 无 Content-Range：服务忽略 Range 返回 200 全量流——绝不能把
 	// 完整文件冒充 offset 流交给 Downloader append。

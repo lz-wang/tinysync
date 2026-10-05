@@ -151,13 +151,16 @@ func (c *Client) Open(ctx context.Context, logicalPath string) (io.ReadCloser, e
 
 // OpenFrom 实现 source.ResumableRemote（ADR 0010）。offset=0 走无
 // Range 的 GET（起点天然 0）；offset>0 携带 Range: bytes=N- 与
-// If-Range（strong ETag 优先，否则 Last-Modified）。响应严格校验：
+// If-Range——fail-closed：快照既无 strong ETag 也无 Last-Modified 时
+// 拒绝续传（206 无法证明对象身份，same-size 替换会与旧 prefix 拼接），
+// 降级 ErrResumeUnsupported 完整重传。响应严格校验：
 //
 //   - 206 且 Content-Range start==offset、total==快照 Size → 通过；
-//   - 200（服务器忽略 Range）→ Stat 复核：指纹漂移 →
-//     ErrRemoteChanged；未变 → ErrResumeUnsupported（服务器不支持
-//     Range，保守降级完整下载）——绝不能把 200 body 当 offset 流
-//     交给 Downloader append（prefix + 完整文件 = 确定性损坏）；
+//   - 200（服务器忽略 Range 或 If-Range 判定对象已变）→ Stat 复核：
+//     指纹漂移 → ErrRemoteChanged；未变 → ErrResumeUnsupported
+//     （服务器不支持 Range，保守降级完整下载）——绝不能把 200 body
+//     当 offset 流交给 Downloader append（prefix + 完整文件 = 确定性
+//     损坏）；
 //   - 416（offset 越过当前资源末尾）→ 远端缩小 → ErrRemoteChanged；
 //   - Content-Range 畸形 / 起点错误 / total 不符 → ErrRemoteChanged。
 func (c *Client) OpenFrom(ctx context.Context, logicalPath string, offset int64, expected source.Fingerprint) (io.ReadCloser, error) {
@@ -170,8 +173,11 @@ func (c *Client) OpenFrom(ctx context.Context, logicalPath string, offset int64,
 	if logicalPath == "/" {
 		return nil, fmt.Errorf("%w: cannot open directory root", source.ErrInvalid)
 	}
-	if offset < 0 {
-		return nil, fmt.Errorf("%w: negative resume offset %d for %s", source.ErrInvalid, offset, logicalPath)
+	if err := source.CheckResumeOffset(offset, expected.Size); err != nil {
+		return nil, fmt.Errorf("http resume %s: %w", logicalPath, err)
+	}
+	if offset == expected.Size {
+		return source.EmptyResumeStream(), nil
 	}
 	if offset == 0 {
 		return c.Open(ctx, logicalPath)
@@ -181,9 +187,17 @@ func (c *Client) OpenFrom(ctx context.Context, logicalPath string, offset int64,
 		return nil, err
 	}
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
-	if v := source.IfRangeValue(expected); v != "" {
-		req.Header.Set("If-Range", v)
+	// 身份保护 fail-closed（ADR 0010）：206 + Content-Range 只能证明
+	//「这是该 URL 当前对象的 N..EOF」，无法证明「这是生成 partial 时
+	// 那个对象的 N..EOF」。没有 strong ETag 或 Last-Modified 可供
+	// If-Range 断言时，same-size 替换的远端对象会与旧 prefix 拼接成
+	// 静默内容错误——拒绝续传，降级完整下载。
+	validator := source.IfRangeValue(expected)
+	if validator == "" {
+		return nil, fmt.Errorf("http resume %s at %d: %w (no safe identity validator: strong ETag or Last-Modified required)",
+			logicalPath, offset, source.ErrResumeUnsupported)
 	}
+	req.Header.Set("If-Range", validator)
 	resp, err := c.req.do(req)
 	if err != nil {
 		return nil, err

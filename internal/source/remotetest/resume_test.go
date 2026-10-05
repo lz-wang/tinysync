@@ -92,9 +92,12 @@ func (r *resumeFakeRemote) Open(_ context.Context, path string) (io.ReadCloser, 
 }
 
 // OpenFrom 按契约实现：指纹（Size + ModifiedAt）不一致 →
-// ErrRemoteChanged；offset 越过对象末尾 → ErrRemoteChanged。
+// ErrRemoteChanged；offset 边界经统一契约 helper 处理。
 func (r *resumeFakeRemote) OpenFrom(_ context.Context, path string, offset int64, expected source.Fingerprint) (io.ReadCloser, error) {
 	if err := source.ValidateLogicalPath(path); err != nil {
+		return nil, err
+	}
+	if err := source.CheckResumeOffset(offset, expected.Size); err != nil {
 		return nil, err
 	}
 	r.h.mu.Lock()
@@ -107,8 +110,8 @@ func (r *resumeFakeRemote) OpenFrom(_ context.Context, path string, offset int64
 	if fp.Size != expected.Size || !fp.ModifiedAt.Equal(expected.ModifiedAt) {
 		return nil, source.ErrRemoteChanged
 	}
-	if offset > fp.Size {
-		return nil, source.ErrRemoteChanged
+	if offset == fp.Size {
+		return source.EmptyResumeStream(), nil
 	}
 	return io.NopCloser(bytes.NewReader(data[offset:])), nil
 }

@@ -67,6 +67,9 @@ type fakeConn struct {
 	closeCount int
 	// readDirErrs 按 native path 注入一次性的 ReadDir 故障（消费后清除）。
 	readDirErrs map[string]error
+	// plainOpen 使 open 返回不可 seek / 不可 Stat 的裸 reader
+	//（OpenFrom 能力断言降级路径注入）。
+	plainOpen bool
 }
 
 func newFakeConn() *fakeConn {
@@ -167,8 +170,55 @@ func (c *fakeConn) open(ctx context.Context, native string) (io.ReadCloser, erro
 	if !ok {
 		return nil, os.ErrNotExist
 	}
-	return io.NopCloser(bytes.NewReader([]byte(content))), nil
+	if c.plainOpen {
+		// 不可 seek / 不可 Stat 的降级路径注入（能力断言覆盖）。
+		return io.NopCloser(bytes.NewReader([]byte(content))), nil
+	}
+	// 与真实 *smb2.File 同构：Read / Seek / Stat（handle 级元数据取
+	// 自父目录登记的条目形态）。
+	parent, name := splitNative(native)
+	for _, e := range c.dirs[parent] {
+		if e.name == name {
+			return &fakeSMBFile{data: []byte(content), info: e.stat()}, nil
+		}
+	}
+	return &fakeSMBFile{data: []byte(content), info: fakeEntry{name: lastSegment(native)}.stat()}, nil
 }
+
+// fakeSMBFile 是 fake conn 打开的文件：与生产 *smb2.File 的能力面
+// 同构（Read / Seek / Stat）。
+type fakeSMBFile struct {
+	data []byte
+	info os.FileInfo
+	off  int64
+}
+
+func (f *fakeSMBFile) Read(p []byte) (int, error) {
+	if f.off >= int64(len(f.data)) {
+		return 0, io.EOF
+	}
+	n := copy(p, f.data[f.off:])
+	f.off += int64(n)
+	return n, nil
+}
+
+func (f *fakeSMBFile) Seek(offset int64, whence int) (int64, error) {
+	switch whence {
+	case io.SeekStart:
+		f.off = offset
+	case io.SeekCurrent:
+		f.off += offset
+	case io.SeekEnd:
+		f.off = int64(len(f.data)) + offset
+	default:
+		return 0, os.ErrInvalid
+	}
+	return f.off, nil
+}
+
+func (f *fakeSMBFile) Stat() (os.FileInfo, error) { return f.info, nil }
+
+func (f *fakeSMBFile) Close() error { return nil }
 
 func (c *fakeConn) mkdir(ctx context.Context, native string) error {
 	if err := ctx.Err(); err != nil {
@@ -566,8 +616,10 @@ func TestNormalizeCtxErr(t *testing.T) {
 	}
 }
 
-// OpenFrom 的身份校验：expected 指纹与 Lstat 不一致（远端变化）时
-// 返回 ErrRemoteChanged，且不发起 open。
+// OpenFrom 的身份校验：expected 指纹与打开句柄的 Stat 不一致（远端
+// 变化）时返回 ErrRemoteChanged。身份判定发生在 open 之后的 handle
+// 级 Stat 上（与 Local / SFTP 同构，Lstat → Open 的同 size 替换
+// TOCTOU 窗口被关闭）。
 func TestOpenFromRemoteChanged(t *testing.T) {
 	r, c := seededRemote(t)
 	stale := source.Fingerprint{Size: 3, ModifiedAt: time.Unix(1600000000, 0)}
@@ -577,11 +629,12 @@ func TestOpenFromRemoteChanged(t *testing.T) {
 	_ = c
 }
 
-// OpenFrom 的能力降级：fake conn 的 open 返回不可 seek 的实现，
-// OpenFrom 返回 ErrResumeUnsupported（生产 *smb2.File 实现 io.Seeker，
-// 真实 seek 行为由 SMB 集成测试覆盖）。
+// OpenFrom 的能力降级：fake conn 的 open 返回不可 seek / 不可 Stat 的
+// 实现，OpenFrom 返回 ErrResumeUnsupported（生产 *smb2.File 实现
+// io.Seeker 与 Stat，真实行为由 SMB 集成测试覆盖）。
 func TestOpenFromUnsupportedWithoutSeeker(t *testing.T) {
-	r, _ := seededRemote(t)
+	r, c := seededRemote(t)
+	c.plainOpen = true
 	fi, err := r.Stat(context.Background(), "/hello.txt")
 	if err != nil {
 		t.Fatalf("Stat: %v", err)

@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -105,7 +106,9 @@ func (f *fakeCaddyServer) handle(w http.ResponseWriter, r *http.Request) {
 func (f *fakeCaddyServer) serveFile(w http.ResponseWriter, r *http.Request, p string) {
 	content := f.files[p]
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("ETag", fmt.Sprintf(`"fake-%d"`, len(content)))
+	// ETag 随内容变化（真实服务的 ETag 在对象被替换时必然漂移）：
+	// same-size 替换测试依赖 If-Range 感知身份漂移。
+	w.Header().Set("ETag", fmt.Sprintf(`"fake-%x"`, sha256.Sum256([]byte(content))))
 	if f.ignoreRange {
 		r = r.Clone(r.Context())
 		r.Header.Del("Range")

@@ -362,11 +362,22 @@ func (r *remote) Open(ctx context.Context, logicalPath string) (io.ReadCloser, e
 	return f, nil
 }
 
+// resumableSMBFile 是断点续传要求的句柄能力面：生产 *smb2.File 同时
+// 实现 Read / Seek / Stat（handle 级元数据，ADR 0010 的
+// Open → Stat → SameFingerprint → Seek 顺序）；能力不足的实现
+// （测试 fake）在 OpenFrom 边界降级 ErrResumeUnsupported。
+type resumableSMBFile interface {
+	io.ReadCloser
+	io.Seeker
+	Stat() (os.FileInfo, error)
+}
+
 // OpenFrom 实现 source.ResumableRemote（ADR 0010）。conn.open 的返回
 // 保持 io.ReadCloser（现有 fake 无需改造成 SMB 类型）：生产 *smb2.File
-// 实现 io.Seeker，直接 Seek；不可 seek 的实现（测试 fake）返回
-// ErrResumeUnsupported。身份校验走 open 前的 Lstat + expected 指纹
-// （go-smb2 未暴露 handle 级 Stat）。
+// 实现 io.Seeker 与 Stat；身份校验用打开句柄自身的 Stat 与 expected
+// 指纹比对——Lstat → Open 之间存在 A 被替换成同 size B 的 TOCTOU
+// 窗口，handle 级 Stat 与 Local / SFTP 完全同构地关闭它。不可 seek /
+// 不可 Stat 的实现（测试 fake）返回 ErrResumeUnsupported。
 func (r *remote) OpenFrom(ctx context.Context, logicalPath string, offset int64, expected source.Fingerprint) (io.ReadCloser, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -374,8 +385,11 @@ func (r *remote) OpenFrom(ctx context.Context, logicalPath string, offset int64,
 	if err := source.ValidateLogicalPath(logicalPath); err != nil {
 		return nil, err
 	}
-	if offset < 0 {
-		return nil, fmt.Errorf("%w: negative resume offset %d for %s", source.ErrInvalid, offset, logicalPath)
+	if err := source.CheckResumeOffset(offset, expected.Size); err != nil {
+		return nil, fmt.Errorf("smb resume %s: %w", logicalPath, err)
+	}
+	if offset == expected.Size {
+		return source.EmptyResumeStream(), nil
 	}
 	c, err := r.session(ctx)
 	if err != nil {
@@ -385,31 +399,34 @@ func (r *remote) OpenFrom(ctx context.Context, logicalPath string, offset int64,
 	if err != nil {
 		return nil, err
 	}
-	info, err := c.lstat(ctx, native)
-	if err != nil {
-		wrapped := normalizeCtxErr(ctx, wrapOp("stat", logicalPath, classifyError(err)))
-		r.maybeTeardown(c, wrapped)
-		return nil, wrapped
-	}
-	fi, err := toFileInfo(logicalPath, info)
-	if err != nil {
-		return nil, err
-	}
-	if !source.SameFingerprint(fi.Fingerprint, expected) {
-		return nil, fmt.Errorf("smb %s: %w", logicalPath, source.ErrRemoteChanged)
-	}
 	f, err := c.open(ctx, native)
 	if err != nil {
 		wrapped := normalizeCtxErr(ctx, wrapOp("open", logicalPath, classifyError(err)))
 		r.maybeTeardown(c, wrapped)
 		return nil, wrapped
 	}
-	seeker, ok := f.(io.Seeker)
+	sf, ok := f.(resumableSMBFile)
 	if !ok {
 		_ = f.Close()
 		return nil, fmt.Errorf("smb resume %s: %w", logicalPath, source.ErrResumeUnsupported)
 	}
-	if _, err := seeker.Seek(offset, io.SeekStart); err != nil {
+	info, err := sf.Stat()
+	if err != nil {
+		_ = f.Close()
+		wrapped := normalizeCtxErr(ctx, wrapOp("stat", logicalPath, classifyError(err)))
+		r.maybeTeardown(c, wrapped)
+		return nil, wrapped
+	}
+	fi, err := toFileInfo(logicalPath, info)
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if !source.SameFingerprint(fi.Fingerprint, expected) {
+		_ = f.Close()
+		return nil, fmt.Errorf("smb %s: %w", logicalPath, source.ErrRemoteChanged)
+	}
+	if _, err := sf.Seek(offset, io.SeekStart); err != nil {
 		_ = f.Close()
 		wrapped := normalizeCtxErr(ctx, wrapOp("seek", logicalPath, classifyError(err)))
 		r.maybeTeardown(c, wrapped)

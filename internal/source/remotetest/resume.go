@@ -26,9 +26,10 @@ func resumeContent() []byte {
 }
 
 // RunResumeSuite 验证可选的 ResumableRemote 能力契约（ADR 0010）：
-// offset 流的精确起点、EOF 语义、身份校验与非法路径拒绝。Remote 未
-// 实现该能力时跳过（optional capability，跳过不是失败）；各协议
-// 特有的 Range / If-Match 行为由 adapter 自身测试覆盖。
+// offset 流的精确起点、EOF 语义、offset 边界、身份校验（含 same-size
+// 替换）与非法路径拒绝。Remote 未实现该能力时跳过（optional
+// capability，跳过不是失败）；各协议特有的 Range / If-Match 行为由
+// adapter 自身测试覆盖。
 func RunResumeSuite(t *testing.T, h Harness) {
 	t.Run("OpenFromMatchesSuffix", func(t *testing.T) {
 		assertOpenFromMatchesSuffix(t, h)
@@ -39,8 +40,17 @@ func RunResumeSuite(t *testing.T, h Harness) {
 	t.Run("OpenFromEndOffset", func(t *testing.T) {
 		assertOpenFromEndOffset(t, h)
 	})
+	t.Run("OpenFromBeyondEndOffset", func(t *testing.T) {
+		assertOpenFromBeyondEndOffset(t, h)
+	})
+	t.Run("OpenFromNegativeOffset", func(t *testing.T) {
+		assertOpenFromNegativeOffset(t, h)
+	})
 	t.Run("OpenFromRemoteChanged", func(t *testing.T) {
 		assertOpenFromRemoteChanged(t, h)
+	})
+	t.Run("OpenFromSameSizeReplacement", func(t *testing.T) {
+		assertOpenFromSameSizeReplacement(t, h)
 	})
 	t.Run("OpenFromInvalidLogicalPath", func(t *testing.T) {
 		assertOpenFromInvalidLogicalPath(t, h)
@@ -112,14 +122,14 @@ func assertOpenFromZeroOffset(t *testing.T, h Harness) {
 	})
 }
 
-// assertOpenFromEndOffset 验证 offset == size 的边界：空流或错误皆可
-// （部分协议无法表达空 Range，如 HTTP 的 bytes=N- 起点 == size 返回
-// 416），唯独不能把完整文件伪装成 offset 流。
+// assertOpenFromEndOffset 验证 offset == size 的严格边界：契约要求
+// 返回空流（立即 EOF），不发注定 416 的 Range 请求——各实现经
+// source.CheckResumeOffset / source.EmptyResumeStream 统一满足。
 func assertOpenFromEndOffset(t *testing.T, h Harness) {
 	withResumeRemote(t, h, func(t *testing.T, r source.Remote, rr source.ResumableRemote) {
 		rc, err := rr.OpenFrom(context.Background(), "/resume.bin", resumeContentSize, resumeFingerprint(t, r))
 		if err != nil {
-			return
+			t.Fatalf("OpenFrom(end) = %v, want empty stream", err)
 		}
 		defer func() { _ = rc.Close() }()
 		got, err := io.ReadAll(rc)
@@ -128,6 +138,28 @@ func assertOpenFromEndOffset(t *testing.T, h Harness) {
 		}
 		if len(got) != 0 {
 			t.Fatalf("OpenFrom(end) returned %d bytes, want empty stream", len(got))
+		}
+	})
+}
+
+// assertOpenFromBeyondEndOffset 验证 offset > size 的严格边界：
+// 远端已缩小（或 partial 损坏超长），契约要求 ErrRemoteChanged——
+// 不允许「Seek 越过 EOF 成功后读到 EOF」被当成合法空流。
+func assertOpenFromBeyondEndOffset(t *testing.T, h Harness) {
+	withResumeRemote(t, h, func(t *testing.T, r source.Remote, rr source.ResumableRemote) {
+		_, err := rr.OpenFrom(context.Background(), "/resume.bin", resumeContentSize+1, resumeFingerprint(t, r))
+		if !errors.Is(err, source.ErrRemoteChanged) {
+			t.Fatalf("OpenFrom(size+1) = %v, want ErrRemoteChanged", err)
+		}
+	})
+}
+
+// assertOpenFromNegativeOffset 验证 offset < 0 返回 ErrInvalid。
+func assertOpenFromNegativeOffset(t *testing.T, h Harness) {
+	withResumeRemote(t, h, func(t *testing.T, r source.Remote, rr source.ResumableRemote) {
+		_, err := rr.OpenFrom(context.Background(), "/resume.bin", -1, resumeFingerprint(t, r))
+		if !errors.Is(err, source.ErrInvalid) {
+			t.Fatalf("OpenFrom(-1) = %v, want ErrInvalid", err)
 		}
 	})
 }
@@ -143,6 +175,38 @@ func assertOpenFromRemoteChanged(t *testing.T, h Harness) {
 		_, err := rr.OpenFrom(context.Background(), "/resume.bin", 16, stale)
 		if !errors.Is(err, source.ErrRemoteChanged) {
 			t.Fatalf("OpenFrom with stale fingerprint = %v, want ErrRemoteChanged", err)
+		}
+	})
+}
+
+// assertOpenFromSameSizeReplacement 验证危险的 same-size 替换场景：
+// 远端对象被同长度内容覆盖后，只比较 Size 的身份校验发现不了——
+// 旧 partial prefix + 新对象 suffix 的静默拼接恰恰发生在 Size 不变时。
+// 契约要求身份信号（mtime / ETag / handle Stat）识别漂移并返回
+// ErrRemoteChanged。
+func assertOpenFromSameSizeReplacement(t *testing.T, h Harness) {
+	withResumeRemote(t, h, func(t *testing.T, r source.Remote, rr source.ResumableRemote) {
+		stale := resumeFingerprint(t, r)
+		// 同长度、逐字节取反的替换内容：Size 恒等，内容必然不同。
+		replacement := resumeContent()
+		for i := range replacement {
+			replacement[i] = ^replacement[i]
+		}
+		h.Write(t, "/resume.bin", string(replacement))
+		// 时间戳粒度粗（如 1s）的文件系统在两次写入间可能不推进
+		// mtime，且无 ETag 的协议此时信息论上无法检测替换——跳过
+		// 而不是制造 flake；正常 CI 环境（ns 粒度）必然断言。
+		fresh, err := r.Stat(context.Background(), "/resume.bin")
+		if err != nil {
+			t.Fatalf("Stat after replacement: %v", err)
+		}
+		if stale.ModifiedAt.Equal(fresh.Fingerprint.ModifiedAt) && stale.ETag == fresh.Fingerprint.ETag &&
+			stale.Checksum == fresh.Fingerprint.Checksum && stale.Version == fresh.Fingerprint.Version {
+			t.Skip("identity fields did not drift after same-size replacement (coarse timestamp granularity)")
+		}
+		_, err = rr.OpenFrom(context.Background(), "/resume.bin", 16, stale)
+		if !errors.Is(err, source.ErrRemoteChanged) {
+			t.Fatalf("OpenFrom after same-size replacement = %v, want ErrRemoteChanged", err)
 		}
 	})
 }

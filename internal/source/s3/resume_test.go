@@ -25,14 +25,15 @@ func (e *preconditionFailedErr) ErrorCode() string { return "PreconditionFailed"
 
 func (e *preconditionFailedErr) HTTPStatusCode() int { return 412 }
 
-// rangeFakeS3 在 fakeS3 之上实现 Range / If-Match 语义，并可注入
-// S3-compatible 服务的异常响应形态（忽略 Range、起点错误、total
-// 不符、412）。
+// rangeFakeS3 在 fakeS3 之上实现 Range / If-Match / If-Unmodified-Since
+// 语义，并可注入 S3-compatible 服务的异常响应形态（忽略 Range、起点
+// 错误、total 不符、412、响应元数据漂移）。
 type rangeFakeS3 struct {
 	fakeS3
 	mu       sync.Mutex
-	ranges   []string // 依次记录每次 GetObject 的 Range 头
-	ifMatch  []string // 依次记录每次 GetObject 的 If-Match 头
+	ranges   []string     // 依次记录每次 GetObject 的 Range 头
+	ifMatch  []string     // 依次记录每次 GetObject 的 If-Match 头
+	ifUnmod  []*time.Time // 依次记录每次 GetObject 的 If-Unmodified-Since 头
 	behavior func(rangeHeader string, offset int64) rangeBehavior
 }
 
@@ -42,6 +43,7 @@ type rangeBehavior struct {
 	wrongStart       bool // Content-Range 起点与请求不符
 	wrongTotal       bool // Content-Range total 与对象真实大小不符
 	preconditionFail bool // 412
+	wrongETag        bool // 响应携带与对象不符的 ETag（同 size 替换后的服务实现）
 }
 
 func (f *rangeFakeS3) GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
@@ -51,11 +53,17 @@ func (f *rangeFakeS3) GetObject(ctx context.Context, params *s3.GetObjectInput, 
 	f.mu.Lock()
 	f.ranges = append(f.ranges, derefStr(params.Range))
 	f.ifMatch = append(f.ifMatch, derefStr(params.IfMatch))
+	f.ifUnmod = append(f.ifUnmod, params.IfUnmodifiedSince)
 	behavior := f.behavior
 	f.mu.Unlock()
 	obj, ok := f.objects[derefStr(params.Key)]
 	if !ok {
 		return nil, &notFoundErr{}
+	}
+	// If-Unmodified-Since：对象在条件时刻之后被写入 → 412
+	//（同 size 替换的身份漂移识别，与真实 S3 语义一致）。
+	if params.IfUnmodifiedSince != nil && obj.lastModified.After(*params.IfUnmodifiedSince) {
+		return nil, &preconditionFailedErr{}
 	}
 	data := string(obj.data)
 	offset := int64(0)
@@ -71,13 +79,17 @@ func (f *rangeFakeS3) GetObject(ctx context.Context, params *s3.GetObjectInput, 
 		}
 		offset = n
 	}
+	etag := obj.etag
 	if behavior != nil {
 		b := behavior(rangeHeader, offset)
 		if b.preconditionFail {
 			return nil, &preconditionFailedErr{}
 		}
+		if b.wrongETag {
+			etag = `"replaced-object-etag"`
+		}
 		if b.ignoreRange || rangeHeader == "" {
-			return &s3.GetObjectOutput{Body: io.NopCloser(strings.NewReader(data))}, nil
+			return &s3.GetObjectOutput{Body: io.NopCloser(strings.NewReader(data)), ETag: &etag, LastModified: &obj.lastModified}, nil
 		}
 		start := offset
 		if b.wrongStart {
@@ -91,16 +103,20 @@ func (f *rangeFakeS3) GetObject(ctx context.Context, params *s3.GetObjectInput, 
 		return &s3.GetObjectOutput{
 			Body:         io.NopCloser(strings.NewReader(data[offset:])),
 			ContentRange: &cr,
+			ETag:         &etag,
+			LastModified: &obj.lastModified,
 		}, nil
 	}
 	// 默认行为：合规 206。
 	if rangeHeader == "" {
-		return &s3.GetObjectOutput{Body: io.NopCloser(strings.NewReader(data))}, nil
+		return &s3.GetObjectOutput{Body: io.NopCloser(strings.NewReader(data)), ETag: &etag, LastModified: &obj.lastModified}, nil
 	}
 	cr := fmt.Sprintf("bytes %d-%d/%d", offset, len(data)-1, len(data))
 	return &s3.GetObjectOutput{
 		Body:         io.NopCloser(strings.NewReader(data[offset:])),
 		ContentRange: &cr,
+		ETag:         &etag,
+		LastModified: &obj.lastModified,
 	}, nil
 }
 
@@ -207,16 +223,57 @@ func TestS3OpenFromPreconditionFailed(t *testing.T) {
 	}
 }
 
-// 快照无 ETag：不发 If-Match，身份仅靠 Content-Range total 兜底。
-func TestS3OpenFromWithoutETag(t *testing.T) {
-	r, content, f := newRangeRemote(t, nil)
-	rc, err := r.OpenFrom(context.Background(), "/data.bin", 4, fp(int64(len(content)), ""))
-	if err != nil {
-		t.Fatalf("OpenFrom(4): %v", err)
+// 快照无任何身份 validator（无 ETag 且无 ModifiedAt）：拒绝续传——
+// Content-Range 只能证明区间大小，same-size 替换会与旧 prefix 拼接
+// （fail-closed，ADR 0010）。
+func TestS3OpenFromWithoutValidator(t *testing.T) {
+	r, content, _ := newRangeRemote(t, nil)
+	_, err := r.OpenFrom(context.Background(), "/data.bin", 4, source.Fingerprint{Size: int64(len(content))})
+	if !errors.Is(err, source.ErrResumeUnsupported) {
+		t.Fatalf("OpenFrom without validator = %v, want ErrResumeUnsupported", err)
 	}
+}
+
+// 快照无 ETag 但有 ModifiedAt：退化为 If-Unmodified-Since 时间条件，
+// 合规对象照常续传。
+func TestS3OpenFromWithModifiedAtValidator(t *testing.T) {
+	mod := time.Unix(1700000000, 0)
+	r, content, f := newRangeRemote(t, nil)
+	rc, err := r.OpenFrom(context.Background(), "/data.bin", 4, source.Fingerprint{Size: int64(len(content)), ModifiedAt: mod})
+	if err != nil {
+		t.Fatalf("OpenFrom(4) with mtime validator: %v", err)
+	}
+	got, _ := io.ReadAll(rc)
 	_ = rc.Close()
-	if len(f.ifMatch) != 1 || f.ifMatch[0] != "" {
-		t.Fatalf("If-Match headers = %v, want none", f.ifMatch)
+	if string(got) != content[4:] {
+		t.Fatalf("content = %q, want suffix from 4", got)
+	}
+	if len(f.ifUnmod) != 1 || f.ifUnmod[0] == nil || !f.ifUnmod[0].Equal(mod) {
+		t.Fatalf("If-Unmodified-Since = %v, want snapshot mtime", f.ifUnmod)
+	}
+}
+
+// 同 size 替换（对象在快照之后被写入）：If-Unmodified-Since 判定失败
+// 412 → ErrRemoteChanged，禁止旧 prefix + 新 suffix 拼接。快照时刻
+// 早于对象写入时刻（fake 对象 mtime = 1700000000）。
+func TestS3OpenFromSameSizeReplacement(t *testing.T) {
+	r, content, _ := newRangeRemote(t, nil)
+	stale := time.Unix(1600000000, 0)
+	_, err := r.OpenFrom(context.Background(), "/data.bin", 4, source.Fingerprint{Size: int64(len(content)), ModifiedAt: stale})
+	if !errors.Is(err, source.ErrRemoteChanged) {
+		t.Fatalf("OpenFrom after same-size replacement = %v, want ErrRemoteChanged", err)
+	}
+}
+
+// defense-in-depth：服务忽略条件头（对象已替换但仍返回 206）时，
+// 响应 ETag 与快照不一致同样识别为 ErrRemoteChanged。
+func TestS3OpenFromResponseETagMismatch(t *testing.T) {
+	r, content, _ := newRangeRemote(t, func(string, int64) rangeBehavior {
+		return rangeBehavior{wrongETag: true}
+	})
+	_, err := r.OpenFrom(context.Background(), "/data.bin", 4, fp(int64(len(content)), `"etag-x"`))
+	if !errors.Is(err, source.ErrRemoteChanged) {
+		t.Fatalf("OpenFrom with response ETag mismatch = %v, want ErrRemoteChanged", err)
 	}
 }
 

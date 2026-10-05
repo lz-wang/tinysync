@@ -1,6 +1,7 @@
 package source
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -163,6 +164,34 @@ type DirectoryCreator interface {
 //     说明远端已缩小，返回 ErrRemoteChanged。
 type ResumableRemote interface {
 	OpenFrom(ctx context.Context, path string, offset int64, expected Fingerprint) (io.ReadCloser, error)
+}
+
+// CheckResumeOffset 校验 OpenFrom 的 offset 边界契约（ADR 0010）：
+//
+//   - offset < 0   → ErrInvalid（非法输入）；
+//   - offset > size → ErrRemoteChanged（远端已缩小，partial 前缀
+//     不可能仍属于当前对象）。
+//
+// 返回 nil 表示 offset 在 [0, size] 内，调用方继续正常续传流程；
+// offset == size 的「命中对象末尾」形态由 EmptyResumeStream 处理。
+// 各 ResumableRemote 实现必须在入口统一调用，使边界语义跨协议一致，
+// 不依赖「Seek 越过 EOF 是否成功」这类各协议恰好不同的行为。
+func CheckResumeOffset(offset, size int64) error {
+	switch {
+	case offset < 0:
+		return fmt.Errorf("%w: negative resume offset %d", ErrInvalid, offset)
+	case offset > size:
+		return fmt.Errorf("%w: resume offset %d beyond object size %d", ErrRemoteChanged, offset, size)
+	}
+	return nil
+}
+
+// EmptyResumeStream 返回 offset == size 时的契约空流（立即 EOF）：
+// partial 已写满时调用方只需要校验既有字节，不需要一次注定 416 的
+// Range 请求。各 ResumableRemote 实现在 CheckResumeOffset 通过后、
+// offset == size 时返回本流。
+func EmptyResumeStream() io.ReadCloser {
+	return io.NopCloser(bytes.NewReader(nil))
 }
 
 // SameFingerprint 报告实际远端对象元数据与 expected 指纹是否指向同一

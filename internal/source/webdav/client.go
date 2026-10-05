@@ -230,13 +230,16 @@ func (r *remote) Open(ctx context.Context, path string) (io.ReadCloser, error) {
 // OpenFrom 实现 source.ResumableRemote（ADR 0010）。go-webdav 未暴露
 // Range 参数，offset>0 时经保留的 webdav.HTTPClient（认证与 transport
 // 安全边界与 Open 共用）直接发 GET，携带 Range: bytes=N- 与
-// If-Range。响应校验与 HTTP Source 同一铁律：206 且 Content-Range
-// start==offset、total==快照 Size 才通过；200（服务器忽略 Range）经
-// Stat 复核分辨「对象变了」（ErrRemoteChanged）与「不支持 Range」
-// （ErrResumeUnsupported，保守降级完整下载）——绝不能把 200 body
-// 当 offset 流交给 Downloader append；416（offset 越过当前资源末尾）
-// 是远端缩小 → ErrRemoteChanged；非 identity 的 Content-Encoding 一律
-// 拒绝（压缩 representation 破坏字节数语义）。
+// If-Range——fail-closed：快照既无 strong ETag 也无 Last-Modified 时
+// 拒绝续传（206 无法证明对象身份，same-size 替换会与旧 prefix 拼接），
+// 降级 ErrResumeUnsupported 完整重传。响应校验与 HTTP Source 同一铁律：
+// 206 且 Content-Range start==offset、total==快照 Size 才通过；200
+// （服务器忽略 Range 或 If-Range 判定对象已变）经 Stat 复核分辨
+// 「对象变了」（ErrRemoteChanged）与「不支持 Range」（ErrResumeUnsupported，
+// 保守降级完整下载）——绝不能把 200 body 当 offset 流交给 Downloader
+// append；416（offset 越过当前资源末尾）是远端缩小 → ErrRemoteChanged；
+// 非 identity 的 Content-Encoding 一律拒绝（压缩 representation 破坏
+// 字节数语义）。
 func (r *remote) OpenFrom(ctx context.Context, logicalPath string, offset int64, expected source.Fingerprint) (io.ReadCloser, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -244,8 +247,11 @@ func (r *remote) OpenFrom(ctx context.Context, logicalPath string, offset int64,
 	if err := source.ValidateLogicalPath(logicalPath); err != nil {
 		return nil, err
 	}
-	if offset < 0 {
-		return nil, fmt.Errorf("%w: negative resume offset %d for %s", source.ErrInvalid, offset, logicalPath)
+	if err := source.CheckResumeOffset(offset, expected.Size); err != nil {
+		return nil, fmt.Errorf("webdav resume %s: %w", logicalPath, err)
+	}
+	if offset == expected.Size {
+		return source.EmptyResumeStream(), nil
 	}
 	if offset == 0 {
 		return r.Open(ctx, logicalPath)
@@ -261,9 +267,12 @@ func (r *remote) OpenFrom(ctx context.Context, logicalPath string, offset int64,
 	}
 	req.Header.Set("Accept-Encoding", "identity")
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
-	if v := webdavIfRangeValue(expected); v != "" {
-		req.Header.Set("If-Range", v)
+	validator := webdavIfRangeValue(expected)
+	if validator == "" {
+		return nil, fmt.Errorf("webdav resume %s at %d: %w (no safe identity validator: strong ETag or Last-Modified required)",
+			logicalPath, offset, source.ErrResumeUnsupported)
 	}
+	req.Header.Set("If-Range", validator)
 	resp, err := r.auth.Do(req)
 	if err != nil {
 		// 416 由 transport 层转为带状态码的分类错误：偏移越过当前
