@@ -161,6 +161,80 @@ func TestPruneSupersededPartials(t *testing.T) {
 	}
 }
 
+// prunePartialsForRun 的批量语义：每目录一次枚举，删除计划内 target
+// 的旧指纹 partial；计划外 target、非断点条目、非 regular 形态一概
+// 不触碰；根目录与子目录各自独立处理。
+func TestPrunePartialsForRun(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const sourceID = "src_a"
+	fps := func(sz int64) source.Fingerprint { return source.Fingerprint{Size: sz} }
+	entries := []planEntry{
+		{relPath: "docs/a.bin", remote: source.FileInfo{Path: "/docs/a.bin", Fingerprint: fps(6)}},
+		{relPath: "b.bin", remote: source.FileInfo{Path: "/b.bin", Fingerprint: fps(6)}},
+	}
+	tidA := partialTargetID("job_a", "docs/a.bin")
+	tidB := partialTargetID("job_a", "b.bin")
+	ridA := partialRemoteID(sourceID, "/docs/a.bin", fps(6))
+	ridAOld := partialRemoteID(sourceID, "/docs/a.bin", fps(99))
+	ridBOld := partialRemoteID(sourceID, "/b.bin", fps(99))
+	tidStranger := partialTargetID("job_stranger", "x.bin")
+
+	write := func(rel string) string {
+		t.Helper()
+		p := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+		return p
+	}
+	keepA := write("docs/" + partialName(tidA, ridA))               // 计划内当前指纹：保留
+	oldA := write("docs/" + partialName(tidA, ridAOld))             // 同 target 旧指纹：删
+	strangerA := write("docs/" + partialName(tidStranger, ridAOld)) // 计划外 target：不触碰
+	oldB := write(partialName(tidB, ridBOld))                       // b 的旧指纹：删
+	normal := write("normal.txt")                                   // 非断点条目：不触碰
+	sym := filepath.Join(root, partialName(tidB, "77770000000000000000000000000000"))
+	if err := os.Symlink(normal, sym); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := prunePartialsForRun("job_a", sourceID, root, entries); err != nil {
+		t.Fatalf("prunePartialsForRun: %v", err)
+	}
+	for _, gone := range []string{oldA, oldB} {
+		if _, err := os.Lstat(gone); !os.IsNotExist(err) {
+			t.Errorf("superseded partial survived: %s", gone)
+		}
+	}
+	for _, stays := range []string{keepA, strangerA, normal, sym} {
+		if _, err := os.Lstat(stays); err != nil {
+			t.Errorf("%s was pruned: %v", stays, err)
+		}
+	}
+}
+
+// engine 关闭逐文件 prune 后，run-level 批量清理仍然在传输前回收旧
+// 指纹 partial——行为与旧的逐文件清理等价，只是每目录一次枚举。
+func TestRunBatchPrunesSupersededPartials(t *testing.T) {
+	f := newEngineFixture(t, ModeMirror)
+	remote := buildRemote(map[string]string{"/a.txt": "v1"}, nil)
+	tid := partialTargetID(f.job.ID, "a.txt")
+	stale := filepath.Join(f.root, partialName(tid, partialRemoteID(f.job.SourceID, "/a.txt", source.Fingerprint{Size: 99})))
+	if err := os.WriteFile(stale, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := f.run(remote); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if _, err := os.Lstat(stale); !os.IsNotExist(err) {
+		t.Errorf("superseded partial survived run-level prune: %v", err)
+	}
+	f.mustFile("a.txt", "v1")
+}
+
 // validatePartial 的四态：不存在 → 0；regular 且未超 expected → 长度；
 // symlink → 删除后 0；超过 expected → 删除后 0。非空目录删除失败 →
 // 错误（fail closed）。

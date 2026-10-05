@@ -72,12 +72,14 @@ func (e *cappedErrReader) Read(p []byte) (int, error) {
 
 func (e *cappedErrReader) Close() error { return nil }
 
-// newTestDownloader 构造重试零延迟的下载器，避免测试拖慢。
+// newTestDownloader 构造重试零延迟的下载器，避免测试拖慢。独立调用
+// 语义与生产默认一致：单文件路径内的 superseded partial 清理开启。
 func newTestDownloader(remote source.Remote) *Downloader {
 	return &Downloader{
-		remote:      remote,
-		maxAttempts: 3,
-		backoff:     func(int) time.Duration { return 0 },
+		remote:          remote,
+		maxAttempts:     3,
+		pruneSuperseded: true,
+		backoff:         func(int) time.Duration { return 0 },
 	}
 }
 

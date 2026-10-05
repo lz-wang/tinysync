@@ -132,7 +132,22 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 
 	downloader := NewDownloader(opts.Remote)
 	downloader.timeout = opts.TransferTimeout
+	// superseded partial 清理已提升为 run-level 批量操作（下方，
+	// 每目录一次 ReadDir）：关闭 Downloader 的逐文件扫描，大目录
+	// 不再有 O(files × entries) 的重复枚举。
+	downloader.pruneSuperseded = false
 	now := time.Now().UTC()
+
+	// 5.7 run-level partial 清理：计划内各 target 的旧指纹断点文件
+	// 批量回收（每目录一次 ReadDir）。任一失败整轮失败——与旧的
+	// 逐文件清理失败语义一致，绝不在无法证明清理完成时静默继续。
+	planEntries := make([]planEntry, 0, len(plan.Downloads)+len(plan.Updates)+len(plan.Skips))
+	planEntries = append(planEntries, plan.Downloads...)
+	planEntries = append(planEntries, plan.Updates...)
+	planEntries = append(planEntries, plan.Skips...)
+	if err := prunePartialsForRun(job.ID, job.SourceID, job.LocalRoot, planEntries); err != nil {
+		return stats, err
+	}
 
 	// recordItem 记录文件级明细；记录失败使本轮失败（不静默丢历史）。
 	recordItem := func(item RunItem) error {

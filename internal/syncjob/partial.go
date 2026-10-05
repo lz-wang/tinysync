@@ -184,6 +184,76 @@ func isExpiredPartial(info fs.FileInfo, now time.Time) bool {
 	return now.Sub(info.ModTime()) > partialRetention
 }
 
+// prunePartialsForRun 在传输开始前按目录批量清理计划内各 target 的
+// 旧指纹断点文件：按目录聚合后每个目录恰好一次 ReadDir——平铺大
+// 目录从逐文件扫描的 O(files × entries)（Downloader 单文件路径）降
+// 到 O(files + entries)。删除「同 target-id 但 remote-id 与本轮快照
+// 不符」的 regular partial；计划内 target 当前指纹对应的 partial 保留，
+// 其它 target 的 partial 与一切非断点条目一概不触碰。
+func prunePartialsForRun(jobID, sourceID, localRoot string, entries []planEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	// dir → target-id → 本轮快照认可的 remote-id 集合；dirs 保持
+	// 计划确定性顺序。
+	type dirPrune struct {
+		keeps map[string]map[string]bool
+	}
+	byDir := make(map[string]*dirPrune)
+	dirs := make([]string, 0, len(entries))
+	for _, e := range entries {
+		target, err := resolveLocalTarget(localRoot, e.relPath)
+		if err != nil {
+			// 非法相对路径在计划 / preflight 阶段已被拒绝或记 skip；
+			// 这里只负责合法条目的 partial 清理。
+			continue
+		}
+		dir := filepath.Dir(target)
+		pr, ok := byDir[dir]
+		if !ok {
+			pr = &dirPrune{keeps: make(map[string]map[string]bool)}
+			byDir[dir] = pr
+			dirs = append(dirs, dir)
+		}
+		tid := partialTargetID(jobID, e.relPath)
+		rid := partialRemoteID(sourceID, e.remote.Path, e.remote.Fingerprint)
+		if pr.keeps[tid] == nil {
+			pr.keeps[tid] = make(map[string]bool)
+		}
+		pr.keeps[tid][rid] = true
+	}
+	for _, dir := range dirs {
+		pr := byDir[dir]
+		dirEntries, err := os.ReadDir(dir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("read dir %s for partial pruning: %w", dir, err)
+		}
+		for _, entry := range dirEntries {
+			name := entry.Name()
+			if !entry.Type().IsRegular() {
+				continue
+			}
+			tid, rid, ok := parsePartialName(name)
+			if !ok {
+				continue
+			}
+			if _, tracked := pr.keeps[tid]; !tracked {
+				continue
+			}
+			if pr.keeps[tid][rid] {
+				continue
+			}
+			if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("prune superseded partial %s: %w", name, err)
+			}
+		}
+	}
+	return nil
+}
+
 // openPartialForAppend 以 fail-closed 语义打开断点文件准备写入。
 // partial 是可预测的 deterministic 名字，validatePartial（Lstat）与
 // 打开之间存在路径被替换成 symlink 的竞争窗口：O_CREATE|O_TRUNC 会在

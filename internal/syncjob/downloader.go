@@ -104,6 +104,12 @@ type Downloader struct {
 	// 超时只作用于当前 attempt：超时的 attempt 可重试，不影响整轮
 	// run 的其它控制语义。
 	timeout time.Duration
+	// pruneSuperseded 控制 download 路径内的单文件 superseded partial
+	// 清理：默认开启（独立调用语义完整）。批量执行方（engine.Run）
+	// 在 run-level preflight 已按目录批量清理（每目录一次 ReadDir，
+	// 大目录从 O(files × entries) 降到 O(files + entries)）之后关闭
+	// 本开关，避免逐文件扫描整个目录的 O(N²) 回归。
+	pruneSuperseded bool
 	// hooks 是文件系统操作注入点；nil 表示直连 os。
 	hooks *fileHooks
 }
@@ -123,8 +129,9 @@ type TransferListener interface {
 // NewDownloader 构造默认参数的下载器。
 func NewDownloader(remote source.Remote) *Downloader {
 	return &Downloader{
-		remote:      remote,
-		maxAttempts: defaultMaxAttempts,
+		remote:          remote,
+		maxAttempts:     defaultMaxAttempts,
+		pruneSuperseded: true,
 		backoff: func(attempt int) time.Duration {
 			return baseBackoff << (attempt - 1)
 		},
@@ -158,10 +165,25 @@ func (d *Downloader) download(ctx context.Context, spec TransferSpec, listener T
 	partialPath := partialPathFor(target, tid, rid)
 
 	// 同 target 旧指纹 partial 立即清理：远端已更新，旧断点永不可能
-	// 被复用，不留随版本迭代累积的垃圾（不触碰其它 target）。
-	if err := pruneSupersededPartials(dir, tid, filepath.Base(partialPath)); err != nil {
-		return err
+	// 被复用，不留随版本迭代累积的垃圾（不触碰其它 target）。批量
+	// 执行方（engine.Run）已在 run-level preflight 按目录清理并关闭
+	// 本路径——逐文件 ReadDir 在大目录上是 O(files × entries)。
+	if d.pruneSuperseded {
+		if err := pruneSupersededPartials(dir, tid, filepath.Base(partialPath)); err != nil {
+			return err
+		}
 	}
+
+	// checksum 校验器与增量 hash state 提升到 attempt 循环外（ADR
+	// 0010）：同一 invocation 内的重试复用内存 hash state，只有进程
+	// 重启才重新 hash partial prefix——100 GiB 文件重试时不再重复
+	// 读盘计算 SHA-256。attempt 内的截断（unsupported）与归零
+	//（corruption 删除）经 reset / alignTo(0) 与磁盘保持一致。
+	verifier, err := newChecksumVerifier(spec.Expected.Checksum)
+	if err != nil {
+		return source.MarkPermanent(fmt.Errorf("checksum %s for %s: %w", spec.Expected.Checksum, spec.LogicalPath, err))
+	}
+	ph := &partialHasher{path: partialPath, verifier: verifier}
 
 	var lastErr error
 	for attempt := 1; attempt <= d.maxAttempts; attempt++ {
@@ -177,7 +199,7 @@ func (d *Downloader) download(ctx context.Context, spec TransferSpec, listener T
 		if d.timeout > 0 {
 			attemptCtx, cancel = context.WithTimeout(ctx, d.timeout)
 		}
-		lastErr = d.attempt(attemptCtx, spec, target, partialPath, listener)
+		lastErr = d.attempt(attemptCtx, spec, target, partialPath, ph, listener)
 		if cancel != nil {
 			cancel()
 		}
@@ -216,7 +238,7 @@ func (d *Downloader) download(ctx context.Context, spec TransferSpec, listener T
 // 单入口）；不支持（未实现能力或运行时返回 ErrResumeUnsupported）
 // 时截断遗留 partial、Open 全量重传。partial 的保留 / 废弃按
 // ADR 0010 分类：确定性损坏删除，瞬时故障与取消保留断点。
-func (d *Downloader) attempt(ctx context.Context, spec TransferSpec, target, partialPath string, listener TransferListener) error {
+func (d *Downloader) attempt(ctx context.Context, spec TransferSpec, target, partialPath string, ph *partialHasher, listener TransferListener) error {
 	// partial 可复用性检查（symlink / 超长废弃）并取断点位置。
 	offset, err := validatePartial(partialPath, spec.Expected.Size)
 	if err != nil {
@@ -226,14 +248,8 @@ func (d *Downloader) attempt(ctx context.Context, spec TransferSpec, target, par
 	// partial 已写满（上次 attempt 校验前中断 / 进程重启遗留）：
 	// 不访问网络，校验既有字节后直接原子替换。
 	if offset > 0 && offset == spec.Expected.Size {
-		return d.finalizePartial(spec, target, partialPath, offset)
+		return d.finalizePartial(target, partialPath, offset, ph)
 	}
-
-	verifier, err := newChecksumVerifier(spec.Expected.Checksum)
-	if err != nil {
-		return source.MarkPermanent(fmt.Errorf("checksum %s for %s: %w", spec.Expected.Checksum, spec.LogicalPath, err))
-	}
-	ph := &partialHasher{path: partialPath, verifier: verifier}
 
 	transfer := func(rc io.ReadCloser) error {
 		// 进度对齐断点：bytes_done 从本次 attempt 的实际起点开始
@@ -358,13 +374,10 @@ func (d *Downloader) appendAndVerify(spec TransferSpec, target, partialPath stri
 }
 
 // finalizePartial 处理「partial 已等于期望大小」：不访问网络，对既有
-// 字节做完整校验（从磁盘重建 prefix 摘要）后 fsync 并原子替换。
-func (d *Downloader) finalizePartial(spec TransferSpec, target, partialPath string, size int64) error {
-	verifier, err := newChecksumVerifier(spec.Expected.Checksum)
-	if err != nil {
-		return source.MarkPermanent(fmt.Errorf("checksum %s for %s: %w", spec.Expected.Checksum, spec.LogicalPath, err))
-	}
-	ph := &partialHasher{path: partialPath, verifier: verifier}
+// 字节做完整校验（hash state 复用 download 级共享的 partialHasher：
+// 同一 invocation 内已覆盖的 prefix 直接用内存 state，缺口从磁盘补喂）
+// 后 fsync 并原子替换。
+func (d *Downloader) finalizePartial(target, partialPath string, size int64, ph *partialHasher) error {
 	if err := ph.alignTo(size); err != nil {
 		return err
 	}
@@ -464,6 +477,12 @@ func (p *partialHasher) reset() {
 // 补喂路径再核对实际读取字节数作为竞态双保险。
 func (p *partialHasher) alignTo(size int64) error {
 	if p.covered == size {
+		return nil
+	}
+	if size == 0 {
+		// 断点归零（corruption 删除 / 截断全量重传）：状态直接清零，
+		// 与空文件一致，不再触碰磁盘。
+		p.reset()
 		return nil
 	}
 	if info, err := os.Stat(p.path); err != nil {
