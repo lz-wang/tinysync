@@ -7,18 +7,21 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	xnetdav "golang.org/x/net/webdav"
 
+	job2 "tinysync/internal/job"
+	jobsqlite "tinysync/internal/job/sqlite"
 	"tinysync/internal/source"
 	sourcesqlite "tinysync/internal/source/sqlite"
 	"tinysync/internal/source/webdav"
 	"tinysync/internal/storage"
 	"tinysync/internal/syncjob"
-	jobsqlite "tinysync/internal/syncjob/sqlite"
+	managedsqlite "tinysync/internal/syncjob/sqlite"
 )
 
 // davServer 是带 PROPFIND 故障开关的真实 WebDAV 服务端：
@@ -73,16 +76,18 @@ func (d *davServer) remove(t *testing.T, name string) {
 }
 
 // env 是一套真实的端到端环境：Dav 服务端 + 临时 datadir 的 SQLite +
-// 真实 Factory 构造的 Source/Job 服务与 Runner。
+// 真实 Factory 构造的 Source 服务与统一任务栈。
 type env struct {
-	dav         *davServer
-	dataDir     string
-	db          *sql.DB
-	sources     *source.Service
-	jobs        *syncjob.Service
-	runner      *syncjob.Runner
+	dav     *davServer
+	dataDir string
+	db      *sql.DB
+	sources *source.Service
+	stack   *fileJobStack
+
+	// 便捷字段（指向 stack 的同名组件）。
 	jobRepo     *jobsqlite.Repository
-	managedRepo *jobsqlite.ManagedRepository
+	managedRepo *managedsqlite.ManagedRepository
+	runner      *syncjob.Runner
 }
 
 // newEnv 装配端到端环境；db 生命周期由测试注册的 cleanup 管理。
@@ -91,10 +96,10 @@ func newEnv(t *testing.T) *env {
 	e := &env{dav: startDAV(t), dataDir: t.TempDir()}
 	e.db = openDB(t, e.dataDir)
 	e.sources = source.NewService(sourcesqlite.New(e.db), webdav.NewFactory())
-	e.jobRepo = jobsqlite.NewRepository(e.db)
-	e.managedRepo = jobsqlite.NewManagedRepository(e.db)
-	e.jobs = syncjob.NewService(e.jobRepo, e.sources, e.dataDir)
-	e.runner = syncjob.NewRunner(e.jobRepo, e.managedRepo, e.sources, jobsqlite.NewRunRepository(e.db))
+	e.stack = newFileJobStack(e.db, e.sources, e.dataDir)
+	e.jobRepo = e.stack.Repo
+	e.managedRepo = e.stack.Managed
+	e.runner = e.stack.Runner
 	t.Cleanup(func() { _ = e.db.Close() })
 	return e
 }
@@ -135,37 +140,38 @@ func (e *env) createSource(t *testing.T) string {
 	return src.ID
 }
 
-// createJob 经真实服务创建 Job（include all，远端根），返回领域对象。
-func (e *env) createJob(t *testing.T, name, sourceID, mode string) syncjob.Job {
+// jobView 是 webdav e2e 的任务视图：断言只关心 ID 与 LocalRoot。
+type jobView struct {
+	ID        string
+	LocalRoot string
+}
+
+// createJob 经真实服务创建 file 任务（include all，远端根）。
+func (e *env) createJob(t *testing.T, name, sourceID, mode string) jobView {
 	t.Helper()
 	localRoot := filepath.Join(t.TempDir(), "local")
 	if err := os.MkdirAll(localRoot, 0o755); err != nil {
 		t.Fatalf("mkdir local root: %v", err)
 	}
-	job, err := e.jobs.Create(context.Background(), syncjob.CreateInput{
-		Name:       name,
-		SourceID:   sourceID,
-		RemoteRoot: "/",
-		LocalRoot:  localRoot,
-		Mode:       syncjob.Mode(mode),
-		Enabled:    true,
-	})
+	j := e.stack.createFileJob(context.Background(), t, name, sourceID, "/", localRoot, syncjob.Mode(mode), nil, nil)
+	// LocalRoot 按领域规则 canonicalize 后返回，与落库 config 一致。
+	canonical, err := filepath.EvalSymlinks(localRoot)
 	if err != nil {
-		t.Fatalf("create job: %v", err)
+		t.Fatalf("evalsymlinks local root: %v", err)
 	}
-	return job
+	return jobView{ID: j.ID, LocalRoot: canonical}
 }
 
 // runAndWait 触发一轮同步并等待终态。
 func (e *env) runAndWait(t *testing.T, jobID string) syncjob.RunStatus {
 	t.Helper()
-	runID, err := e.runner.Start(context.Background(), jobID)
+	runID, err := e.stack.Runner.Start(context.Background(), jobID)
 	if err != nil {
 		t.Fatalf("start run: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	status, err := e.runner.Wait(ctx, runID)
+	status, err := e.stack.Runner.Wait(ctx, runID)
 	if err != nil {
 		t.Fatalf("wait run: %v", err)
 	}
@@ -216,16 +222,17 @@ func TestWebDAVPullEndToEnd(t *testing.T) {
 	// 2. 远端无变化 → skip，零传输。
 	st := e.runAndWait(t, copyJob.ID)
 	requireSucceeded(t, "copy skip", st)
-	if st.Stats.FilesSkipped != 1 || st.Stats.FilesCreated != 0 || st.Stats.BytesTransferred != 0 {
-		t.Fatalf("copy skip stats = %+v, want skipped=1 no transfer", st.Stats)
+	skipStats := fileStatsOf(t, st)
+	if skipStats.FilesSkipped != 1 || skipStats.FilesCreated != 0 || skipStats.BytesTransferred != 0 {
+		t.Fatalf("copy skip stats = %+v, want skipped=1 no transfer", skipStats)
 	}
 
 	// 3. remote a.txt = v2 → 更新。
 	e.dav.writeFile(t, "/a.txt", "v2")
 	st = e.runAndWait(t, copyJob.ID)
 	requireSucceeded(t, "copy update", st)
-	if st.Stats.FilesUpdated != 1 {
-		t.Fatalf("copy update stats = %+v, want updated=1", st.Stats)
+	if fileStatsOf(t, st).FilesUpdated != 1 {
+		t.Fatalf("copy update stats = %+v, want updated=1", fileStatsOf(t, st))
 	}
 	requireSucceeded(t, "mirror update", e.runAndWait(t, mirrorJob.ID))
 	if got := readLocal(t, copyLocal); got != "v2" {
@@ -238,8 +245,8 @@ func TestWebDAVPullEndToEnd(t *testing.T) {
 	}
 	st = e.runAndWait(t, copyJob.ID)
 	requireSucceeded(t, "copy repair", st)
-	if st.Stats.FilesCreated != 1 {
-		t.Fatalf("copy repair stats = %+v, want created=1", st.Stats)
+	if fileStatsOf(t, st).FilesCreated != 1 {
+		t.Fatalf("copy repair stats = %+v, want created=1", fileStatsOf(t, st))
 	}
 	if got := readLocal(t, copyLocal); got != "v2" {
 		t.Fatalf("copy repaired local = %q, want v2", got)
@@ -273,8 +280,8 @@ func TestWebDAVPullEndToEnd(t *testing.T) {
 	e.dav.remove(t, "/a.txt")
 	st = e.runAndWait(t, copyJob.ID)
 	requireSucceeded(t, "copy remote-delete", st)
-	if st.Stats.FilesDeleted != 0 {
-		t.Fatalf("copy remote-delete stats = %+v, want deleted=0", st.Stats)
+	if fileStatsOf(t, st).FilesDeleted != 0 {
+		t.Fatalf("copy remote-delete stats = %+v, want deleted=0", fileStatsOf(t, st))
 	}
 	if got := readLocal(t, copyLocal); got != "v2" {
 		t.Fatalf("copy kept local = %q, want v2", got)
@@ -285,8 +292,8 @@ func TestWebDAVPullEndToEnd(t *testing.T) {
 
 	st = e.runAndWait(t, mirrorJob.ID)
 	requireSucceeded(t, "mirror remote-delete", st)
-	if st.Stats.FilesDeleted != 1 {
-		t.Fatalf("mirror remote-delete stats = %+v, want deleted=1", st.Stats)
+	if fileStatsOf(t, st).FilesDeleted != 1 {
+		t.Fatalf("mirror remote-delete stats = %+v, want deleted=1", fileStatsOf(t, st))
 	}
 	if _, err := os.Stat(mirrorLocal); !os.IsNotExist(err) {
 		t.Fatalf("mirror local still present (stat err = %v), want removed", err)
@@ -318,10 +325,7 @@ func TestJobPersistsAcrossRestart(t *testing.T) {
 	db := openDB(t, e.dataDir)
 	t.Cleanup(func() { _ = db.Close() })
 	sources2 := source.NewService(sourcesqlite.New(db), webdav.NewFactory())
-	jobRepo2 := jobsqlite.NewRepository(db)
-	managedRepo2 := jobsqlite.NewManagedRepository(db)
-	jobs2 := syncjob.NewService(jobRepo2, sources2, e.dataDir)
-	runner2 := syncjob.NewRunner(jobRepo2, managedRepo2, sources2, jobsqlite.NewRunRepository(db))
+	stack2 := newFileJobStack(db, sources2, e.dataDir)
 
 	// Source 完整保留。
 	src, err := sources2.Get(ctx, sourceID)
@@ -332,42 +336,48 @@ func TestJobPersistsAcrossRestart(t *testing.T) {
 		t.Fatalf("source after restart = %+v, want endpoint/enabled preserved", src)
 	}
 
-	// Job 配置完整保留。
-	got, err := jobs2.Get(ctx, job.ID)
+	// 任务配置完整保留（kind + config 原样）。
+	got, err := stack2.Jobs.Get(ctx, job.ID)
 	if err != nil {
 		t.Fatalf("job after restart: %v", err)
 	}
-	if got.Name != job.Name || got.Mode != job.Mode || got.RemoteRoot != job.RemoteRoot ||
-		got.LocalRoot != job.LocalRoot || got.SourceID != job.SourceID || !got.Enabled {
-		t.Fatalf("job after restart = %+v, want %+v", got, job)
+	if got.Kind != job2.KindFile || !got.Enabled || !strings.HasPrefix(got.Name, "Restart Job") {
+		t.Fatalf("job after restart = %+v, want enabled file Restart Job", got)
+	}
+	gotCfg, err := syncjob.ParseFileConfig(got.Config)
+	if err != nil {
+		t.Fatalf("parse config after restart: %v", err)
+	}
+	if gotCfg.RemoteRoot != "/" || gotCfg.LocalRoot != job.LocalRoot || gotCfg.ModeOf() != syncjob.ModeMirror {
+		t.Fatalf("config after restart = %+v, want mapping preserved", gotCfg)
 	}
 
 	// managed synced 记录保留（Mirror 删除授权不因重启丢失）。
-	managed, err := managedRepo2.ListByJob(ctx, job.ID)
+	managed, err := stack2.Managed.ListByJob(ctx, job.ID)
 	if err != nil || len(managed) != 1 || managed[0].State != syncjob.StateSynced {
 		t.Fatalf("managed after restart = %d entries (%v), want 1 synced", len(managed), err)
 	}
 
 	// 运行状态持久化：重启后最近一次 completed run 仍可查询，不再回 idle。
-	st, err := runner2.GetStatus(ctx, job.ID)
+	st, err := stack2.Runner.GetStatus(ctx, job.ID)
 	if err != nil || st.State != syncjob.RunSucceeded {
 		t.Fatalf("status after restart = %s (%v), want persisted succeeded", st.State, err)
 	}
 
 	// 重启后的进程继续收敛：远端 v2 → 更新。
 	e.dav.writeFile(t, "/a.txt", "v2")
-	runID, err := runner2.Start(ctx, job.ID)
+	runID, err := stack2.Runner.Start(ctx, job.ID)
 	if err != nil {
 		t.Fatalf("start run after restart: %v", err)
 	}
 	runCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	final, err := runner2.Wait(runCtx, runID)
+	final, err := stack2.Runner.Wait(runCtx, runID)
 	if err != nil {
 		t.Fatalf("wait run after restart: %v", err)
 	}
-	if final.State != syncjob.RunSucceeded || final.Stats.FilesUpdated != 1 {
-		t.Fatalf("run after restart = %s %+v, want succeeded updated=1", final.State, final.Stats)
+	if final.State != syncjob.RunSucceeded || fileStatsOf(t, final).FilesUpdated != 1 {
+		t.Fatalf("run after restart = %s %+v, want succeeded updated=1", final.State, fileStatsOf(t, final))
 	}
 	data, err := os.ReadFile(filepath.Join(job.LocalRoot, "a.txt"))
 	if err != nil || string(data) != "v2" {

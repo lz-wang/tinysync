@@ -1,4 +1,4 @@
-package syncjob
+package job
 
 import (
 	"errors"

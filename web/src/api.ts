@@ -513,17 +513,27 @@ export interface ScheduleSpec {
     timezone?: string
 }
 
-// JobResponse 是 Sync Job 的 API 表示，与后端 jobDTO 一一对应。
-export interface JobResponse {
-    id: string
-    name: string
+// JobKind 是任务类型：file / oci 可执行，git 为占位（创建被拒）。
+export type JobKind = 'file' | 'oci' | 'git'
+
+// FileJobConfig 是 kind='file' 任务的领域配置（config_json 原样）。
+export interface FileJobConfig {
     source_id: string
     remote_root: string
     local_root: string
     mode: JobMode
     include: string[]
     exclude: string[]
+}
+
+// JobResponse 是统一任务的 API 表示，与后端 jobDTO 一一对应：
+// kind + config（领域 JSON 原样透传）。
+export interface JobResponse {
+    id: string
+    name: string
+    kind: JobKind
     enabled: boolean
+    config: FileJobConfig
     schedule: ScheduleSpec
     created_at: string
     updated_at: string
@@ -572,30 +582,21 @@ export function createRemoteDirectory(
     })
 }
 
-// CreateJobInput 对应 POST /api/v1/jobs 请求体；enabled / schedule
-// 缺省为 true / manual。
+// CreateJobInput 对应 POST /api/v1/jobs 请求体（统一 kind + config）；
+// enabled / schedule 缺省为 true / manual。
 export interface CreateJobInput {
     name: string
-    source_id: string
-    remote_root: string
-    local_root: string
-    mode: JobMode
-    include: string[]
-    exclude: string[]
+    kind: JobKind
+    config: FileJobConfig
     enabled: boolean
     schedule?: ScheduleSpec
 }
 
 // UpdateJobInput 对应 PATCH 请求体：undefined 字段保留现有值；
-// include / exclude 提供数组时整体替换；schedule 提供时原子替换。
+// config 提供时整体替换（先经执行器校验）；schedule 提供时原子替换。
 export interface UpdateJobInput {
     name?: string
-    source_id?: string
-    remote_root?: string
-    local_root?: string
-    mode?: JobMode
-    include?: string[]
-    exclude?: string[]
+    config?: FileJobConfig
     enabled?: boolean
     schedule?: ScheduleSpec
 }
@@ -625,7 +626,7 @@ export async function deleteJob(id: string): Promise<void> {
 // 重启后最近一次运行（含 skipped）仍可查询。canceled 专指用户手动停止。
 export type RunState = 'idle' | 'running' | 'succeeded' | 'failed' | 'skipped' | 'canceled'
 
-// RunStatsResponse 是一轮同步的统计摘要。
+// RunStatsResponse 是 file 任务的领域结果摘要（result_json 解码形态）。
 export interface RunStatsResponse {
     files_total: number
     files_created: number
@@ -637,13 +638,14 @@ export interface RunStatsResponse {
 
 // RunStatusResponse 对应 GET /api/v1/jobs/:id/status。
 // next_run_at 为下一次计划触发时间，manual 或 once 已消费时省略。
+// result 为领域结果摘要（file 为文件统计）。
 export interface RunStatusResponse {
     run_id?: string
     state: RunState
     started_at?: string
     finished_at?: string
     next_run_at?: string
-    stats: RunStatsResponse
+    result: RunStatsResponse
     error?: string
 }
 
@@ -662,7 +664,7 @@ export type RunPhase = 'connecting' | 'scanning' | 'planning' | 'transferring' |
 // 字节计数，百分比与显示文本由前端换算。resume_from 是本次 attempt
 // 的断点起点（断点续传，仅展示；0 / 缺省 = 全新传输）。
 export interface RunProgressFileResponse {
-    path: string
+    target: string
     action: RunItemAction
     bytes_done: number
     bytes_total: number
@@ -700,17 +702,19 @@ export function fetchJobStatus(id: string): Promise<RunStatusResponse> {
 export type RunTriggerType = 'manual' | 'once' | 'interval' | 'cron'
 
 // RunRecordResponse 对应 GET /api/v1/runs/:id 的运行摘要。运行中的
-// run 附实时 progress（瞬态内存快照）；终态省略。
+// run 附实时 progress（瞬态内存快照）；终态省略。result 为领域结果
+// 摘要（file 为文件统计，当前唯一类型）。
 export interface RunRecordResponse {
     id: string
     job_id: string
+    job_kind: JobKind
     job_name: string
     trigger: RunTriggerType
     scheduled_for?: string
     status: RunState
     started_at: string
     finished_at?: string
-    stats: RunStatsResponse
+    result: RunStatsResponse
     error?: string
     progress?: RunProgressResponse
 }
@@ -727,11 +731,12 @@ export type RunItemAction = 'create' | 'update' | 'delete' | 'relinquish'
 // RunItemStatus 是文件级变更结果。canceled 表示传输被用户手动停止中断。
 export type RunItemStatus = 'succeeded' | 'failed' | 'skipped' | 'canceled'
 
-// RunItemResponse 是文件级变更明细；unchanged 文件不产生明细。
+// RunItemResponse 是运行明细；target 为统一展示目标（file 为相对
+// 本地根的路径），unchanged 项不产生明细。
 export interface RunItemResponse {
     id: number
     run_id: string
-    path: string
+    target: string
     action: RunItemAction
     status: RunItemStatus
     bytes: number

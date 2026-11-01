@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
+	"tinysync/internal/job"
 	"tinysync/internal/logging"
-	"tinysync/internal/syncjob"
 )
 
 // queueCapacity 是完成事件的内存队列容量。HomeLab 的 run 频率远低于
@@ -17,7 +17,7 @@ const queueCapacity = 64
 // （ADR 0006：每个发送器单独超时，一个渠道耗尽预算不拖累另一个）。
 const sendTimeout = 10 * time.Second
 
-// Dispatcher 消费 syncjob.RunCompletion：实现 syncjob.RunCompletionHook，
+// Dispatcher 消费 job.RunCompletion：实现 job.RunCompletionHook，
 // OnRunCompleted 只 enqueue 立即返回；单 worker 逐条热读取配置并经
 // 已启用的渠道发送。worker 持有独立生命周期（不绑定应用主 ctx），
 // 由 Shutdown 排空回收——SIGTERM 到达时最后几个 run 的通知不会被
@@ -25,7 +25,7 @@ const sendTimeout = 10 * time.Second
 // （ADR 0006）。
 type Dispatcher struct {
 	service *Service
-	queue   chan syncjob.RunCompletion
+	queue   chan job.RunCompletion
 
 	// pushoverFactory / emailFactory 按当次读取的配置构造发送器；
 	// nil 用生产构造（PushoverSender / EmailSender）。测试注入假实现
@@ -52,7 +52,7 @@ type Dispatcher struct {
 func NewDispatcher(service *Service, opts ...DispatcherOption) *Dispatcher {
 	d := &Dispatcher{
 		service: service,
-		queue:   make(chan syncjob.RunCompletion, queueCapacity),
+		queue:   make(chan job.RunCompletion, queueCapacity),
 		done:    make(chan struct{}),
 	}
 	for _, opt := range opts {
@@ -102,10 +102,10 @@ func (d *Dispatcher) Start() {
 	}()
 }
 
-// OnRunCompleted 实现 syncjob.RunCompletionHook：enqueue 立即返回，
+// OnRunCompleted 实现 job.RunCompletionHook：enqueue 立即返回，
 // 队列满或已关闭时丢弃并记日志——通知是辅助提醒，绝不让发送路径
 // 拖住 Runner 的终态收口。
-func (d *Dispatcher) OnRunCompleted(run syncjob.RunCompletion) {
+func (d *Dispatcher) OnRunCompleted(run job.RunCompletion) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.closed {
@@ -166,8 +166,8 @@ func (d *Dispatcher) Shutdown(ctx context.Context) error {
 // 超时预算是分段的——配置读取、Pushover、Email 各自持有独立的
 // sendTimeout：一个渠道把预算耗尽（甚至卡满整个 10s）不能拖累另一个
 // 渠道，这是「一个通知渠道故障不拖累另一个渠道」契约的直接体现。
-func (d *Dispatcher) dispatch(workerCtx context.Context, run syncjob.RunCompletion) {
-	if run.State != syncjob.RunSucceeded && run.State != syncjob.RunFailed && run.State != syncjob.RunCanceled {
+func (d *Dispatcher) dispatch(workerCtx context.Context, run job.RunCompletion) {
+	if run.State != job.RunSucceeded && run.State != job.RunFailed && run.State != job.RunCanceled {
 		// 防御：skipped / running 不是完成事件，不发通知。
 		return
 	}

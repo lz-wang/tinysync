@@ -15,7 +15,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
@@ -26,7 +25,6 @@ import (
 	sftpadapter "tinysync/internal/source/sftp"
 	sourcesqlite "tinysync/internal/source/sqlite"
 	"tinysync/internal/syncjob"
-	jobsqlite "tinysync/internal/syncjob/sqlite"
 )
 
 // refSFTPServer 是公钥认证的进程内 SSH/SFTP 服务：只接受 authorized
@@ -140,8 +138,7 @@ func (ts *refSFTPServer) handleConn(conn net.Conn, config *ssh.ServerConfig) {
 type refEnv struct {
 	sources     *source.Service
 	credentials *credential.Service
-	runner      *syncjob.Runner
-	jobRepo     *jobsqlite.Repository
+	stack       *fileJobStack
 	server      *refSFTPServer
 	sourceID    string
 }
@@ -153,13 +150,11 @@ func newRefEnv(t *testing.T, authorized ssh.PublicKey) *refEnv {
 	credentials := credential.NewService(credentialsqlite.New(db))
 	sources := source.NewService(sourcesqlite.New(db), sftpadapter.NewFactory())
 	sources.Credentials = credentials
-	jobRepo := jobsqlite.NewRepository(db)
-	runner := syncjob.NewRunner(jobRepo, jobsqlite.NewManagedRepository(db), sources, jobsqlite.NewRunRepository(db))
+	stack := newFileJobStack(db, sources, dataDir)
 	return &refEnv{
 		sources:     sources,
 		credentials: credentials,
-		runner:      runner,
-		jobRepo:     jobRepo,
+		stack:       stack,
 		server:      startRefSFTP(t, authorized),
 	}
 }
@@ -209,25 +204,13 @@ func (e *refEnv) createReferencingSource(t *testing.T, credentialID string) {
 // runJob 建任务并跑一轮，断言成功。
 func (e *refEnv) runJob(t *testing.T, localRoot string) {
 	t.Helper()
-	id, err := syncjob.NewID()
-	if err != nil {
-		t.Fatalf("new job id: %v", err)
-	}
-	now := time.Now().UTC()
-	job := syncjob.Job{
-		ID: id, Name: "job-" + id, SourceID: e.sourceID,
-		RemoteRoot: "/", LocalRoot: localRoot,
-		Mode: syncjob.ModeCopy, Enabled: true,
-		CreatedAt: now, UpdatedAt: now,
-	}
-	if err := e.jobRepo.Create(context.Background(), job); err != nil {
-		t.Fatalf("create job: %v", err)
-	}
-	runID, err := e.runner.Start(context.Background(), job.ID)
+	ctx := context.Background()
+	j := e.stack.createFileJob(ctx, t, "ref", e.sourceID, "/", localRoot, syncjob.ModeCopy, nil, nil)
+	runID, err := e.stack.Runner.Start(ctx, j.ID)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	status, err := e.runner.Wait(context.Background(), runID)
+	status, err := e.stack.Runner.Wait(ctx, runID)
 	if err != nil {
 		t.Fatalf("Wait: %v", err)
 	}

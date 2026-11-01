@@ -55,7 +55,7 @@ import DeleteJobDialog from '../features/jobs/DeleteJobDialog'
 import JobDialog from '../features/jobs/JobDialog'
 
 const pollIntervalMs = 1500
-type SortField = 'name' | 'source' | 'mode' | 'enabled' | 'lastRun' | 'nextRun'
+type SortField = 'name' | 'source' | 'enabled' | 'lastRun' | 'nextRun'
 
 // JobsPage 将任务配置、最近一次运行和常用操作收敛到一个可筛选的基础表格。
 export default function JobsPage() {
@@ -160,7 +160,7 @@ export default function JobsPage() {
             // status 轮询补全），下一轮轮询也能直接取运行详情进度。
             setRunStates(prev => ({
                 ...prev,
-                [job.id]: { run_id: started.run_id, state: started.state, stats: emptyStats() },
+                [job.id]: { run_id: started.run_id, state: started.state, result: emptyStats() },
             }))
         } catch (e) {
             toast.error(e instanceof Error ? e.message : String(e))
@@ -322,10 +322,10 @@ function JobTable({
                     const needle = query.trim().toLowerCase()
                     return (
                         (needle === '' ||
-                            `${job.name} ${sourceName(job.source_id)} ${job.mode}`
+                            `${job.name} ${sourceName(job.config.source_id)} ${job.config.mode}`
                                 .toLowerCase()
                                 .includes(needle)) &&
-                        (sourceFilter === 'all' || job.source_id === sourceFilter) &&
+                        (sourceFilter === 'all' || job.config.source_id === sourceFilter) &&
                         (statusFilter === 'all' || state === statusFilter)
                     )
                 })
@@ -334,7 +334,7 @@ function JobTable({
                         const state = runStates[job.id]
                         switch (sort.field) {
                             case 'source':
-                                return sourceName(job.source_id)
+                                return sourceName(job.config.source_id)
                             case 'lastRun':
                                 return state?.finished_at ?? state?.started_at ?? ''
                             case 'nextRun':
@@ -509,7 +509,7 @@ function JobTable({
                                 </TableCell>
                                 <TableCell>{header('名称', 'name')}</TableCell>
                                 <TableCell>{header('同步源', 'source')}</TableCell>
-                                <TableCell>{header('模式', 'mode')}</TableCell>
+                                <TableCell>模式</TableCell>
                                 <TableCell>{header('状态', 'enabled')}</TableCell>
                                 <TableCell>{header('最近运行', 'lastRun')}</TableCell>
                                 <TableCell>{header('下次运行', 'nextRun')}</TableCell>
@@ -554,12 +554,16 @@ function JobTable({
                                                 {job.name}
                                             </Typography>
                                         </TableCell>
-                                        <TableCell>{sourceName(job.source_id)}</TableCell>
+                                        <TableCell>{sourceName(job.config.source_id)}</TableCell>
                                         <TableCell>
                                             <Chip
-                                                label={job.mode === 'mirror' ? '镜像' : '复制'}
+                                                label={
+                                                    job.config.mode === 'mirror' ? '镜像' : '复制'
+                                                }
                                                 color={
-                                                    job.mode === 'mirror' ? 'warning' : 'default'
+                                                    job.config.mode === 'mirror'
+                                                        ? 'warning'
+                                                        : 'default'
                                                 }
                                                 size="small"
                                             />

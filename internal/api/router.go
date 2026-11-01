@@ -14,6 +14,7 @@ import (
 	"tinysync/internal/browser"
 	"tinysync/internal/buildinfo"
 	"tinysync/internal/credential"
+	"tinysync/internal/job"
 	"tinysync/internal/notification"
 	"tinysync/internal/share"
 	"tinysync/internal/source"
@@ -82,9 +83,9 @@ type Dependencies struct {
 	// CredentialRefs 提供凭据引用计数与删除守卫（由 Source 存储实现）；
 	// 为 nil 时引用计数回显为 0，删除不做引用拦截。
 	CredentialRefs credential.ReferenceIndex
-	// Jobs 是 Sync Job 应用服务；为 nil 时不注册 Job 端点，
+	// Jobs 是统一任务应用服务；为 nil 时不注册 Job 端点，
 	// 也不启用 Source 的 Job 引用删除保护。
-	Jobs *syncjob.Service
+	Jobs *job.Service
 	// Runner 是手动运行的运行时状态；为 nil 时 run / status 端点不注册。
 	Runner *syncjob.Runner
 	// Notifications 是通知配置应用服务；为 nil 时不注册通知端点。

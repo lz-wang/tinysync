@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"tinysync/internal/job"
 	"tinysync/internal/logging"
 	"tinysync/internal/source"
 )
@@ -30,8 +31,13 @@ func initLogFileLogging(t *testing.T) func() string {
 	}
 }
 
+// logJob 构造 finalize 直调所需的统一任务快照。
+func logJob(id, name string) job.Job {
+	return job.Job{ID: id, Name: name, Kind: job.KindFile}
+}
+
 // run 终态输出 event=sync_run 结构化事件：job_id / run_id /
-// source_id / status / duration_ms / bytes / files_* / error。
+// status / duration_ms / result / error。
 func TestFinalizeEmitsSyncRunEvent(t *testing.T) {
 	readLog := initLogFileLogging(t)
 
@@ -41,18 +47,16 @@ func TestFinalizeEmitsSyncRunEvent(t *testing.T) {
 		jobID:     "job_a",
 		startedAt: time.Now().Add(-1500 * time.Millisecond),
 	}
-	r.finalize(context.Background(), run, Job{ID: "job_a", Name: "photos", SourceID: "src_a"},
-		RunStats{FilesCreated: 1, BytesTransferred: 42}, errors.New("boom reason"))
+	r.finalize(context.Background(), run, logJob("job_a", "photos"),
+		[]byte(`{"files_created":1,"bytes_transferred":42}`), errors.New("boom reason"))
 
 	log := readLog()
 	for _, want := range []string{
 		"event=sync_run",
 		"job_id=job_a",
 		"run_id=run_abc123",
-		"source_id=src_a",
 		"status=failed",
-		"bytes=42",
-		"files_created=1",
+		`result={"files_created":1,"bytes_transferred":42}`,
 		`error="boom reason"`,
 	} {
 		if !strings.Contains(log, want) {
@@ -71,10 +75,10 @@ func TestFinalizeEmitsSuccessEvent(t *testing.T) {
 		jobID:     "job_ok",
 		startedAt: time.Now().Add(-100 * time.Millisecond),
 	}
-	r.finalize(context.Background(), run, Job{ID: "job_ok", Name: "docs", SourceID: "src_ok"}, RunStats{FilesUpdated: 2, BytesTransferred: 7}, nil)
+	r.finalize(context.Background(), run, logJob("job_ok", "docs"), []byte(`{"files_updated":2,"bytes_transferred":7}`), nil)
 
 	log := readLog()
-	for _, want := range []string{"event=sync_run", "run_id=run_ok42", "status=succeeded", "bytes=7"} {
+	for _, want := range []string{"event=sync_run", "run_id=run_ok42", "status=succeeded", `"bytes_transferred":7`} {
 		if !strings.Contains(log, want) {
 			t.Errorf("sync_run log missing %q:\n%s", want, log)
 		}
@@ -88,8 +92,12 @@ func TestStartEmitsRunningEvent(t *testing.T) {
 	readLog := initLogFileLogging(t)
 
 	repo := newMemJobRepo()
-	job := Job{ID: "job_start", Name: "j", SourceID: "src_start", Mode: ModeCopy, Enabled: true}
-	if err := repo.Create(context.Background(), job); err != nil {
+	cfg, err := MarshalFileConfig("src_start", "/", t.TempDir(), ModeCopy, nil, nil)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	j := job.Job{ID: "job_start", Name: "j", Kind: job.KindFile, Enabled: true, Config: cfg}
+	if err := repo.Create(context.Background(), j); err != nil {
 		t.Fatalf("create job: %v", err)
 	}
 	creds := &memCreds{

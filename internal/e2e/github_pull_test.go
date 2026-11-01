@@ -13,11 +13,11 @@ import (
 	"testing"
 	"time"
 
+	"tinysync/internal/job"
 	"tinysync/internal/source"
 	"tinysync/internal/source/githubrelease"
 	sourcesqlite "tinysync/internal/source/sqlite"
 	"tinysync/internal/syncjob"
-	jobsqlite "tinysync/internal/syncjob/sqlite"
 )
 
 // fakeReleaseState 是假 GitHub 的可变状态：release 列表与 per-release
@@ -126,12 +126,11 @@ func sha256Digest(content string) string {
 }
 
 // githubE2E 装配 GitHub Release 端到端环境：假 GitHub + 真实
-// factory / Source / Job 服务与 Runner。
+// factory / Source / 统一任务服务与 Runner。
 type githubE2E struct {
 	state   *fakeReleaseState
 	sources *source.Service
-	jobs    *syncjob.Service
-	runner  *syncjob.Runner
+	stack   *fileJobStack
 }
 
 // startGitHubE2E 启动假 GitHub 并完成装配。
@@ -141,16 +140,14 @@ func startGitHubE2E(t *testing.T) *githubE2E {
 	srv := httptest.NewServer(http.HandlerFunc(state.serve))
 	t.Cleanup(srv.Close)
 
-	db := openDB(t, t.TempDir())
+	dataDir := t.TempDir()
+	db := openDB(t, dataDir)
 	t.Cleanup(func() { _ = db.Close() })
 	sources := source.NewService(sourcesqlite.New(db), githubrelease.NewFactoryWithAPIBase(srv.URL))
-	jobRepo := jobsqlite.NewRepository(db)
-	runner := syncjob.NewRunner(jobRepo, jobsqlite.NewManagedRepository(db), sources, jobsqlite.NewRunRepository(db))
 	return &githubE2E{
 		state:   state,
 		sources: sources,
-		jobs:    syncjob.NewService(jobRepo, sources, t.TempDir()),
-		runner:  runner,
+		stack:   newFileJobStack(db, sources, dataDir),
 	}
 }
 
@@ -173,37 +170,27 @@ func (g *githubE2E) createGitHubSource(t *testing.T) string {
 	return src.ID
 }
 
-// createGitHubJob 创建 remote_root=/ 的 Job。
-func (g *githubE2E) createGitHubJob(t *testing.T, name, sourceID, mode string) syncjob.Job {
+// createGitHubJob 创建 remote_root=/ 的 file 任务，返回任务与本地根。
+func (g *githubE2E) createGitHubJob(t *testing.T, name, sourceID, mode string) (job.Job, string) {
 	t.Helper()
 	localRoot := t.TempDir() + "/local"
 	if err := os.MkdirAll(localRoot, 0o755); err != nil {
 		t.Fatalf("mkdir local root: %v", err)
 	}
-	job, err := g.jobs.Create(context.Background(), syncjob.CreateInput{
-		Name:       name,
-		SourceID:   sourceID,
-		RemoteRoot: "/",
-		LocalRoot:  localRoot,
-		Mode:       syncjob.Mode(mode),
-		Enabled:    true,
-	})
-	if err != nil {
-		t.Fatalf("create github job: %v", err)
-	}
-	return job
+	j := g.stack.createFileJob(context.Background(), t, name, sourceID, "/", localRoot, syncjob.Mode(mode), nil, nil)
+	return j, localRoot
 }
 
 // runAndWait 触发一轮同步并等待终态。
 func (g *githubE2E) runAndWait(t *testing.T, jobID string) syncjob.RunStatus {
 	t.Helper()
-	runID, err := g.runner.Start(context.Background(), jobID)
+	runID, err := g.stack.Runner.Start(context.Background(), jobID)
 	if err != nil {
 		t.Fatalf("start run: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	st, err := g.runner.Wait(ctx, runID)
+	st, err := g.stack.Runner.Wait(ctx, runID)
 	if err != nil {
 		t.Fatalf("wait run: %v", err)
 	}
@@ -227,28 +214,29 @@ func TestGitHubReleasePullEndToEnd(t *testing.T) {
 	g.state.mu.Unlock()
 
 	sourceID := g.createGitHubSource(t)
-	copyJob := g.createGitHubJob(t, "Copy", sourceID, string(syncjob.ModeCopy))
-	mirrorJob := g.createGitHubJob(t, "Mirror", sourceID, string(syncjob.ModeMirror))
+	copyJob, copyRoot := g.createGitHubJob(t, "Copy", sourceID, string(syncjob.ModeCopy))
+	mirrorJob, mirrorRoot := g.createGitHubJob(t, "Mirror", sourceID, string(syncjob.ModeMirror))
 
 	// 1. 初始下载：两个版本目录各自落地（recent=2 选中 v1.1 与 v1.0）。
 	requireSucceeded(t, "copy initial", g.runAndWait(t, copyJob.ID))
 	requireSucceeded(t, "mirror initial", g.runAndWait(t, mirrorJob.ID))
-	if got := readLocal(t, copyJob.LocalRoot+"/v1.0__101/app-linux.tar.gz"); got != "v1-linux" {
+	if got := readLocal(t, copyRoot+"/v1.0__101/app-linux.tar.gz"); got != "v1-linux" {
 		t.Fatalf("v1.0 copy = %q, want v1-linux", got)
 	}
-	if got := readLocal(t, copyJob.LocalRoot+"/v1.1__102/app-linux.tar.gz"); got != "v11-linux" {
+	if got := readLocal(t, copyRoot+"/v1.1__102/app-linux.tar.gz"); got != "v11-linux" {
 		t.Fatalf("v1.1 copy = %q, want v11-linux", got)
 	}
 	// SHA256SUMS 仅存在于 v1.0：v1.1 目录不应出现该文件。
-	if _, err := os.Stat(mirrorJob.LocalRoot + "/v1.1__102/SHA256SUMS"); !os.IsNotExist(err) {
+	if _, err := os.Stat(mirrorRoot + "/v1.1__102/SHA256SUMS"); !os.IsNotExist(err) {
 		t.Errorf("v1.1 should not contain SHA256SUMS (belongs to v1.0), err = %v", err)
 	}
 
 	// 2. 无变化 → skip，零传输（3 个文件：v1.0 两个 + v1.1 一个）。
 	st := g.runAndWait(t, copyJob.ID)
 	requireSucceeded(t, "copy skip", st)
-	if st.Stats.FilesSkipped != 3 || st.Stats.BytesTransferred != 0 {
-		t.Fatalf("skip stats = %+v, want skipped=3 no transfer", st.Stats)
+	skipStats := fileStatsOf(t, st)
+	if skipStats.FilesSkipped != 3 || skipStats.BytesTransferred != 0 {
+		t.Fatalf("skip stats = %+v, want skipped=3 no transfer", skipStats)
 	}
 
 	// 3. 版本轮换：v1.2 发布使 v1.0 退出 recent=2 范围。
@@ -262,14 +250,14 @@ func TestGitHubReleasePullEndToEnd(t *testing.T) {
 
 	requireSucceeded(t, "mirror rotation", g.runAndWait(t, mirrorJob.ID))
 	// Mirror：退出版本的目录被删除；Copy：保留。
-	if _, err := os.Stat(mirrorJob.LocalRoot + "/v1.0__101/app-linux.tar.gz"); !os.IsNotExist(err) {
+	if _, err := os.Stat(mirrorRoot + "/v1.0__101/app-linux.tar.gz"); !os.IsNotExist(err) {
 		t.Errorf("mirror still keeps rotated-out version dir, want deleted (err = %v)", err)
 	}
-	if got := readLocal(t, copyJob.LocalRoot+"/v1.0__101/app-linux.tar.gz"); got != "v1-linux" {
+	if got := readLocal(t, copyRoot+"/v1.0__101/app-linux.tar.gz"); got != "v1-linux" {
 		t.Errorf("copy should keep rotated-out version: %q", got)
 	}
 	// 新版本继续跟随。
-	if got := readLocal(t, mirrorJob.LocalRoot+"/v1.2__103/app-linux.tar.gz"); got != "v12-linux" {
+	if got := readLocal(t, mirrorRoot+"/v1.2__103/app-linux.tar.gz"); got != "v12-linux" {
 		t.Errorf("mirror v1.2 = %q, want v12-linux", got)
 	}
 }
@@ -289,9 +277,9 @@ func TestGitHubReleasePullChecksumMismatch(t *testing.T) {
 	g.state.mu.Unlock()
 
 	sourceID := g.createGitHubSource(t)
-	job := g.createGitHubJob(t, "Checksum", sourceID, string(syncjob.ModeCopy))
-	requireSucceeded(t, "initial", g.runAndWait(t, job.ID))
-	if got := readLocal(t, job.LocalRoot+"/v2.0__201/app.zip"); got != good {
+	checksumJob, checksumRoot := g.createGitHubJob(t, "Checksum", sourceID, string(syncjob.ModeCopy))
+	requireSucceeded(t, "initial", g.runAndWait(t, checksumJob.ID))
+	if got := readLocal(t, checksumRoot+"/v2.0__201/app.zip"); got != good {
 		t.Fatalf("initial content = %q, want %q", got, good)
 	}
 
@@ -302,11 +290,11 @@ func TestGitHubReleasePullChecksumMismatch(t *testing.T) {
 	g.state.releases[0].assets["app.zip"] = "tampered-content"
 	g.state.mu.Unlock()
 
-	st := g.runAndWait(t, job.ID)
+	st := g.runAndWait(t, checksumJob.ID)
 	if st.State != syncjob.RunFailed {
 		t.Fatalf("state = %s (%s), want failed on checksum mismatch", st.State, st.Error)
 	}
-	if got := readLocal(t, job.LocalRoot+"/v2.0__201/app.zip"); got != good {
+	if got := readLocal(t, checksumRoot+"/v2.0__201/app.zip"); got != good {
 		t.Errorf("local file overwritten on checksum mismatch: %q", got)
 	}
 }

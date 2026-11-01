@@ -9,52 +9,28 @@ import (
 	"sync"
 	"time"
 
+	"tinysync/internal/job"
 	"tinysync/internal/logging"
 	"tinysync/internal/source"
 )
 
-// RunState 是运行的状态机取值。running → succeeded | failed | canceled；
-// canceled 专指用户手动停止（经 Runner.Cancel 触发）；Shutdown 等非用户
-// 意愿的中断仍记 failed。skipped 是调度触发但未执行（overlap / 容量不足）
-// 的持久化记录。idle 不是持久化状态，仅表示「从未运行」的查询占位。
-type RunState string
-
-// 运行状态机取值。运行记录持久化于 sync_runs，重启后仍可查询。
-const (
-	RunIdle      RunState = "idle"
-	RunRunning   RunState = "running"
-	RunSucceeded RunState = "succeeded"
-	RunFailed    RunState = "failed"
-	RunSkipped   RunState = "skipped"
-	RunCanceled  RunState = "canceled"
-)
-
 // 手动运行相关错误：API 层映射为 409 等状态码。
 var (
-	// ErrRunActive 表示同一 Job 已有运行在进行（手动触发返回 409）。
+	// ErrRunActive 表示同一任务已有运行在进行（手动触发返回 409）。
 	ErrRunActive = errors.New("another sync run is active")
 	// ErrConcurrencyLimit 表示全局并发已达 MaxConcurrentJobs 上限
-	// （手动触发返回 409）。
+	//（手动触发返回 409）。
 	ErrConcurrencyLimit = errors.New("concurrency limit reached")
-	// ErrJobDisabled 表示目标 Job 已禁用。
+	// ErrJobDisabled 表示目标任务已禁用。
 	ErrJobDisabled = errors.New("sync job is disabled")
-	// ErrSourceDisabled 表示 Job 引用的 Source 已禁用。
+	// ErrSourceDisabled 表示任务引用的 Source 已禁用（运行期失败原因）。
 	ErrSourceDisabled = errors.New("source is disabled")
-	// ErrRunUnknown 表示查询的运行记录不存在。
-	ErrRunUnknown = errors.New("run not found")
 	// ErrShuttingDown 表示 Runner 正在关闭，拒绝启动新的运行
-	// （手动触发返回 503）。
+	//（手动触发返回 503）。
 	ErrShuttingDown = errors.New("sync runner is shutting down")
-	// ErrJobMutating 表示 Job 的配置变更正在进行（手动触发返回 409；
+	// ErrJobMutating 表示任务的配置变更正在进行（手动触发返回 409；
 	// 调度触发视为瞬时状态，occurrence 不消费，稍后重试）。
 	ErrJobMutating = errors.New("sync job is being modified")
-	// ErrRunCanceled 是用户手动停止运行的取消原因（WithCancelCause）。
-	// finalize 据此把终态收敛为 canceled 而非 failed；同一取值也是
-	// canceled run 的 error 文案。
-	ErrRunCanceled = errors.New("run canceled by user")
-	// ErrRunNotActive 表示目标 run 不在进行中（不存在或已终态）。
-	// API 层结合持久化历史区分 404（不存在）与 409（已结束）。
-	ErrRunNotActive = errors.New("run not active")
 )
 
 // SourceGateway 是 Runner 访问 Source 领域的能力边界：读取 Source
@@ -72,7 +48,7 @@ type RunStatus struct {
 	State      RunState
 	StartedAt  time.Time
 	FinishedAt time.Time
-	Stats      RunStats
+	Result     []byte
 	// Error 是失败原因的人类可读描述；成功时为空。
 	Error string
 }
@@ -84,7 +60,7 @@ type activeRun struct {
 	trigger      RunTrigger
 	scheduledFor *time.Time
 	// cancel 是本轮唯一的取消根。CancelCauseFunc 使「用户手动停止」
-	// （cancel(ErrRunCanceled)）与「服务 Shutdown」（cancel(nil)，cause
+	//（cancel(ErrRunCanceled)）与「服务 Shutdown」（cancel(nil)，cause
 	// 退化为 context.Canceled）在 finalize 中可区分。
 	cancel context.CancelCauseFunc
 	// progress 是本轮的进程内实时进度（transient）：拨号起登记阶段，
@@ -97,8 +73,8 @@ type activeRun struct {
 	startedAt time.Time
 }
 
-// occupant 标识 Job 协调位的占用者：执行链（Runner.start 到运行结束）
-// 或配置变更链（API 的修改 / 删除）。两类占用互斥，使「读取 Job 配置」
+// occupant 标识任务协调位的占用者：执行链（Runner.start 到运行结束）
+// 或配置变更链（API 的修改 / 删除）。两类占用互斥，使「读取任务配置」
 // 与「声明运行中」成为原子操作，杜绝旧配置的运行与新配置写入交叉。
 // 零值 occupantNone 表示无占用者（map 读取缺省值即无占用）。
 type occupant int
@@ -109,24 +85,25 @@ const (
 	occupantMutation
 )
 
-// Runner 是同步执行协调器：并发 Job 数受控（MaxConcurrentJobs）、同一
-// Job 严格串行（手动触发冲突报错，调度触发记 skipped）、运行记录以
-// history 为唯一事实来源（run row 在同步 goroutine 启动前落库）。
+// Runner 是文件同步执行协调器：并发任务数受控（MaxConcurrentJobs）、
+// 同一任务严格串行（手动触发冲突报错，调度触发记 skipped）、运行记录
+// 以 history 为唯一事实来源（run row 在同步 goroutine 启动前落库）。
+// 读取统一任务模型（internal/job），File 配置经 ParseFileConfig 解码。
 type Runner struct {
-	repo    Repository
+	repo    job.Repository
 	managed ManagedRepository
 	// sources 提供 Source 读取与远端客户端构造（含凭据与协议 dispatch）。
 	sources SourceGateway
 	// history 是运行记录的持久化仓库。
-	history RunRepository
+	history job.RunRepository
 	// Now 返回当前时间；默认 UTC time.Now，测试可注入固定时钟。
 	Now func() time.Time
 
-	// MaxConcurrentJobs 是全进程同时运行的 Job 数上限；必须为正整数，
+	// MaxConcurrentJobs 是全进程同时运行的任务数上限；必须为正整数，
 	// 由应用装配从运行配置注入。
 	MaxConcurrentJobs int
 	// MaxConcurrentTransfers 是全进程同时进行的远端文件下载上限，
-	// 由所有 Job 的同步引擎经共享 transfer limiter 消费；必须为正整数。
+	// 由所有任务的同步引擎经共享 transfer limiter 消费；必须为正整数。
 	MaxConcurrentTransfers int
 	// TransferTimeout 是单文件单次 attempt 的传输超时；0 表示不启用。
 	// 由应用装配从运行配置注入。
@@ -135,7 +112,7 @@ type Runner struct {
 	// CompletionHook 是运行终态成功落库后的旁路消费者（完成通知等）。
 	// nil 表示不发布；实现必须立即返回，任何下游耗时不得拖住终态收口
 	//（ADR 0006）。
-	CompletionHook RunCompletionHook
+	CompletionHook job.RunCompletionHook
 
 	mu           sync.Mutex
 	active       map[string]*activeRun // jobID → 进行中的运行
@@ -145,9 +122,9 @@ type Runner struct {
 	wg           sync.WaitGroup
 }
 
-// NewRunner 构造 Runner：默认并发 Job 数 1（与 v0.3 行为一致）、
-// 并发传输 4，应用装配可按运行配置覆盖。
-func NewRunner(repo Repository, managed ManagedRepository, sources SourceGateway, history RunRepository) *Runner {
+// NewRunner 构造 Runner：默认并发任务数 1、并发传输 4，
+// 应用装配可按运行配置覆盖。
+func NewRunner(repo job.Repository, managed ManagedRepository, sources SourceGateway, history job.RunRepository) *Runner {
 	return &Runner{
 		repo:                   repo,
 		managed:                managed,
@@ -162,13 +139,13 @@ func NewRunner(repo Repository, managed ManagedRepository, sources SourceGateway
 }
 
 // Start 校验并异步启动一轮手动同步，立即返回 run ID。运行 context 独立于
-// 调用方的 HTTP request context；同一 Job 已在运行或全局并发已满、Job 或
-// Source 禁用时拒绝启动。
+// 调用方的 HTTP request context；同一任务已在运行或全局并发已满、任务
+// 禁用时拒绝启动。
 func (r *Runner) Start(ctx context.Context, jobID string) (string, error) {
 	return r.start(ctx, jobID, TriggerManual, nil)
 }
 
-// StartScheduled 以调度触发启动一轮同步。occurrence 到期但同 Job 运行中
+// StartScheduled 以调度触发启动一轮同步。occurrence 到期但同任务运行中
 // 或全局并发已满时不排队：记录 status=skipped 的 run（error 记原因）并
 // 消费该 occurrence，返回空 run ID 与 nil 错误；读取配置或落库失败返回
 // 错误——occurrence 未被消费，调度器应重试窗口而不是视为已处理。
@@ -176,7 +153,7 @@ func (r *Runner) StartScheduled(ctx context.Context, jobID string, trigger RunTr
 	return r.start(ctx, jobID, trigger, &scheduledFor)
 }
 
-// start 是手动与调度触发的共同路径：原子占用 Job 协调位 → 读取并校验
+// start 是手动与调度触发的共同路径：原子占用任务协调位 → 读取并校验
 // 配置 → 检查全局容量 → 同步落库 running 记录 → 启动 goroutine。
 // Remote 创建在运行 goroutine 内进行：纳入 active 发布与 WaitGroup 之
 // 后的真实 run 生命周期，创建失败记为 failed run，取消语义见 runCtx。
@@ -223,20 +200,15 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 		}
 	}()
 
-	job, err := r.repo.Get(ctx, jobID)
+	j, err := r.repo.Get(ctx, jobID)
 	if err != nil {
 		return "", err
 	}
-	if !job.Enabled {
+	if !j.Enabled {
 		return "", fmt.Errorf("%w: %s", ErrJobDisabled, jobID)
 	}
-	// Enabled 检查在读配置链路完成，禁用 Source 不产生到远端的拨号。
-	src, err := r.sources.Get(ctx, job.SourceID)
-	if err != nil {
-		return "", err
-	}
-	if !src.Enabled {
-		return "", fmt.Errorf("%w: %s", ErrSourceDisabled, job.SourceID)
+	if j.Kind != job.KindFile {
+		return "", fmt.Errorf("%w: kind %q is not runnable", job.ErrKindUnsupported, j.Kind)
 	}
 
 	maxConcurrent := r.MaxConcurrentJobs
@@ -248,7 +220,7 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 	if len(r.active) >= maxConcurrent {
 		r.mu.Unlock()
 		if scheduledFor != nil {
-			return "", r.recordSkipped(ctx, job, trigger, *scheduledFor, "concurrency limit reached")
+			return "", r.recordSkipped(ctx, j, trigger, *scheduledFor, "concurrency limit reached")
 		}
 		return "", fmt.Errorf("%w: at most %d concurrent jobs", ErrConcurrencyLimit, maxConcurrent)
 	}
@@ -292,9 +264,9 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 	// 则回收发布时预留的全部资源——active / 协调位 / WaitGroup 名额
 	//（goroutine 尚未启动，Done 必须在此补齐，否则 wg 永不归零，
 	// Shutdown 只能靠超时返回）。
-	record := RunRecord{
+	record := job.RunRecord{
 		ID:           runID,
-		JobKind:      KindFile,
+		JobKind:      j.Kind,
 		JobID:        jobID,
 		Trigger:      trigger,
 		ScheduledFor: scheduledFor,
@@ -321,8 +293,8 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 	// 进程硬崩溃后日志里没有「这个 run 曾经启动」的痕迹。run row 落库
 	// 成功即输出 running，与终态事件构成同一 run_id 的完整时间线；
 	// 字段布局与终态事件一致，便于日志解析。
-	logging.Infof("event=sync_run job_id=%s run_id=%s source_id=%s status=%s duration_ms=0 bytes=0 files_created=0 files_updated=0 files_deleted=0 error=%q",
-		jobID, runID, job.SourceID, RunRunning, "")
+	logging.Infof("event=sync_run job_id=%s run_id=%s status=%s duration_ms=0 result={} error=%q",
+		jobID, runID, RunRunning, "")
 
 	go func() {
 		defer r.wg.Done()
@@ -335,7 +307,7 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 			cancel(nil)
 			close(run.done)
 		}()
-		r.runOne(runCtx, job, run)
+		r.runOne(runCtx, j, run)
 	}()
 	return runID, nil
 }
@@ -349,7 +321,7 @@ func (r *Runner) releaseOccupancy(jobID string) {
 
 // transferLimiter 返回进程级共享的传输 limiter：首次调用按
 // MaxConcurrentTransfers 构造（应用装配在 Start 之前注入运行配置），
-// 之后所有 Job 共用同一实例，使下载并发上限约束整个进程。
+// 之后所有任务共用同一实例，使下载并发上限约束整个进程。
 // 调用方必须持有 r.mu。
 func (r *Runner) transferLimiter() *TransferLimiter {
 	if r.transfers == nil {
@@ -362,26 +334,37 @@ func (r *Runner) transferLimiter() *TransferLimiter {
 	return r.transfers
 }
 
-// runOne 建立远端连接并运行同步引擎：Remote 创建属于运行期——创建
-// 失败与运行失败同为一次 failed run（认证、host key、网络不通等在
-// 历史中可查，而不是只在启动接口同步报错），创建阶段与传输阶段共用
-// runCtx 一条取消链，Shutdown 取消运行即可打断拨号与阻塞中的读取。
-func (r *Runner) runOne(ctx context.Context, job Job, run *activeRun) {
+// runOne 建立远端连接并运行同步引擎：Source 禁用检查、Remote 创建属于
+// 运行期——失败与运行失败同为一次 failed run（认证、host key、网络
+// 不通等在历史中可查，而不是只在启动接口同步报错），创建阶段与传输
+// 阶段共用 runCtx 一条取消链，Shutdown 取消运行即可打断拨号与阻塞中
+// 的读取。
+func (r *Runner) runOne(ctx context.Context, j job.Job, run *activeRun) {
 	// connecting 阶段覆盖拨号（含 SFTP 会话建立）；引擎接管后推进到
 	// scanning 及之后。
 	run.progress.SetPhase(RunPhaseConnecting)
-	src, err := r.sources.Get(ctx, job.SourceID)
+	config, err := ParseFileConfig(j.Config)
 	if err != nil {
-		r.finalize(ctx, run, job, RunStats{}, fmt.Errorf("read source: %w", err))
+		r.finalize(ctx, run, j, nil, fmt.Errorf("parse file config: %w", err))
 		return
 	}
-	if err := source.ValidateJobMapping(src, job.RemoteRoot, job.LocalRoot); err != nil {
-		r.finalize(ctx, run, job, RunStats{}, fmt.Errorf("validate job mapping: %w", err))
+	spec := config.Spec(j.ID)
+	src, err := r.sources.Get(ctx, spec.SourceID)
+	if err != nil {
+		r.finalize(ctx, run, j, nil, fmt.Errorf("read source: %w", err))
 		return
 	}
-	_, remote, err := r.sources.OpenRemote(ctx, job.SourceID)
+	if !src.Enabled {
+		r.finalize(ctx, run, j, nil, fmt.Errorf("%w: %s", ErrSourceDisabled, spec.SourceID))
+		return
+	}
+	if err := source.ValidateJobMapping(src, spec.RemoteRoot, spec.LocalRoot); err != nil {
+		r.finalize(ctx, run, j, nil, fmt.Errorf("validate job mapping: %w", err))
+		return
+	}
+	_, remote, err := r.sources.OpenRemote(ctx, spec.SourceID)
 	if err != nil {
-		r.finalize(ctx, run, job, RunStats{}, fmt.Errorf("create remote for source %s: %w", job.SourceID, err))
+		r.finalize(ctx, run, j, nil, fmt.Errorf("create remote for source %s: %w", spec.SourceID, err))
 		return
 	}
 	// 运行结束释放 Remote 连接（有连接生命周期的协议如 SFTP 不遗留
@@ -389,7 +372,7 @@ func (r *Runner) runOne(ctx context.Context, job Job, run *activeRun) {
 	defer func() { _ = remote.Close() }()
 	stats, runErr := Run(ctx, RunOptions{
 		Remote:          remote,
-		Job:             job,
+		Job:             spec,
 		Managed:         r.managed,
 		Items:           runItemRecorder{repo: r.history},
 		RunID:           run.runID,
@@ -397,7 +380,11 @@ func (r *Runner) runOne(ctx context.Context, job Job, run *activeRun) {
 		TransferTimeout: r.TransferTimeout,
 		Progress:        run.progress,
 	})
-	r.finalize(ctx, run, job, stats, runErr)
+	result, merr := job.MarshalResult(stats)
+	if merr != nil {
+		logging.Errorf("marshal run result %s: %v", run.runID, merr)
+	}
+	r.finalize(ctx, run, j, result, runErr)
 }
 
 // finalize 把终态落库；落库失败只记日志，不改变本轮结果。终态落库与
@@ -405,19 +392,19 @@ func (r *Runner) runOne(ctx context.Context, job Job, run *activeRun) {
 // 此刻正是最需要把 failed 终态写库的时机——用已取消的 ctx 调真实
 // SQLite 会直接失败，遗留 running 行只能等下次启动的 stale 恢复；
 // 优雅关闭应在本进程内完成终态收敛。终态同时输出 event=sync_run
-// 结构化事件（v0.9 可观测性契约：job_id / run_id / source_id /
-// status / duration_ms / bytes / files_* / error）。
-func (r *Runner) finalize(ctx context.Context, run *activeRun, job Job, stats RunStats, runErr error) {
+// 结构化事件（v0.9 可观测性契约）。
+func (r *Runner) finalize(ctx context.Context, run *activeRun, j job.Job, result []byte, runErr error) {
 	finishedAt := r.Now()
-	final := RunRecord{
+	final := job.RunRecord{
 		ID:           run.runID,
+		JobKind:      j.Kind,
 		JobID:        run.jobID,
 		Trigger:      run.trigger,
 		ScheduledFor: run.scheduledFor,
 		State:        RunSucceeded,
 		StartedAt:    run.startedAt,
 		FinishedAt:   &finishedAt,
-		Stats:        stats,
+		Result:       result,
 	}
 	if runErr != nil {
 		final.State = RunFailed
@@ -427,16 +414,14 @@ func (r *Runner) finalize(ctx context.Context, run *activeRun, job Job, stats Ru
 		// 运行已因真实错误失败」的情形），且取消原因必须是用户手动
 		// 停止（Shutdown 的 cause 为 context.Canceled，保持 failed）。
 		if errors.Is(runErr, context.Canceled) &&
-			errors.Is(context.Cause(ctx), ErrRunCanceled) {
+			errors.Is(context.Cause(ctx), job.ErrRunCanceled) {
 			final.State = RunCanceled
-			final.Error = ErrRunCanceled.Error()
+			final.Error = job.ErrRunCanceled.Error()
 		}
 	}
-	logging.Infof("event=sync_run job_id=%s run_id=%s source_id=%s status=%s duration_ms=%d bytes=%d files_created=%d files_updated=%d files_deleted=%d error=%q",
-		run.jobID, run.runID, job.SourceID, final.State,
-		finishedAt.Sub(run.startedAt).Milliseconds(), final.Stats.BytesTransferred,
-		final.Stats.FilesCreated, final.Stats.FilesUpdated, final.Stats.FilesDeleted,
-		final.Error)
+	logging.Infof("event=sync_run job_id=%s run_id=%s status=%s duration_ms=%d result=%s error=%q",
+		run.jobID, run.runID, final.State,
+		finishedAt.Sub(run.startedAt).Milliseconds(), resultString(final.Result), final.Error)
 	persistCtx := context.WithoutCancel(ctx)
 	finalizeErr := r.history.Finalize(persistCtx, final)
 	if finalizeErr != nil {
@@ -445,28 +430,28 @@ func (r *Runner) finalize(ctx context.Context, run *activeRun, job Job, stats Ru
 	r.pruneHistory(persistCtx)
 	// 完成事件只在终态成功落库后发布：落库失败时数据库仍显示
 	// running，此刻发出完成通知会造成两边事实不一致——宁可漏发
-	//（ADR 0006）。事件自带 JobName / SourceID 快照，消费者无需回读
-	// 可能已变更的 Job 配置。
+	//（ADR 0006）。事件自带 JobName 快照，消费者无需回读可能已变更
+	// 的任务配置。
 	if finalizeErr != nil || r.CompletionHook == nil {
 		return
 	}
-	r.CompletionHook.OnRunCompleted(RunCompletion{
+	r.CompletionHook.OnRunCompleted(job.RunCompletion{
 		RunID:      final.ID,
 		JobID:      final.JobID,
-		JobName:    job.Name,
-		SourceID:   job.SourceID,
+		JobKind:    final.JobKind,
+		JobName:    j.Name,
 		Trigger:    final.Trigger,
 		State:      final.State,
 		StartedAt:  final.StartedAt,
 		FinishedAt: finishedAt,
-		Stats:      final.Stats,
+		Result:     final.Result,
 		Error:      final.Error,
 	})
 }
 
 // pruneHistory 在 run 终态落库后回收每 Job 的历史容量（保留最近
 // RetentionRunsPerJob 条）。使用独立 context：运行取消（如 Shutdown）
-// 后仍要完成清理，防止长期运行的 Job 无限膨胀。
+// 后仍要完成清理，防止长期运行的任务无限膨胀。
 func (r *Runner) pruneHistory(ctx context.Context) {
 	if err := r.history.PruneRetention(context.WithoutCancel(ctx), RetentionRunsPerJob); err != nil {
 		logging.Errorf("prune run history: %v", err)
@@ -478,16 +463,16 @@ func (r *Runner) pruneHistory(ctx context.Context) {
 // 记录原子写入），之后与正常执行走同一条容量回收路径。持久化失败
 // 时返回错误——occurrence 未被成功消费，调用方（调度器）据此重试
 // 整个窗口而不是把它当作已处理。
-func (r *Runner) recordSkipped(ctx context.Context, job Job, trigger RunTrigger, scheduledFor time.Time, reason string) error {
+func (r *Runner) recordSkipped(ctx context.Context, j job.Job, trigger RunTrigger, scheduledFor time.Time, reason string) error {
 	id, err := newRunID()
 	if err != nil {
-		return fmt.Errorf("generate skipped run id for job %s: %w", job.ID, err)
+		return fmt.Errorf("generate skipped run id for job %s: %w", j.ID, err)
 	}
 	now := r.Now()
-	run := RunRecord{
+	run := job.RunRecord{
 		ID:           id,
-		JobKind:      KindFile,
-		JobID:        job.ID,
+		JobKind:      j.Kind,
+		JobID:        j.ID,
 		Trigger:      trigger,
 		ScheduledFor: &scheduledFor,
 		State:        RunSkipped,
@@ -496,16 +481,16 @@ func (r *Runner) recordSkipped(ctx context.Context, job Job, trigger RunTrigger,
 		Error:        reason,
 	}
 	if err := r.history.PersistScheduledRun(ctx, run); err != nil {
-		return fmt.Errorf("record skipped run for job %s: %w", job.ID, err)
+		return fmt.Errorf("record skipped run for job %s: %w", j.ID, err)
 	}
-	logging.Infof("event=sync_run job_id=%s run_id=%s source_id=%s status=%s duration_ms=0 bytes=0 files_created=0 files_updated=0 files_deleted=0 error=%q",
-		job.ID, id, job.SourceID, RunSkipped, reason)
+	logging.Infof("event=sync_run job_id=%s run_id=%s status=%s duration_ms=0 result={} error=%q",
+		j.ID, id, RunSkipped, reason)
 	r.pruneHistory(ctx)
 	return nil
 }
 
-// BeginMutation 原子占用 Job 的协调位，与执行链（start → 运行结束）
-// 互斥：Job 正在运行或正在启动时返回 ErrRunActive。配置修改 / 删除
+// BeginMutation 原子占用任务的协调位，与执行链（start → 运行结束）
+// 互斥：任务正在运行或正在启动时返回 ErrRunActive。配置修改 / 删除
 // 在占用成功后才执行，从根上排除「IsRunning 检查通过后、Service 落库
 // 前」运行恰好启动的 TOCTOU 窗口；占用方完成后必须调用 EndMutation。
 func (r *Runner) BeginMutation(jobID string) error {
@@ -527,14 +512,14 @@ func (r *Runner) EndMutation(jobID string) {
 	}
 }
 
-// IsRunning 判断指定 Job 是否被执行链占用（含正在启动的窗口）。
+// IsRunning 判断指定任务是否被执行链占用（含正在启动的窗口）。
 func (r *Runner) IsRunning(jobID string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.occupancy[jobID] == occupantRun
 }
 
-// GetStatus 返回 Job 的运行状态：进行中返回 running 快照，否则返回
+// GetStatus 返回任务的运行状态：进行中返回 running 快照，否则返回
 // 最近一条持久化 run（含 skipped）；从未运行为 idle。重启后历史仍在。
 func (r *Runner) GetStatus(ctx context.Context, jobID string) (RunStatus, error) {
 	r.mu.Lock()
@@ -548,7 +533,7 @@ func (r *Runner) GetStatus(ctx context.Context, jobID string) (RunStatus, error)
 		}, nil
 	}
 	rec, err := r.history.Latest(ctx, jobID)
-	if errors.Is(err, ErrRunUnknown) {
+	if errors.Is(err, job.ErrRunUnknown) {
 		return RunStatus{State: RunIdle}, nil
 	}
 	if err != nil {
@@ -607,18 +592,18 @@ func (r *Runner) Shutdown(ctx context.Context) error {
 // Cancel 手动取消一轮进行中的运行：以 ErrRunCanceled 为原因触发 runCtx
 // 取消链（拨号、扫描、传输全部中断），终态由 finalize 收敛为 canceled。
 // run 已不在进行中（不存在或已终态）返回 ErrRunNotActive——按 run ID
-// 而非 Job 取消，杜绝「看到的 run 已结束、迟到的停止误伤下一轮」的
+// 而非任务取消，杜绝「看到的 run 已结束、迟到的停止误伤下一轮」的
 // 竞态。仍 active 的重复取消幂等（cancel 为 no-op，返回 nil）。
 func (r *Runner) Cancel(runID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, run := range r.active {
 		if run.runID == runID {
-			run.cancel(ErrRunCanceled)
+			run.cancel(job.ErrRunCanceled)
 			return nil
 		}
 	}
-	return ErrRunNotActive
+	return job.ErrRunNotActive
 }
 
 // Progress 返回进行中 run 的实时进度快照；run 不在进行中（不存在、
@@ -644,36 +629,22 @@ func (r *Runner) findActive(runID string) *activeRun {
 	return nil
 }
 
-// NextRunAt 返回 Job 的下一次计划触发时间：manual 恒无；once 已消费后
+// NextRunAt 返回任务的下一次计划触发时间：manual 恒无；once 已消费后
 // 无（未消费时返回配置时刻，即使已过期——调度器会立即补执行）；
 // interval / cron 按 schedule 与当前时刻计算。第二个返回值为 false
 // 表示没有下一次触发。
-func (r *Runner) NextRunAt(ctx context.Context, job Job) (time.Time, bool, error) {
-	var trigger RunTrigger
-	switch job.Schedule.Type {
-	case ScheduleOnce:
-		trigger = TriggerOnce
-	case ScheduleInterval:
-		trigger = TriggerInterval
-	case ScheduleCron:
-		trigger = TriggerCron
+func (r *Runner) NextRunAt(ctx context.Context, j job.Job) (time.Time, bool, error) {
+	switch j.Schedule.Type {
+	case ScheduleOnce, ScheduleInterval, ScheduleCron:
 	default:
 		return time.Time{}, false, nil
 	}
-	next, ok := job.Schedule.NextRun(r.Now())
+	next, ok := j.Schedule.NextRun(r.Now())
 	if !ok {
 		return time.Time{}, false, nil
 	}
-	if trigger == TriggerOnce {
-		at, err := job.Schedule.OnceAt()
-		if err != nil {
-			return time.Time{}, false, nil
-		}
-		// once 消费状态在 Job 上（持久化 correctness state），不依赖
-		// 运行历史存活。
-		if onceConsumed(job, at) {
-			return time.Time{}, false, nil
-		}
+	if j.Schedule.Type == ScheduleOnce && job.OnceConsumed(j) {
+		return time.Time{}, false, nil
 	}
 	return next, true, nil
 }
@@ -688,7 +659,7 @@ func (r *Runner) GetRun(ctx context.Context, runID string) (RunRecord, error) {
 	return r.history.Get(ctx, runID)
 }
 
-// ListRunItems 分页查询 run 的文件级明细，total 为该 run 明细总数。
+// ListRunItems 分页查询 run 的明细，total 为该 run 明细总数。
 // 先确认 run 存在：明细为空的 run 与不存在的 run 必须可区分
 // （不存在返回 ErrRunUnknown，与 /runs/:id 的资源语义一致）。
 func (r *Runner) ListRunItems(ctx context.Context, runID string, limit, offset int) ([]RunItem, int, error) {
@@ -699,9 +670,9 @@ func (r *Runner) ListRunItems(ctx context.Context, runID string, limit, offset i
 }
 
 // runItemRecorder 把引擎的 ItemRecorder 适配到 RunRepository：
-// 文件级明细直接追加到 sync_run_items。
+// 明细直接追加到 job_run_items。
 type runItemRecorder struct {
-	repo RunRepository
+	repo job.RunRepository
 }
 
 // RecordItem 实现 ItemRecorder。
@@ -715,13 +686,21 @@ func runRecordToStatus(rec RunRecord) RunStatus {
 		RunID:     rec.ID,
 		State:     rec.State,
 		StartedAt: rec.StartedAt,
-		Stats:     rec.Stats,
+		Result:    rec.Result,
 		Error:     rec.Error,
 	}
 	if rec.FinishedAt != nil {
 		st.FinishedAt = *rec.FinishedAt
 	}
 	return st
+}
+
+// resultString 把结果 JSON 转为日志友好的字符串；空结果为 {}。
+func resultString(result []byte) string {
+	if len(result) == 0 {
+		return "{}"
+	}
+	return string(result)
 }
 
 // newRunID 生成 run_<128-bit random hex> 形式的运行 ID。

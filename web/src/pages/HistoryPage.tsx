@@ -139,10 +139,10 @@ function RunsTable({ runs }: { runs: RunRecordResponse[] }) {
                             </TableCell>
                             <TableCell>{formatDuration(run.started_at, run.finished_at)}</TableCell>
                             <TableCell>
-                                {`${run.stats.files_created}+ ${run.stats.files_updated}~ ${run.stats.files_deleted}- ${run.stats.files_skipped}↷`}
+                                {`${run.result.files_created}+ ${run.result.files_updated}~ ${run.result.files_deleted}- ${run.result.files_skipped}↷`}
                             </TableCell>
                             <TableCell align="right">
-                                {formatBytes(run.stats.bytes_transferred)}
+                                {formatBytes(run.result.bytes_transferred)}
                             </TableCell>
                         </TableRow>
                     ))}

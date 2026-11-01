@@ -2,10 +2,12 @@ package notification
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
+	"tinysync/internal/job"
 	"tinysync/internal/syncjob"
 )
 
@@ -27,7 +29,7 @@ type Sender interface {
 //     不计入变更；
 //   - BytesTransferred 统计成功同步文件的实际 payload 大小，不含重试
 //     与协议开销，文案用「同步数据量」而非「网络流量」。
-func FormatRun(run syncjob.RunCompletion) Message {
+func FormatRun(run job.RunCompletion) Message {
 	stateText, titleState := describeState(run.State)
 	title := fmt.Sprintf("TinySync · %s · %s", run.JobName, titleState)
 
@@ -37,7 +39,11 @@ func FormatRun(run syncjob.RunCompletion) Message {
 	fmt.Fprintf(&b, "触发：%s\n", describeTrigger(run.Trigger))
 	fmt.Fprintf(&b, "耗时：%s\n", formatDuration(run.FinishedAt.Sub(run.StartedAt)))
 	b.WriteString("\n")
-	s := run.Stats
+	// 领域结果摘要按任务类型解释（当前仅 file：文件统计）。
+	var s syncjob.RunStats
+	if len(run.Result) > 0 {
+		_ = json.Unmarshal(run.Result, &s)
+	}
 	fmt.Fprintf(&b, "文件总数：%d\n", s.FilesTotal)
 	fmt.Fprintf(&b, "文件变更：%d\n", s.FilesCreated+s.FilesUpdated+s.FilesDeleted)
 	fmt.Fprintf(&b, "新增：%d\n", s.FilesCreated)
@@ -64,13 +70,13 @@ func FormatTest() Message {
 
 // describeState 把运行终态映射为结果文案：正文与标题共用同一口径。
 // skipped 不是完成事件（第一版不通知），防御性兜底为原文。
-func describeState(state syncjob.RunState) (body, title string) {
+func describeState(state job.RunState) (body, title string) {
 	switch state {
-	case syncjob.RunSucceeded:
+	case job.RunSucceeded:
 		return "成功", "同步成功"
-	case syncjob.RunFailed:
+	case job.RunFailed:
 		return "失败", "同步失败"
-	case syncjob.RunCanceled:
+	case job.RunCanceled:
 		return "已取消", "已取消"
 	default:
 		return string(state), string(state)
@@ -78,15 +84,15 @@ func describeState(state syncjob.RunState) (body, title string) {
 }
 
 // describeTrigger 把触发方式映射为中文文案。
-func describeTrigger(trigger syncjob.RunTrigger) string {
+func describeTrigger(trigger job.RunTrigger) string {
 	switch trigger {
-	case syncjob.TriggerManual:
+	case job.TriggerManual:
 		return "手动"
-	case syncjob.TriggerOnce:
+	case job.TriggerOnce:
 		return "一次性"
-	case syncjob.TriggerInterval:
+	case job.TriggerInterval:
 		return "间隔"
-	case syncjob.TriggerCron:
+	case job.TriggerCron:
 		return "Cron"
 	default:
 		return string(trigger)

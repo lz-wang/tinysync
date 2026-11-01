@@ -50,13 +50,16 @@ const mocked = vi.mocked({
 const job: JobResponse = {
     id: 'job-1',
     name: '任务一',
-    source_id: 'src-1',
-    remote_root: '/',
-    local_root: '/tmp/data',
-    mode: 'copy',
-    include: [],
-    exclude: [],
+    kind: 'file',
     enabled: true,
+    config: {
+        source_id: 'src-1',
+        remote_root: '/',
+        local_root: '/tmp/data',
+        mode: 'copy',
+        include: [],
+        exclude: [],
+    },
     schedule: { type: 'manual' },
     created_at: '2026-09-22T00:00:00Z',
     updated_at: '2026-09-22T00:00:00Z',
@@ -64,12 +67,12 @@ const job: JobResponse = {
 
 const sources: SourceResponse[] = []
 
-// statusFor 构造 /jobs/:id/status 响应；stats 为空统计。
+// statusFor 构造 /jobs/:id/status 响应；result 为空统计。
 function statusFor(state: RunStatusResponse['state'], runId?: string): RunStatusResponse {
     return {
         ...(runId !== undefined ? { run_id: runId } : {}),
         state,
-        stats: {
+        result: {
             files_total: 0,
             files_created: 0,
             files_updated: 0,
@@ -92,11 +95,12 @@ function recordFor(
     return {
         id: 'run-1',
         job_id: job.id,
+        job_kind: 'file',
         job_name: job.name,
         trigger: 'manual',
         status,
         started_at: '2026-09-22T00:00:00Z',
-        stats: statusFor('running').stats,
+        result: statusFor('running').result,
         ...(progress !== undefined ? { progress } : {}),
     }
 }

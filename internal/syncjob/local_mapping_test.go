@@ -8,9 +8,10 @@ import (
 	"path/filepath"
 	"testing"
 
+	"tinysync/internal/job"
+	jobsqlite "tinysync/internal/job/sqlite"
 	"tinysync/internal/source"
 	"tinysync/internal/syncjob"
-	"tinysync/internal/syncjob/sqlite"
 )
 
 func TestLocalJobCreateAndUpdateMapping(t *testing.T) {
@@ -28,18 +29,18 @@ func TestLocalJobCreateAndUpdateMapping(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			input := syncjob.CreateInput{Name: "local job", SourceID: src.ID, RemoteRoot: "/a", LocalRoot: filepath.Join(base, "b"), Mode: syncjob.ModeMirror, Enabled: true}
+			input := fileJobInput{Name: "local job", SourceID: src.ID, RemoteRoot: "/a", LocalRoot: filepath.Join(base, "b"), Mode: syncjob.ModeMirror, Enabled: true}
 			unsafe := input
 			unsafe.LocalRoot = filepath.Join(base, "a")
-			if _, err := env.service.Create(ctx, unsafe); !errors.Is(err, syncjob.ErrInvalid) {
+			if _, err := env.createFileJob(ctx, unsafe); !errors.Is(err, syncjob.ErrInvalid) {
 				t.Fatalf("create overlap=%v", err)
 			}
-			job, err := env.service.Create(ctx, input)
+			j, err := env.createFileJob(ctx, input)
 			if err != nil {
 				t.Fatal(err)
 			}
-			seedManaged(t, env, job.ID)
-			var upd syncjob.UpdateInput
+			seedManaged(t, env, j.ID)
+			var upd filePatch
 			switch field {
 			case "remote_root":
 				value := "/"
@@ -57,15 +58,20 @@ func TestLocalJobCreateAndUpdateMapping(t *testing.T) {
 				}
 				upd.SourceID = &other.ID
 			}
-			if _, err := env.service.Update(ctx, job.ID, upd); !errors.Is(err, syncjob.ErrInvalid) {
+			if _, err := env.updateFileJob(ctx, j.ID, upd); !errors.Is(err, syncjob.ErrInvalid) {
 				t.Fatalf("update=%v", err)
 			}
-			if managedCount(t, env, job.ID) != 1 {
+			if managedCount(t, env, j.ID) != 1 {
 				t.Fatal("rejected update reset metadata")
 			}
-			got, err := env.service.Get(ctx, job.ID)
-			if err != nil || got.SourceID != job.SourceID || got.RemoteRoot != job.RemoteRoot || got.LocalRoot != job.LocalRoot {
-				t.Fatalf("job changed: %+v %v", got, err)
+			got, err := env.service.Get(ctx, j.ID)
+			if err != nil {
+				t.Fatalf("get job: %v", err)
+			}
+			gotCfg := fileConfigOf(t, got)
+			wantCfg := fileConfigOf(t, j)
+			if gotCfg.SourceID != wantCfg.SourceID || gotCfg.RemoteRoot != wantCfg.RemoteRoot || gotCfg.LocalRoot != wantCfg.LocalRoot {
+				t.Fatalf("job changed: %+v", gotCfg)
 			}
 		})
 	}
@@ -93,7 +99,7 @@ func TestRejectedLocalJobCreateDoesNotCreateDestination(t *testing.T) {
 				t.Fatal(err)
 			}
 			destination := filepath.Join(base, tc.target)
-			_, err = env.service.Create(ctx, syncjob.CreateInput{
+			_, err = env.createFileJob(ctx, fileJobInput{
 				Name: "rejected", SourceID: src.ID, RemoteRoot: tc.remote,
 				LocalRoot: destination, Mode: syncjob.ModeMirror,
 			})
@@ -133,26 +139,27 @@ func TestLocalJobCreateAllowsMissingSiblingDestination(t *testing.T) {
 		t.Fatal(err)
 	}
 	destination := filepath.Join(root, "output", "nested")
-	job, err := env.service.Create(ctx, syncjob.CreateInput{
+	j, err := env.createFileJob(ctx, fileJobInput{
 		Name: "siblings", SourceID: src.ID, RemoteRoot: "/input",
 		LocalRoot: destination, Mode: syncjob.ModeCopy,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info, err := os.Stat(job.LocalRoot); err != nil || !info.IsDir() {
+	rootCreated := fileConfigOf(t, j).LocalRoot
+	if info, err := os.Stat(rootCreated); err != nil || !info.IsDir() {
 		t.Fatalf("valid destination not created: %v", err)
 	}
 }
 
 // recheckingRepository 注入预检与创建后复验之间的变化，无并发计时假设。
 type recheckingRepository struct {
-	syncjob.Repository
+	job.Repository
 	lists     int
 	onRecheck func() error
 }
 
-func (r *recheckingRepository) List(ctx context.Context) ([]syncjob.Job, error) {
+func (r *recheckingRepository) List(ctx context.Context) ([]job.Job, error) {
 	r.lists++
 	if r.lists == 2 {
 		if err := r.onRecheck(); err != nil {
@@ -186,7 +193,7 @@ func TestLocalJobCreateRevalidatesAfterMkdir(t *testing.T) {
 		t.Fatal(err)
 	}
 	destination := filepath.Join(base, "backup", "nested")
-	repo := &recheckingRepository{Repository: sqlite.NewRepository(env.db)}
+	repo := &recheckingRepository{Repository: jobsqlite.NewRepository(env.db)}
 	repo.onRecheck = func() error {
 		if _, err := os.Stat(destination); err != nil {
 			return fmt.Errorf("destination was not created before recheck: %w", err)
@@ -198,10 +205,15 @@ func TestLocalJobCreateRevalidatesAfterMkdir(t *testing.T) {
 		}
 		return os.Symlink(destination, canonical)
 	}
-	svc := syncjob.NewService(repo, env.sourceSvc, env.dataDir)
-	_, err = svc.Create(ctx, syncjob.CreateInput{
-		Name: "changed mapping", SourceID: src.ID, RemoteRoot: "/",
-		LocalRoot: destination, Mode: syncjob.ModeMirror,
+	svc := job.NewService(repo, map[job.JobKind]job.Executor{
+		job.KindFile: syncjob.NewFileExecutor(env.sourceSvc, repo, env.dataDir),
+	})
+	cfg, err := syncjob.MarshalFileConfig(src.ID, "/", destination, syncjob.ModeMirror, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = svc.Create(ctx, job.CreateInput{
+		Name: "changed mapping", Kind: job.KindFile, Config: cfg, Enabled: true,
 	})
 	if !errors.Is(err, syncjob.ErrInvalid) || repo.lists != 2 {
 		t.Fatalf("Create = %v; root checks = %d, want ErrInvalid after recheck", err, repo.lists)

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"tinysync/internal/syncjob"
+	"tinysync/internal/job"
 )
 
 // fakeSender 记录发送的消息，可按脚本失败。
@@ -66,18 +66,17 @@ func enabledSettings() Settings {
 	return settings
 }
 
-func completedEvent() syncjob.RunCompletion {
+func completedEvent() job.RunCompletion {
 	run := completedRun()
-	return syncjob.RunCompletion{
+	return job.RunCompletion{
 		RunID:      run.RunID,
 		JobID:      run.JobID,
 		JobName:    run.JobName,
-		SourceID:   run.SourceID,
 		Trigger:    run.Trigger,
 		State:      run.State,
 		StartedAt:  run.StartedAt,
 		FinishedAt: run.FinishedAt,
-		Stats:      run.Stats,
+		Result:     run.Result,
 		Error:      run.Error,
 	}
 }
@@ -146,7 +145,7 @@ func TestDispatcherSenderFailureDoesNotPanicOrBlock(t *testing.T) {
 func TestDispatcherIgnoresSkippedCompletion(t *testing.T) {
 	env := newDispatcherEnv(t, enabledSettings())
 	event := completedEvent()
-	event.State = syncjob.RunSkipped
+	event.State = job.RunSkipped
 	env.dispatch.OnRunCompleted(event)
 
 	time.Sleep(50 * time.Millisecond)

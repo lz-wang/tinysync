@@ -39,10 +39,9 @@ func TestLocalSubtreeSyncAndPartialScanProtection(t *testing.T) {
 	fixture.put(t, "/outside.txt", "not selected")
 	target := t.TempDir()
 	job := newMatrixJob(t, e, target, "mirror")
-	job.RemoteRoot = "/docs"
-	if err := e.jobRepo.Update(ctx, job); err != nil {
-		t.Fatal(err)
-	}
+	e.updateMatrixJob(t, job.ID, func(cfg *syncjob.FileConfig) {
+		cfg.RemoteRoot = "/docs"
+	})
 	runAndWait(t, e, job.ID)
 	assertLocalFile(t, target, "a.txt", "keep")
 	assertNoLocalFile(t, target, "outside.txt")
@@ -169,7 +168,7 @@ func TestCancelLocalLargeFileRun(t *testing.T) {
 	}
 	found := false
 	for _, item := range items {
-		if item.Path == "large.bin" && item.Status == syncjob.ItemCanceled {
+		if item.Target == "large.bin" && item.Status == syncjob.ItemCanceled {
 			found = true
 		}
 	}

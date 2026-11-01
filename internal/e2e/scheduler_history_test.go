@@ -11,11 +11,12 @@ import (
 	"testing"
 	"time"
 
+	job2 "tinysync/internal/job"
+	jobsqlite "tinysync/internal/job/sqlite"
 	"tinysync/internal/source"
 	sourcesqlite "tinysync/internal/source/sqlite"
 	"tinysync/internal/source/webdav"
 	"tinysync/internal/syncjob"
-	jobsqlite "tinysync/internal/syncjob/sqlite"
 )
 
 // setInterval 把 Job 调度改为 interval，anchor 回退到过去
@@ -190,15 +191,15 @@ func TestOnceConsumedSurvivesRetentionEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get job: %v", err)
 	}
-	if fresh.OnceConsumedFor == nil || !fresh.OnceConsumedFor.Equal(*onceRun.ScheduledFor) {
-		t.Fatalf("OnceConsumedFor = %v, want occurrence %v", fresh.OnceConsumedFor, onceRun.ScheduledFor)
+	if fresh.OnceConsumedAt == nil || !fresh.OnceConsumedAt.Equal(*onceRun.ScheduledFor) {
+		t.Fatalf("OnceConsumedAt = %v, want occurrence %v", fresh.OnceConsumedAt, onceRun.ScheduledFor)
 	}
 
 	// 填充超过 retention 上限的运行并裁剪：once run 被裁剪出历史。
 	for i := 0; i < syncjob.RetentionRunsPerJob+1; i++ {
 		if err := runRepo.Insert(ctx, syncjob.RunRecord{
 			ID:        fmt.Sprintf("run_fill_%04d", i),
-			JobKind:   syncjob.KindFile,
+			JobKind:   job2.KindFile,
 			JobID:     job.ID,
 			Trigger:   syncjob.TriggerManual,
 			State:     syncjob.RunSucceeded,
@@ -280,9 +281,9 @@ func TestRunHistoryAcrossRestartEndToEnd(t *testing.T) {
 	// 模拟进程崩溃遗留的 running 记录。
 	runRepo := e.newRunRepo()
 	staleAt := time.Now().UTC().Add(-time.Hour)
-	if err := runRepo.Insert(ctx, syncjob.RunRecord{
+	if err := runRepo.Insert(ctx, job2.RunRecord{
 		ID:        "run_stale_e2e",
-		JobKind:   syncjob.KindFile,
+		JobKind:   job2.KindFile,
 		JobID:     job.ID,
 		Trigger:   syncjob.TriggerManual,
 		State:     syncjob.RunRunning,
@@ -298,10 +299,9 @@ func TestRunHistoryAcrossRestartEndToEnd(t *testing.T) {
 	db := openDB(t, e.dataDir)
 	t.Cleanup(func() { _ = db.Close() })
 	sources2 := source.NewService(sourcesqlite.New(db), webdav.NewFactory())
-	jobRepo2 := jobsqlite.NewRepository(db)
-	managedRepo2 := jobsqlite.NewManagedRepository(db)
-	runRepo2 := jobsqlite.NewRunRepository(db)
-	runner2 := syncjob.NewRunner(jobRepo2, managedRepo2, sources2, runRepo2)
+	stack2 := newFileJobStack(db, sources2, e.dataDir)
+	runRepo2 := stack2.Runs
+	runner2 := stack2.Runner
 
 	// 启动恢复（与 app.Run 相同语义）：遗留 running 收敛为 failed。
 	recovered, err := runRepo2.FailStaleRunning(ctx, time.Now().UTC(), "previous process interrupted")
@@ -328,7 +328,7 @@ func TestRunHistoryAcrossRestartEndToEnd(t *testing.T) {
 	if err != nil || itemTotal != 1 || len(items) != 1 {
 		t.Fatalf("items after restart = (%d rows, total %d, %v), want 1", len(items), itemTotal, err)
 	}
-	if items[0].Path != "a.txt" || items[0].Action != syncjob.ItemCreate {
+	if items[0].Target != "a.txt" || items[0].Action != syncjob.ItemCreate {
 		t.Errorf("item = %+v, want create a.txt", items[0])
 	}
 
@@ -345,8 +345,8 @@ func TestRunHistoryAcrossRestartEndToEnd(t *testing.T) {
 		t.Fatalf("wait run after restart: %v", err)
 	}
 	requireSucceeded(t, "post-restart run", final)
-	if final.Stats.FilesUpdated != 1 {
-		t.Errorf("post-restart stats = %+v, want updated=1", final.Stats)
+	if fileStatsOf(t, final).FilesUpdated != 1 {
+		t.Errorf("post-restart stats = %+v, want updated=1", fileStatsOf(t, final))
 	}
 }
 

@@ -15,8 +15,8 @@ import (
 
 	"tinysync/internal/browser"
 	"tinysync/internal/filesafe"
+	"tinysync/internal/job"
 	"tinysync/internal/source"
-	"tinysync/internal/syncjob"
 )
 
 // newIDSize 是随机部分的字节数（128 bit）。
@@ -31,9 +31,10 @@ func NewID() (string, error) {
 	return idPrefix + hex.EncodeToString(buf), nil
 }
 
-// JobLookup 提供 Job 读取；*syncjob.Service 天然满足。
+// JobLookup 提供 file 任务的本地根解析（由 File 执行器或等价适配器
+// 实现）；job 不存在返回 job.ErrNotFound。
 type JobLookup interface {
-	Get(ctx context.Context, id string) (syncjob.Job, error)
+	LocalRootOf(ctx context.Context, id string) (string, error)
 }
 
 // Service 是共享策略的应用服务：REST API / Web UI / 公开 serving
@@ -71,14 +72,14 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Share, error) 
 	if err := ValidateCreateInput(input); err != nil {
 		return Share{}, err
 	}
-	job, err := s.jobs.Get(ctx, input.JobID)
+	localRoot, err := s.jobs.LocalRootOf(ctx, input.JobID)
 	if err != nil {
-		if errors.Is(err, syncjob.ErrNotFound) {
+		if errors.Is(err, job.ErrNotFound) {
 			return Share{}, fmt.Errorf("%w: job not found", ErrNotFound)
 		}
 		return Share{}, err
 	}
-	resolved, info, err := filesafe.ResolveCanonicalTarget(job.LocalRoot, input.Path)
+	resolved, info, err := filesafe.ResolveCanonicalTarget(localRoot, input.Path)
 	if err != nil {
 		switch {
 		case errors.Is(err, fs.ErrNotExist):

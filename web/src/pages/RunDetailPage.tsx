@@ -180,9 +180,9 @@ export default function RunDetailPage() {
                                         ['耗时', formatDuration(run.started_at, run.finished_at)],
                                         [
                                             '文件',
-                                            `共 ${run.stats.files_total} · 新增 ${run.stats.files_created} · 更新 ${run.stats.files_updated} · 删除 ${run.stats.files_deleted} · 跳过 ${run.stats.files_skipped}`,
+                                            `共 ${run.result.files_total} · 新增 ${run.result.files_created} · 更新 ${run.result.files_updated} · 删除 ${run.result.files_deleted} · 跳过 ${run.result.files_skipped}`,
                                         ],
-                                        ['传输量', formatBytes(run.stats.bytes_transferred)],
+                                        ['传输量', formatBytes(run.result.bytes_transferred)],
                                     ]}
                                 />
                                 {run.error !== undefined && run.error !== '' && (
@@ -220,7 +220,7 @@ export default function RunDetailPage() {
                                         {items.map(item => (
                                             <RunItemLine
                                                 key={item.id}
-                                                path={item.path}
+                                                path={item.target}
                                                 action={item.action}
                                                 status={item.status}
                                                 bytes={item.bytes}
@@ -269,7 +269,7 @@ function RunProgressCard({ progress }: { progress: RunProgressResponse }) {
                     )}
                     {activeFiles.length > 0 && <Divider />}
                     {activeFiles.map(file => (
-                        <FileProgressLine key={file.path} file={file} />
+                        <FileProgressLine key={file.target} file={file} />
                     ))}
                 </Stack>
             </CardContent>
@@ -293,14 +293,14 @@ function FileProgressLine({ file }: { file: RunProgressFileResponse }) {
                 size={24}
                 variant={percent !== undefined ? 'determinate' : 'indeterminate'}
                 value={percent}
-                aria-label={`传输进度 ${file.path}`}
+                aria-label={`传输进度 ${file.target}`}
             />
             <Typography
                 variant="body2"
                 component="code"
                 sx={{ fontFamily: 'monospace', wordBreak: 'break-all', flex: 1 }}
             >
-                {file.path}
+                {file.target}
             </Typography>
             <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>
                 {file.action} · {label}

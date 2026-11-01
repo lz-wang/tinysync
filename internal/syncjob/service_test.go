@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"tinysync/internal/job"
+	jobsqlite "tinysync/internal/job/sqlite"
 	"tinysync/internal/source"
 	sqliterepo "tinysync/internal/source/sqlite"
 	"tinysync/internal/source/webdav"
@@ -17,11 +19,14 @@ import (
 	sqlite "tinysync/internal/syncjob/sqlite"
 )
 
-// testEnv 聚合 syncjob.Service 依赖：真实 SQLite、真实 Source 服务与固定时钟。
+// testEnv 聚合统一任务服务依赖：真实 SQLite、真实 Source 服务、File
+// 执行器与固定时钟。
 type testEnv struct {
 	db        *sql.DB
 	managed   *sqlite.ManagedRepository
-	service   *syncjob.Service
+	jobRepo   *jobsqlite.Repository
+	service   *job.Service
+	fileExec  *syncjob.FileExecutor
 	sourceSvc *source.Service
 	dataDir   string
 	now       time.Time
@@ -41,15 +46,22 @@ func newTestEnv(t *testing.T) *testEnv {
 	}
 
 	sourceSvc := source.NewService(sqliterepo.New(db), webdav.NewFactory())
+	jobRepo := jobsqlite.NewRepository(db)
+	fileExec := syncjob.NewFileExecutor(sourceSvc, jobRepo, dataDir)
+	service := job.NewService(jobRepo, map[job.JobKind]job.Executor{
+		job.KindFile: fileExec,
+	})
 	env := &testEnv{
 		db:        db,
 		managed:   sqlite.NewManagedRepository(db),
-		service:   syncjob.NewService(sqlite.NewRepository(db), sourceSvc, dataDir),
+		jobRepo:   jobRepo,
+		service:   service,
+		fileExec:  fileExec,
 		sourceSvc: sourceSvc,
 		dataDir:   dataDir,
 		now:       time.Unix(1757879400, 0).UTC(),
 	}
-	env.service.Now = func() time.Time { return env.now }
+	service.Now = func() time.Time { return env.now }
 	return env
 }
 
@@ -72,17 +84,115 @@ func (e *testEnv) mustSource(t *testing.T) string {
 
 // newTestName 生成唯一的测试名（Source name 大小写不敏感唯一）。
 func newTestName() string {
-	id, err := syncjob.NewID()
+	id, err := job.NewID()
 	if err != nil {
 		panic(err)
 	}
 	return id
 }
 
-// validInput 返回指向独立临时目录的合法创建输入。
-func (e *testEnv) validInput(t *testing.T, name string) syncjob.CreateInput {
+// fileJobInput 是 file 任务的表单形态，经 config 编码交给统一服务。
+type fileJobInput struct {
+	Name       string
+	SourceID   string
+	RemoteRoot string
+	LocalRoot  string
+	Mode       syncjob.Mode
+	Include    []string
+	Exclude    []string
+	Enabled    bool
+	Schedule   *job.Schedule
+}
+
+// createFileJob 把表单输入编码为统一 CreateInput 并创建。
+func (e *testEnv) createFileJob(ctx context.Context, in fileJobInput) (job.Job, error) {
+	cfg, err := syncjob.MarshalFileConfig(in.SourceID, in.RemoteRoot, in.LocalRoot, in.Mode, in.Include, in.Exclude)
+	if err != nil {
+		return job.Job{}, err
+	}
+	return e.service.Create(ctx, job.CreateInput{
+		Name:     in.Name,
+		Kind:     job.KindFile,
+		Enabled:  in.Enabled,
+		Schedule: in.Schedule,
+		Config:   cfg,
+	})
+}
+
+// filePatch 是 file 字段的补丁形态：nil 保留现有值；任一领域字段变化
+// 时整体替换 config（等价旧 Service 的字段级 PATCH 语义）。
+type filePatch struct {
+	Name       *string
+	Enabled    *bool
+	Schedule   *job.Schedule
+	SourceID   *string
+	RemoteRoot *string
+	LocalRoot  *string
+	Mode       *syncjob.Mode
+	Include    *[]string
+	Exclude    *[]string
+}
+
+// updateFileJob 应用补丁：领域字段变化时经执行器校验后整体替换 config。
+func (e *testEnv) updateFileJob(ctx context.Context, id string, p filePatch) (job.Job, error) {
+	current, err := e.service.Get(ctx, id)
+	if err != nil {
+		return job.Job{}, err
+	}
+	input := job.UpdateInput{Name: p.Name, Enabled: p.Enabled, Schedule: p.Schedule}
+	cfg, err := syncjob.ParseFileConfig(current.Config)
+	if err != nil {
+		return job.Job{}, err
+	}
+	changed := false
+	if p.SourceID != nil {
+		cfg.SourceID = *p.SourceID
+		changed = true
+	}
+	if p.RemoteRoot != nil {
+		cfg.RemoteRoot = *p.RemoteRoot
+		changed = true
+	}
+	if p.LocalRoot != nil {
+		cfg.LocalRoot = *p.LocalRoot
+		changed = true
+	}
+	if p.Mode != nil {
+		cfg.Mode = string(*p.Mode)
+		changed = true
+	}
+	if p.Include != nil {
+		cfg.Include = *p.Include
+		changed = true
+	}
+	if p.Exclude != nil {
+		cfg.Exclude = *p.Exclude
+		changed = true
+	}
+	if changed {
+		raw, merr := syncjob.MarshalFileConfig(cfg.SourceID, cfg.RemoteRoot, cfg.LocalRoot, cfg.ModeOf(), cfg.Include, cfg.Exclude)
+		if merr != nil {
+			return job.Job{}, merr
+		}
+		input.Config = &raw
+	}
+	return e.service.Update(ctx, id, input)
+}
+
+// fileConfigOf 解码任务的 File 配置供断言。
+func fileConfigOf(t *testing.T, j job.Job) syncjob.FileConfig {
 	t.Helper()
-	return syncjob.CreateInput{
+	cfg, err := syncjob.ParseFileConfig(j.Config)
+	if err != nil {
+		t.Fatalf("parse config of %s: %v", j.ID, err)
+	}
+	return cfg
+}
+
+// validInput 返回指向独立临时目录的合法创建输入。
+func (e *testEnv) validInput(t *testing.T, name string) fileJobInput {
+	t.Helper()
+	return fileJobInput{
 		Name:       name + "-" + newTestName(),
 		SourceID:   e.mustSource(t),
 		RemoteRoot: "/photos",
@@ -98,22 +208,22 @@ func TestCreateCanonicalizesLocalRoot(t *testing.T) {
 	env := newTestEnv(t)
 	input := env.validInput(t, "photos")
 
-	job, err := env.service.Create(context.Background(), input)
+	j, err := env.createFileJob(context.Background(), input)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if len(job.ID) <= len("job_") {
-		t.Errorf("Create returned ID %q, want job_ prefixed id", job.ID)
+	if len(j.ID) <= len("job_") {
+		t.Errorf("Create returned ID %q, want job_ prefixed id", j.ID)
 	}
-	if !job.CreatedAt.Equal(env.now) || !job.UpdatedAt.Equal(env.now) {
-		t.Errorf("CreatedAt/UpdatedAt = %v/%v, want fixed clock %v", job.CreatedAt, job.UpdatedAt, env.now)
+	if !j.CreatedAt.Equal(env.now) || !j.UpdatedAt.Equal(env.now) {
+		t.Errorf("CreatedAt/UpdatedAt = %v/%v, want fixed clock %v", j.CreatedAt, j.UpdatedAt, env.now)
 	}
 	canonical, err := filepath.EvalSymlinks(input.LocalRoot)
 	if err != nil {
 		t.Fatalf("EvalSymlinks: %v", err)
 	}
-	if job.LocalRoot != canonical {
-		t.Errorf("LocalRoot = %q, want canonical %q", job.LocalRoot, canonical)
+	if got := fileConfigOf(t, j); got.LocalRoot != canonical {
+		t.Errorf("LocalRoot = %q, want canonical %q", got.LocalRoot, canonical)
 	}
 }
 
@@ -124,39 +234,39 @@ func TestCreateNormalizesRemoteRoot(t *testing.T) {
 
 	input := env.validInput(t, "photos")
 	input.RemoteRoot = "/photos/2024/../"
-	job, err := env.service.Create(ctx, input)
+	j, err := env.createFileJob(ctx, input)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if job.RemoteRoot != "/photos" {
-		t.Errorf("RemoteRoot = %q, want /photos", job.RemoteRoot)
+	if got := fileConfigOf(t, j); got.RemoteRoot != "/photos" {
+		t.Errorf("RemoteRoot = %q, want /photos", got.RemoteRoot)
 	}
 
 	input2 := env.validInput(t, "root")
 	input2.RemoteRoot = "/"
-	job2, err := env.service.Create(ctx, input2)
+	j2, err := env.createFileJob(ctx, input2)
 	if err != nil {
 		t.Fatalf("Create root job: %v", err)
 	}
-	if job2.RemoteRoot != "/" {
-		t.Errorf("RemoteRoot = %q, want /", job2.RemoteRoot)
+	if got := fileConfigOf(t, j2); got.RemoteRoot != "/" {
+		t.Errorf("RemoteRoot = %q, want /", got.RemoteRoot)
 	}
 }
 
-// 校验失败用例：Source 不存在、非法 syncjob.Mode、LocalRoot 不是目录、空 name。
+// 校验失败用例：Source 不存在、非法 Mode、LocalRoot 不是目录、空 name。
 func TestCreateValidation(t *testing.T) {
 	env := newTestEnv(t)
 	ctx := context.Background()
 
 	missing := env.validInput(t, "missing-source")
 	missing.SourceID = "src_missing"
-	if _, err := env.service.Create(ctx, missing); !errors.Is(err, source.ErrNotFound) {
+	if _, err := env.createFileJob(ctx, missing); !errors.Is(err, source.ErrNotFound) {
 		t.Errorf("missing source = %v, want source.ErrNotFound", err)
 	}
 
 	badMode := env.validInput(t, "bad-mode")
 	badMode.Mode = syncjob.Mode("rsync")
-	if _, err := env.service.Create(ctx, badMode); !errors.Is(err, syncjob.ErrInvalid) {
+	if _, err := env.createFileJob(ctx, badMode); !errors.Is(err, syncjob.ErrInvalid) {
 		t.Errorf("bad mode = %v, want syncjob.ErrInvalid", err)
 	}
 
@@ -166,24 +276,24 @@ func TestCreateValidation(t *testing.T) {
 	}
 	notDir := env.validInput(t, "file-local")
 	notDir.LocalRoot = fileRoot
-	if _, err := env.service.Create(ctx, notDir); !errors.Is(err, syncjob.ErrInvalid) {
+	if _, err := env.createFileJob(ctx, notDir); !errors.Is(err, syncjob.ErrInvalid) {
 		t.Errorf("file local root = %v, want syncjob.ErrInvalid", err)
 	}
 
 	blank := env.validInput(t, "blank")
 	blank.Name = "   "
-	if _, err := env.service.Create(ctx, blank); !errors.Is(err, syncjob.ErrInvalid) {
+	if _, err := env.createFileJob(ctx, blank); !errors.Is(err, syncjob.ErrInvalid) {
 		t.Errorf("blank name = %v, want syncjob.ErrInvalid", err)
 	}
 }
 
-// 不存在的 LocalRoot 在创建 Job 前自动建立；建立成功才会持久化 Job。
+// 不存在的 LocalRoot 在创建任务前自动建立；建立成功才会持久化任务。
 func TestCreateCreatesMissingLocalRoot(t *testing.T) {
 	env := newTestEnv(t)
 	input := env.validInput(t, "create-local-root")
 	input.LocalRoot = filepath.Join(t.TempDir(), "new", "nested", "root")
 
-	job, err := env.service.Create(context.Background(), input)
+	j, err := env.createFileJob(context.Background(), input)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -191,12 +301,12 @@ func TestCreateCreatesMissingLocalRoot(t *testing.T) {
 	if err != nil || !info.IsDir() {
 		t.Fatalf("created local root = %v, %v; want directory", info, err)
 	}
-	if job.LocalRoot == "" {
+	if fileConfigOf(t, j).LocalRoot == "" {
 		t.Error("LocalRoot empty after successful directory creation")
 	}
 }
 
-// LocalRoot 与已有 Job 重叠（相等/父子）拒绝。
+// LocalRoot 与已有任务重叠（相等/父子）拒绝。
 func TestCreateRejectsJobRootOverlap(t *testing.T) {
 	env := newTestEnv(t)
 	ctx := context.Background()
@@ -204,7 +314,7 @@ func TestCreateRejectsJobRootOverlap(t *testing.T) {
 	base := t.TempDir()
 	first := env.validInput(t, "first")
 	first.LocalRoot = base
-	if _, err := env.service.Create(ctx, first); err != nil {
+	if _, err := env.createFileJob(ctx, first); err != nil {
 		t.Fatalf("Create first: %v", err)
 	}
 
@@ -220,7 +330,7 @@ func TestCreateRejectsJobRootOverlap(t *testing.T) {
 		}
 		input := env.validInput(t, "overlap")
 		input.LocalRoot = root
-		if _, err := env.service.Create(ctx, input); !errors.Is(err, syncjob.ErrRootOverlap) {
+		if _, err := env.createFileJob(ctx, input); !errors.Is(err, syncjob.ErrRootOverlap) {
 			t.Errorf("%s root %s = %v, want syncjob.ErrRootOverlap", name, root, err)
 		}
 	}
@@ -241,7 +351,7 @@ func TestCreateRejectsDataDirOverlap(t *testing.T) {
 		if err := os.MkdirAll(root, 0o755); err != nil {
 			t.Fatalf("prepare root %s: %v", root, err)
 		}
-		if _, err := env.service.Create(ctx, input); !errors.Is(err, syncjob.ErrRootOverlap) {
+		if _, err := env.createFileJob(ctx, input); !errors.Is(err, syncjob.ErrRootOverlap) {
 			t.Errorf("%s (%s) = %v, want syncjob.ErrRootOverlap", name, root, err)
 		}
 	}
@@ -254,7 +364,7 @@ func TestUpdateReleasesMetadataOnMappingChange(t *testing.T) {
 	ctx := context.Background()
 	sourceID := env.mustSource(t)
 
-	job, err := env.service.Create(ctx, syncjob.CreateInput{
+	j, err := env.createFileJob(ctx, fileJobInput{
 		Name:       "photos-" + newTestName(),
 		SourceID:   sourceID,
 		RemoteRoot: "/photos",
@@ -265,23 +375,23 @@ func TestUpdateReleasesMetadataOnMappingChange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	seedManaged(t, env, job.ID)
+	seedManaged(t, env, j.ID)
 
 	// 仅改名：metadata 保留。
 	name := "renamed-" + newTestName()
-	if _, err := env.service.Update(ctx, job.ID, syncjob.UpdateInput{Name: &name}); err != nil {
+	if _, err := env.updateFileJob(ctx, j.ID, filePatch{Name: &name}); err != nil {
 		t.Fatalf("Update name: %v", err)
 	}
-	if got := managedCount(t, env, job.ID); got != 1 {
+	if got := managedCount(t, env, j.ID); got != 1 {
 		t.Fatalf("after rename managed = %d, want 1", got)
 	}
 
 	// 修改 remoteRoot：metadata 释放；本地文件保留是 Copy/relinquish 语义。
 	root := "/vacation"
-	if _, err := env.service.Update(ctx, job.ID, syncjob.UpdateInput{RemoteRoot: &root}); err != nil {
+	if _, err := env.updateFileJob(ctx, j.ID, filePatch{RemoteRoot: &root}); err != nil {
 		t.Fatalf("Update remoteRoot: %v", err)
 	}
-	if got := managedCount(t, env, job.ID); got != 0 {
+	if got := managedCount(t, env, j.ID); got != 0 {
 		t.Errorf("after remoteRoot change managed = %d, want 0", got)
 	}
 }
@@ -293,7 +403,7 @@ func TestCreateAndUpdateValidatePatterns(t *testing.T) {
 	ctx := context.Background()
 	sourceID := env.mustSource(t)
 
-	job, err := env.service.Create(ctx, syncjob.CreateInput{
+	_, err := env.createFileJob(ctx, fileJobInput{
 		Name:       "photos-" + newTestName(),
 		SourceID:   sourceID,
 		RemoteRoot: "/photos",
@@ -307,7 +417,7 @@ func TestCreateAndUpdateValidatePatterns(t *testing.T) {
 		t.Fatalf("Create with invalid exclude = %v, want ErrInvalid", err)
 	}
 
-	job, err = env.service.Create(ctx, syncjob.CreateInput{
+	j, err := env.createFileJob(ctx, fileJobInput{
 		Name:       "photos-" + newTestName(),
 		SourceID:   sourceID,
 		RemoteRoot: "/photos",
@@ -320,25 +430,25 @@ func TestCreateAndUpdateValidatePatterns(t *testing.T) {
 	}
 
 	bad := []string{"[invalid"}
-	if _, err := env.service.Update(ctx, job.ID, syncjob.UpdateInput{Include: &bad}); !errors.Is(err, syncjob.ErrInvalid) {
+	if _, err := env.updateFileJob(ctx, j.ID, filePatch{Include: &bad}); !errors.Is(err, syncjob.ErrInvalid) {
 		t.Errorf("Update with invalid include = %v, want ErrInvalid", err)
 	}
 	// 合法 pattern 正常更新。
 	good := []string{"docs/**", "**/*.pdf"}
-	if _, err := env.service.Update(ctx, job.ID, syncjob.UpdateInput{Include: &good}); err != nil {
+	if _, err := env.updateFileJob(ctx, j.ID, filePatch{Include: &good}); err != nil {
 		t.Errorf("Update with valid include = %v, want nil", err)
 	}
 }
 
 // mapping 变更与配置替换必须原子：更新撞 name 唯一冲突时 metadata
-// 不丢失——先删后更的旧实现会在半成功状态下让 Job 永久失去对本地
+// 不丢失——先删后更的旧实现会在半成功状态下让任务永久失去对本地
 // 文件的管理关系（下轮 planner 把远端文件当 unknown local 全部跳过）。
 func TestUpdateMappingConflictKeepsManaged(t *testing.T) {
 	env := newTestEnv(t)
 	ctx := context.Background()
 	sourceID := env.mustSource(t)
 
-	job, err := env.service.Create(ctx, syncjob.CreateInput{
+	j, err := env.createFileJob(ctx, fileJobInput{
 		Name:       "photos-" + newTestName(),
 		SourceID:   sourceID,
 		RemoteRoot: "/photos",
@@ -349,7 +459,7 @@ func TestUpdateMappingConflictKeepsManaged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	other, err := env.service.Create(ctx, syncjob.CreateInput{
+	other, err := env.createFileJob(ctx, fileJobInput{
 		Name:       "taken-" + newTestName(),
 		SourceID:   sourceID,
 		RemoteRoot: "/docs",
@@ -360,16 +470,16 @@ func TestUpdateMappingConflictKeepsManaged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create other: %v", err)
 	}
-	seedManaged(t, env, job.ID)
+	seedManaged(t, env, j.ID)
 
 	// 一次 PATCH 同时改 remoteRoot（mapping 变更）与 name（撞唯一约束）。
 	root := "/elsewhere"
 	name := other.Name
-	_, err = env.service.Update(ctx, job.ID, syncjob.UpdateInput{RemoteRoot: &root, Name: &name})
-	if !errors.Is(err, syncjob.ErrConflict) {
+	_, err = env.updateFileJob(ctx, j.ID, filePatch{RemoteRoot: &root, Name: &name})
+	if !errors.Is(err, job.ErrConflict) {
 		t.Fatalf("Update with mapping + name conflict = %v, want ErrConflict", err)
 	}
-	if got := managedCount(t, env, job.ID); got != 1 {
+	if got := managedCount(t, env, j.ID); got != 1 {
 		t.Errorf("managed after failed mapping update = %d, want 1 (metadata must survive)", got)
 	}
 }
@@ -380,7 +490,7 @@ func TestUpdateValidatesMapping(t *testing.T) {
 	ctx := context.Background()
 	sourceID := env.mustSource(t)
 
-	job, err := env.service.Create(ctx, syncjob.CreateInput{
+	j, err := env.createFileJob(ctx, fileJobInput{
 		Name:       "photos-" + newTestName(),
 		SourceID:   sourceID,
 		RemoteRoot: "/photos",
@@ -391,10 +501,10 @@ func TestUpdateValidatesMapping(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	seedManaged(t, env, job.ID)
+	seedManaged(t, env, j.ID)
 
 	otherRoot := t.TempDir()
-	if _, err := env.service.Create(ctx, syncjob.CreateInput{
+	if _, err := env.createFileJob(ctx, fileJobInput{
 		Name:       "other-" + newTestName(),
 		SourceID:   sourceID,
 		RemoteRoot: "/other",
@@ -409,31 +519,31 @@ func TestUpdateValidatesMapping(t *testing.T) {
 	if err := os.MkdirAll(overlap, 0o755); err != nil {
 		t.Fatalf("prepare overlap root: %v", err)
 	}
-	if _, err := env.service.Update(ctx, job.ID, syncjob.UpdateInput{LocalRoot: &overlap}); !errors.Is(err, syncjob.ErrRootOverlap) {
+	if _, err := env.updateFileJob(ctx, j.ID, filePatch{LocalRoot: &overlap}); !errors.Is(err, syncjob.ErrRootOverlap) {
 		t.Errorf("update to overlapping root = %v, want syncjob.ErrRootOverlap", err)
 	}
-	if got := managedCount(t, env, job.ID); got != 1 {
+	if got := managedCount(t, env, j.ID); got != 1 {
 		t.Errorf("managed after failed update = %d, want 1 (unchanged)", got)
 	}
 
 	missing := "src_missing"
-	if _, err := env.service.Update(ctx, job.ID, syncjob.UpdateInput{SourceID: &missing}); !errors.Is(err, source.ErrNotFound) {
+	if _, err := env.updateFileJob(ctx, j.ID, filePatch{SourceID: &missing}); !errors.Is(err, source.ErrNotFound) {
 		t.Errorf("update to missing source = %v, want source.ErrNotFound", err)
 	}
-	if got := managedCount(t, env, job.ID); got != 1 {
-		t.Errorf("managed after failed source update = %d, want 1", got)
+	if got := managedCount(t, env, j.ID); got != 1 {
+		t.Errorf("managed after failed source update = %d, want 1 (unchanged)", got)
 	}
 
-	if _, err := env.service.Update(ctx, "job_missing", syncjob.UpdateInput{}); !errors.Is(err, syncjob.ErrNotFound) {
-		t.Errorf("update missing job = %v, want syncjob.ErrNotFound", err)
+	if _, err := env.updateFileJob(ctx, "job_missing", filePatch{}); !errors.Is(err, job.ErrNotFound) {
+		t.Errorf("update missing job = %v, want job.ErrNotFound", err)
 	}
 }
 
-// Delete 移除 Job 并清空 managed metadata（CASCADE），本地文件不被触碰。
+// Delete 移除任务并清空 managed metadata（CASCADE），本地文件不被触碰。
 func TestDeleteJob(t *testing.T) {
 	env := newTestEnv(t)
 	ctx := context.Background()
-	job, err := env.service.Create(ctx, syncjob.CreateInput{
+	j, err := env.createFileJob(ctx, fileJobInput{
 		Name:       "photos-" + newTestName(),
 		SourceID:   env.mustSource(t),
 		RemoteRoot: "/photos",
@@ -444,19 +554,19 @@ func TestDeleteJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	seedManaged(t, env, job.ID)
+	seedManaged(t, env, j.ID)
 
-	if err := env.service.Delete(ctx, job.ID); err != nil {
+	if err := env.service.Delete(ctx, j.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if _, err := env.service.Get(ctx, job.ID); !errors.Is(err, syncjob.ErrNotFound) {
-		t.Errorf("Get after delete = %v, want syncjob.ErrNotFound", err)
+	if _, err := env.service.Get(ctx, j.ID); !errors.Is(err, job.ErrNotFound) {
+		t.Errorf("Get after delete = %v, want job.ErrNotFound", err)
 	}
-	if got := managedCount(t, env, job.ID); got != 0 {
+	if got := managedCount(t, env, j.ID); got != 0 {
 		t.Errorf("managed after delete = %d, want 0", got)
 	}
-	if err := env.service.Delete(ctx, job.ID); !errors.Is(err, syncjob.ErrNotFound) {
-		t.Errorf("second Delete = %v, want syncjob.ErrNotFound", err)
+	if err := env.service.Delete(ctx, j.ID); !errors.Is(err, job.ErrNotFound) {
+		t.Errorf("second Delete = %v, want job.ErrNotFound", err)
 	}
 }
 
@@ -467,47 +577,47 @@ func TestCreateAndUpdateSchedule(t *testing.T) {
 	ctx := context.Background()
 
 	bad := env.validInput(t, "bad-schedule")
-	bad.Schedule = &syncjob.Schedule{Type: syncjob.ScheduleInterval, Value: "30s"}
-	if _, err := env.service.Create(ctx, bad); !errors.Is(err, syncjob.ErrInvalid) {
+	bad.Schedule = &job.Schedule{Type: job.ScheduleInterval, Value: "30s"}
+	if _, err := env.createFileJob(ctx, bad); !errors.Is(err, syncjob.ErrInvalid) {
 		t.Errorf("Create with interval 30s = %v, want ErrInvalid", err)
 	}
 
-	// 创建 interval Job：value 归一、anchor 来自固定时钟。
-	input := env.validInput(t, "scheduled")
-	input.Schedule = &syncjob.Schedule{Type: syncjob.ScheduleInterval, Value: " 30m "}
-	job, err := env.service.Create(ctx, input)
+	// 创建 interval 任务：value 归一、anchor 来自固定时钟。
+	iv := env.validInput(t, "interval")
+	iv.Schedule = &job.Schedule{Type: job.ScheduleInterval, Value: "30m"}
+	j, err := env.createFileJob(ctx, iv)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if job.Schedule.Type != syncjob.ScheduleInterval || job.Schedule.Value != "30m" {
-		t.Errorf("created schedule = %+v, want interval 30m", job.Schedule)
+	if j.Schedule.Type != job.ScheduleInterval || j.Schedule.Value != "30m" {
+		t.Errorf("created schedule = %+v, want interval 30m", j.Schedule)
 	}
-	if job.Schedule.AnchorAt == nil || !job.Schedule.AnchorAt.Equal(env.now) {
-		t.Errorf("interval anchor = %v, want fixed clock %v", job.Schedule.AnchorAt, env.now)
+	if j.Schedule.AnchorAt == nil || !j.Schedule.AnchorAt.Equal(env.now) {
+		t.Errorf("interval anchor = %v, want fixed clock %v", j.Schedule.AnchorAt, env.now)
 	}
 
-	// 缺省 schedule 为 manual，与 v0.3 行为一致。
+	// 缺省 schedule 为 manual。
 	plain := env.validInput(t, "plain")
-	plainJob, err := env.service.Create(ctx, plain)
+	plainJob, err := env.createFileJob(ctx, plain)
 	if err != nil {
 		t.Fatalf("Create plain: %v", err)
 	}
-	if plainJob.Schedule.Type != syncjob.ScheduleManual {
+	if plainJob.Schedule.Type != job.ScheduleManual {
 		t.Errorf("default schedule type = %q, want manual", plainJob.Schedule.Type)
 	}
 
 	// 更新为 cron：原子替换整个 schedule，anchor 清空，managed 不释放。
-	seedManaged(t, env, job.ID)
-	cronSchedule := syncjob.Schedule{
-		Type:     syncjob.ScheduleCron,
+	seedManaged(t, env, j.ID)
+	cronSchedule := job.Schedule{
+		Type:     job.ScheduleCron,
 		Value:    "0 3 * * *",
 		Timezone: "Asia/Singapore",
 	}
-	updated, err := env.service.Update(ctx, job.ID, syncjob.UpdateInput{Schedule: &cronSchedule})
+	updated, err := env.updateFileJob(ctx, j.ID, filePatch{Schedule: &cronSchedule})
 	if err != nil {
 		t.Fatalf("Update schedule: %v", err)
 	}
-	if updated.Schedule.Type != syncjob.ScheduleCron ||
+	if updated.Schedule.Type != job.ScheduleCron ||
 		updated.Schedule.Value != "0 3 * * *" ||
 		updated.Schedule.Timezone != "Asia/Singapore" {
 		t.Errorf("updated schedule = %+v, want cron 0 3 * * * Asia/Singapore", updated.Schedule)
@@ -515,20 +625,20 @@ func TestCreateAndUpdateSchedule(t *testing.T) {
 	if updated.Schedule.AnchorAt != nil {
 		t.Errorf("cron schedule anchor = %v, want nil", updated.Schedule.AnchorAt)
 	}
-	if got := managedCount(t, env, job.ID); got != 1 {
+	if got := managedCount(t, env, j.ID); got != 1 {
 		t.Errorf("managed after schedule change = %d, want 1 (not a mapping change)", got)
 	}
 
 	// 非法 schedule 拒绝更新，现有配置不受影响（含持久化回读）。
-	worse := syncjob.Schedule{Type: syncjob.ScheduleOnce, Value: "not-a-time"}
-	if _, err := env.service.Update(ctx, job.ID, syncjob.UpdateInput{Schedule: &worse}); !errors.Is(err, syncjob.ErrInvalid) {
+	worse := job.Schedule{Type: job.ScheduleOnce, Value: "not-a-time"}
+	if _, err := env.updateFileJob(ctx, j.ID, filePatch{Schedule: &worse}); !errors.Is(err, syncjob.ErrInvalid) {
 		t.Errorf("Update with bad once = %v, want ErrInvalid", err)
 	}
-	after, err := env.service.Get(ctx, job.ID)
+	after, err := env.service.Get(ctx, j.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if after.Schedule.Type != syncjob.ScheduleCron ||
+	if after.Schedule.Type != job.ScheduleCron ||
 		after.Schedule.Value != "0 3 * * *" ||
 		after.Schedule.Timezone != "Asia/Singapore" ||
 		after.Schedule.AnchorAt != nil {
@@ -537,26 +647,26 @@ func TestCreateAndUpdateSchedule(t *testing.T) {
 }
 
 // 同值 interval PATCH 保留相位基准：语义未变的调度更新不重置 anchor
-// （否则在 00:00/06:00/12:00 触发的 Job 被 10:23 的一次无关 PATCH 挪到
+// （否则在 00:00/06:00/12:00 触发的任务被 10:23 的一次无关 PATCH 挪到
 // 16:23）；语义变化（改周期）与切换类型仍按「变更即重设」处理。
 func TestUpdateSameIntervalKeepsAnchor(t *testing.T) {
 	env := newTestEnv(t)
 	ctx := context.Background()
 
 	input := env.validInput(t, "anchor")
-	input.Schedule = &syncjob.Schedule{Type: syncjob.ScheduleInterval, Value: "6h"}
-	job, err := env.service.Create(ctx, input)
+	input.Schedule = &job.Schedule{Type: job.ScheduleInterval, Value: "6h"}
+	j, err := env.createFileJob(ctx, input)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if job.Schedule.AnchorAt == nil || !job.Schedule.AnchorAt.Equal(env.now) {
-		t.Fatalf("created anchor = %v, want fixed clock %v", job.Schedule.AnchorAt, env.now)
+	if j.Schedule.AnchorAt == nil || !j.Schedule.AnchorAt.Equal(env.now) {
+		t.Fatalf("created anchor = %v, want fixed clock %v", j.Schedule.AnchorAt, env.now)
 	}
 
 	// 推进时钟后发同值 PATCH（等价时长写法）：anchor 保留。
 	env.now = env.now.Add(2 * time.Hour)
-	sameValue := syncjob.Schedule{Type: syncjob.ScheduleInterval, Value: "360m"}
-	same, err := env.service.Update(ctx, job.ID, syncjob.UpdateInput{Schedule: &sameValue})
+	sameValue := job.Schedule{Type: job.ScheduleInterval, Value: "360m"}
+	same, err := env.updateFileJob(ctx, j.ID, filePatch{Schedule: &sameValue})
 	if err != nil {
 		t.Fatalf("Update same interval: %v", err)
 	}
@@ -565,7 +675,8 @@ func TestUpdateSameIntervalKeepsAnchor(t *testing.T) {
 	}
 
 	// 无关字段 PATCH 也不触碰 anchor。
-	renamed, err := env.service.Update(ctx, job.ID, syncjob.UpdateInput{Name: &job.Name})
+	sameName := j.Name
+	renamed, err := env.updateFileJob(ctx, j.ID, filePatch{Name: &sameName})
 	if err != nil {
 		t.Fatalf("Update name: %v", err)
 	}
@@ -574,8 +685,8 @@ func TestUpdateSameIntervalKeepsAnchor(t *testing.T) {
 	}
 
 	// 改变周期：语义变化，anchor 重置为当前固定时钟。
-	longer := syncjob.Schedule{Type: syncjob.ScheduleInterval, Value: "12h"}
-	reset, err := env.service.Update(ctx, job.ID, syncjob.UpdateInput{Schedule: &longer})
+	longer := job.Schedule{Type: job.ScheduleInterval, Value: "12h"}
+	reset, err := env.updateFileJob(ctx, j.ID, filePatch{Schedule: &longer})
 	if err != nil {
 		t.Fatalf("Update changed interval: %v", err)
 	}
@@ -585,12 +696,12 @@ func TestUpdateSameIntervalKeepsAnchor(t *testing.T) {
 
 	// 切换 once 再切回 interval：anchor 按新变更重设。
 	env.now = env.now.Add(1 * time.Hour)
-	once := syncjob.Schedule{Type: syncjob.ScheduleOnce, Value: env.now.Add(time.Hour).Format(time.RFC3339)}
-	if _, err := env.service.Update(ctx, job.ID, syncjob.UpdateInput{Schedule: &once}); err != nil {
+	once := job.Schedule{Type: job.ScheduleOnce, Value: env.now.Add(time.Hour).Format(time.RFC3339)}
+	if _, err := env.updateFileJob(ctx, j.ID, filePatch{Schedule: &once}); err != nil {
 		t.Fatalf("Update to once: %v", err)
 	}
-	back := syncjob.Schedule{Type: syncjob.ScheduleInterval, Value: "6h"}
-	recreated, err := env.service.Update(ctx, job.ID, syncjob.UpdateInput{Schedule: &back})
+	back := job.Schedule{Type: job.ScheduleInterval, Value: "6h"}
+	recreated, err := env.updateFileJob(ctx, j.ID, filePatch{Schedule: &back})
 	if err != nil {
 		t.Fatalf("Update back to interval: %v", err)
 	}
@@ -605,60 +716,59 @@ func TestUpdateSameIntervalKeepsAnchor(t *testing.T) {
 func TestUpdateOnceConsumptionSemantics(t *testing.T) {
 	env := newTestEnv(t)
 	ctx := context.Background()
-	jobRepo := sqlite.NewRepository(env.db)
 
 	at := env.now.Add(-time.Hour)
 	input := env.validInput(t, "once-consumed")
-	input.Schedule = &syncjob.Schedule{Type: syncjob.ScheduleOnce, Value: at.Format(time.RFC3339)}
-	job, err := env.service.Create(ctx, input)
+	input.Schedule = &job.Schedule{Type: job.ScheduleOnce, Value: at.Format(time.RFC3339)}
+	j, err := env.createFileJob(ctx, input)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	// 模拟 once 已执行：消费状态经整体更新写入。
 	consumedAt := at
-	job.OnceConsumedFor = &consumedAt
-	if err := jobRepo.Update(ctx, job); err != nil {
+	j.OnceConsumedAt = &consumedAt
+	if err := env.jobRepo.Update(ctx, j); err != nil {
 		t.Fatalf("set consumed: %v", err)
 	}
 
 	// 同值 PATCH（+08:00 偏移表示同一时刻）：消费状态保留。
 	cst := time.FixedZone("CST", 8*3600)
-	sameInstant := syncjob.Schedule{
-		Type:  syncjob.ScheduleOnce,
+	sameInstant := job.Schedule{
+		Type:  job.ScheduleOnce,
 		Value: at.In(cst).Format(time.RFC3339),
 	}
-	kept, err := env.service.Update(ctx, job.ID, syncjob.UpdateInput{Schedule: &sameInstant})
+	kept, err := env.updateFileJob(ctx, j.ID, filePatch{Schedule: &sameInstant})
 	if err != nil {
 		t.Fatalf("Update same instant: %v", err)
 	}
 	if kept.Schedule.Value != at.UTC().Format(time.RFC3339) {
 		t.Errorf("normalized value = %q, want UTC RFC3339", kept.Schedule.Value)
 	}
-	if kept.OnceConsumedFor == nil || !kept.OnceConsumedFor.Equal(at) {
-		t.Errorf("consumed_for after same-value PATCH = %v, want kept %v", kept.OnceConsumedFor, at)
+	if kept.OnceConsumedAt == nil || !kept.OnceConsumedAt.Equal(at) {
+		t.Errorf("consumed_at after same-value PATCH = %v, want kept %v", kept.OnceConsumedAt, at)
 	}
 
 	// 改时刻：语义变化，消费状态清空。
-	moved := syncjob.Schedule{
-		Type:  syncjob.ScheduleOnce,
+	moved := job.Schedule{
+		Type:  job.ScheduleOnce,
 		Value: env.now.Add(time.Hour).Format(time.RFC3339),
 	}
-	movedJob, err := env.service.Update(ctx, job.ID, syncjob.UpdateInput{Schedule: &moved})
+	movedJob, err := env.updateFileJob(ctx, j.ID, filePatch{Schedule: &moved})
 	if err != nil {
 		t.Fatalf("Update moved once: %v", err)
 	}
-	if movedJob.OnceConsumedFor != nil {
-		t.Errorf("consumed_for after reschedule = %v, want nil (new occurrence)", movedJob.OnceConsumedFor)
+	if movedJob.OnceConsumedAt != nil {
+		t.Errorf("consumed_at after reschedule = %v, want nil (new occurrence)", movedJob.OnceConsumedAt)
 	}
 
 	// 切换 interval：消费状态保持为空。
-	interval := syncjob.Schedule{Type: syncjob.ScheduleInterval, Value: "1h"}
-	intervalJob, err := env.service.Update(ctx, job.ID, syncjob.UpdateInput{Schedule: &interval})
+	interval := job.Schedule{Type: job.ScheduleInterval, Value: "1h"}
+	intervalJob, err := env.updateFileJob(ctx, j.ID, filePatch{Schedule: &interval})
 	if err != nil {
 		t.Fatalf("Update to interval: %v", err)
 	}
-	if intervalJob.OnceConsumedFor != nil {
-		t.Errorf("consumed_for on interval job = %v, want nil", intervalJob.OnceConsumedFor)
+	if intervalJob.OnceConsumedAt != nil {
+		t.Errorf("consumed_at on interval job = %v, want nil", intervalJob.OnceConsumedAt)
 	}
 }
 
@@ -680,7 +790,7 @@ func seedManaged(t *testing.T, env *testEnv, jobID string) {
 	}
 }
 
-// managedCount 统计 Job 的 managed 记录数。
+// managedCount 统计任务的 managed 记录数。
 func managedCount(t *testing.T, env *testEnv, jobID string) int {
 	t.Helper()
 	list, err := env.managed.ListByJob(context.Background(), jobID)
@@ -694,14 +804,15 @@ func TestRejectedJobCreateDoesNotCreateOverlappingRoot(t *testing.T) {
 	env := newTestEnv(t)
 	ctx := context.Background()
 	first := env.validInput(t, "first")
-	if _, err := env.service.Create(ctx, first); err != nil {
+	if _, err := env.createFileJob(ctx, first); err != nil {
 		t.Fatal(err)
 	}
-	for _, root := range []string{first.LocalRoot, env.dataDir} {
+	firstRoot := fileConfigOf(t, mustGet(t, env, first)).LocalRoot
+	for _, root := range []string{firstRoot, env.dataDir} {
 		destination := filepath.Join(root, "new", "nested")
 		input := env.validInput(t, "rejected")
 		input.LocalRoot = destination
-		if _, err := env.service.Create(ctx, input); !errors.Is(err, syncjob.ErrRootOverlap) {
+		if _, err := env.createFileJob(ctx, input); !errors.Is(err, syncjob.ErrRootOverlap) {
 			t.Fatalf("Create = %v; want ErrRootOverlap", err)
 		}
 		if _, err := os.Stat(filepath.Join(root, "new")); !os.IsNotExist(err) {
@@ -726,13 +837,13 @@ func TestCreateRejectsCaseInsensitiveReservedRoot(t *testing.T) {
 	}
 	first := env.validInput(t, "first")
 	first.LocalRoot = root
-	if _, err := env.service.Create(ctx, first); err != nil {
+	if _, err := env.createFileJob(ctx, first); err != nil {
 		t.Fatal(err)
 	}
 	for _, candidate := range []string{alias, filepath.Join(alias, "new", "nested")} {
 		input := env.validInput(t, "rejected")
 		input.LocalRoot = candidate
-		if _, err := env.service.Create(ctx, input); !errors.Is(err, syncjob.ErrRootOverlap) {
+		if _, err := env.createFileJob(ctx, input); !errors.Is(err, syncjob.ErrRootOverlap) {
 			t.Fatalf("Create = %v; want ErrRootOverlap", err)
 		}
 	}
@@ -747,19 +858,36 @@ func TestMissingJobRootKeepsReservation(t *testing.T) {
 	base := t.TempDir()
 	first := env.validInput(t, "first")
 	first.LocalRoot = filepath.Join(base, "reserved")
-	if _, err := env.service.Create(ctx, first); err != nil {
+	if _, err := env.createFileJob(ctx, first); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(first.LocalRoot); err != nil {
+	reservedRoot := fileConfigOf(t, mustGet(t, env, first)).LocalRoot
+	if err := os.Remove(reservedRoot); err != nil {
 		t.Fatal(err)
 	}
 	input := env.validInput(t, "overlap")
-	input.LocalRoot = filepath.Join(first.LocalRoot, "child")
-	if _, err := env.service.Create(ctx, input); !errors.Is(err, syncjob.ErrRootOverlap) {
+	input.LocalRoot = filepath.Join(reservedRoot, "child")
+	if _, err := env.createFileJob(ctx, input); !errors.Is(err, syncjob.ErrRootOverlap) {
 		t.Fatalf("Create = %v; want ErrRootOverlap", err)
 	}
 	input.LocalRoot = filepath.Join(base, "unrelated")
-	if _, err := env.service.Create(ctx, input); err != nil {
+	if _, err := env.createFileJob(ctx, input); err != nil {
 		t.Fatalf("missing reserved root blocks unrelated job: %v", err)
 	}
+}
+
+// mustGet 按创建输入的名字查找任务（单测试内唯一）。
+func mustGet(t *testing.T, env *testEnv, in fileJobInput) job.Job {
+	t.Helper()
+	jobs, err := env.service.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, j := range jobs {
+		if j.Name == in.Name {
+			return j
+		}
+	}
+	t.Fatalf("job %q not found", in.Name)
+	return job.Job{}
 }

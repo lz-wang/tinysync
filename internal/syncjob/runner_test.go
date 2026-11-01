@@ -2,6 +2,7 @@ package syncjob
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"tinysync/internal/job"
 	"tinysync/internal/source"
 )
 
@@ -67,30 +69,30 @@ func (m *memCreds) OpenRemote(ctx context.Context, id string) (source.Source, so
 	return m.source, m.remote, nil
 }
 
-// memJobRepo 是 Repository 的内存实现（Runner 测试专用）。
+// memJobRepo 是 job.Repository 的内存实现（Runner 测试专用）。
 type memJobRepo struct {
-	jobs map[string]Job
+	jobs map[string]job.Job
 }
 
 func newMemJobRepo() *memJobRepo {
-	return &memJobRepo{jobs: map[string]Job{}}
+	return &memJobRepo{jobs: map[string]job.Job{}}
 }
 
-func (r *memJobRepo) Create(ctx context.Context, job Job) error {
-	r.jobs[job.ID] = job
+func (r *memJobRepo) Create(ctx context.Context, j job.Job) error {
+	r.jobs[j.ID] = j
 	return nil
 }
 
-func (r *memJobRepo) Get(ctx context.Context, id string) (Job, error) {
-	job, ok := r.jobs[id]
+func (r *memJobRepo) Get(ctx context.Context, id string) (job.Job, error) {
+	j, ok := r.jobs[id]
 	if !ok {
-		return Job{}, fmt.Errorf("%w: %s", ErrNotFound, id)
+		return job.Job{}, fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
-	return job, nil
+	return j, nil
 }
 
-func (r *memJobRepo) List(ctx context.Context) ([]Job, error) {
-	list := make([]Job, 0, len(r.jobs))
+func (r *memJobRepo) List(ctx context.Context) ([]job.Job, error) {
+	list := make([]job.Job, 0, len(r.jobs))
 	for _, j := range r.jobs {
 		list = append(list, j)
 	}
@@ -98,16 +100,26 @@ func (r *memJobRepo) List(ctx context.Context) ([]Job, error) {
 	return list, nil
 }
 
-func (r *memJobRepo) Update(ctx context.Context, job Job) error {
-	if _, ok := r.jobs[job.ID]; !ok {
-		return fmt.Errorf("%w: %s", ErrNotFound, job.ID)
+func (r *memJobRepo) ListByKind(ctx context.Context, kind job.JobKind) ([]job.Job, error) {
+	list, err := r.List(ctx)
+	if err != nil {
+		return nil, err
 	}
-	r.jobs[job.ID] = job
-	return nil
+	filtered := make([]job.Job, 0, len(list))
+	for _, j := range list {
+		if j.Kind == kind {
+			filtered = append(filtered, j)
+		}
+	}
+	return filtered, nil
 }
 
-func (r *memJobRepo) UpdateAndResetManaged(ctx context.Context, job Job) error {
-	return r.Update(ctx, job)
+func (r *memJobRepo) Update(ctx context.Context, j job.Job, hooks ...job.TxHook) error {
+	if _, ok := r.jobs[j.ID]; !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, j.ID)
+	}
+	r.jobs[j.ID] = j
+	return nil
 }
 
 func (r *memJobRepo) Delete(ctx context.Context, id string) error {
@@ -181,7 +193,7 @@ func (m *memRunRepo) Finalize(ctx context.Context, run RunRecord) error {
 	}
 	stored.State = run.State
 	stored.FinishedAt = run.FinishedAt
-	stored.Stats = run.Stats
+	stored.Result = run.Result
 	stored.Error = run.Error
 	m.runs[run.ID] = stored
 	return nil
@@ -231,6 +243,12 @@ func (m *memRunRepo) List(ctx context.Context, filter RunFilter) ([]RunRecord, i
 	for index, id := range m.order {
 		run := m.runs[id]
 		if filter.JobID != "" && run.JobID != filter.JobID {
+			continue
+		}
+		if filter.Kind != "" && run.JobKind != filter.Kind {
+			continue
+		}
+		if filter.Status != "" && run.State != filter.Status {
 			continue
 		}
 		entries = append(entries, entry{run: run, index: index})
@@ -322,50 +340,52 @@ func newRunnerEnv(t *testing.T, remote source.Remote) *runnerEnv {
 		root:    t.TempDir(),
 	}
 	// 桥接 PersistScheduledRun 的事务性 once 消费写入（生产路径在
-	// SQLite 事务内写 sync_jobs.once_consumed_for）。
+	// SQLite 事务内写 jobs.once_consumed_at）。
 	env.history.markOnce = func(jobID string, at time.Time) {
-		job, ok := env.repo.jobs[jobID]
+		j, ok := env.repo.jobs[jobID]
 		if !ok {
 			return
 		}
 		consumed := at
-		job.OnceConsumedFor = &consumed
-		env.repo.jobs[jobID] = job
+		j.OnceConsumedAt = &consumed
+		env.repo.jobs[jobID] = j
 	}
 	env.runner = NewRunner(env.repo, env.managed, env.creds, env.history)
 	env.runner.Now = func() time.Time { return time.Unix(1757879400, 0).UTC() }
 	return env
 }
 
-// mustJob 创建启用的测试 Job（默认 LocalRoot）。
-func (e *runnerEnv) mustJob(t *testing.T, name string) Job {
+// mustJob 创建启用的测试任务（默认 LocalRoot）。
+func (e *runnerEnv) mustJob(t *testing.T, name string) job.Job {
 	t.Helper()
 	return e.mustJobIn(t, name, e.root)
 }
 
-// mustJobIn 创建启用且指定 LocalRoot 的测试 Job。
-func (e *runnerEnv) mustJobIn(t *testing.T, name, localRoot string) Job {
+// mustJobIn 创建启用且指定 LocalRoot 的测试任务。
+func (e *runnerEnv) mustJobIn(t *testing.T, name, localRoot string) job.Job {
 	t.Helper()
 	id, err := NewID()
 	if err != nil {
 		t.Fatalf("NewID: %v", err)
 	}
 	now := time.Unix(1757879400, 0).UTC()
-	job := Job{
-		ID:         id,
-		Name:       name + "-" + id,
-		SourceID:   "src_a",
-		RemoteRoot: "/",
-		LocalRoot:  localRoot,
-		Mode:       ModeCopy,
-		Enabled:    true,
-		CreatedAt:  now,
-		UpdatedAt:  now,
+	cfg, err := MarshalFileConfig("src_a", "/", localRoot, ModeCopy, nil, nil)
+	if err != nil {
+		t.Fatalf("marshal file config: %v", err)
 	}
-	if err := e.repo.Create(context.Background(), job); err != nil {
+	j := job.Job{
+		ID:        id,
+		Name:      name + "-" + id,
+		Kind:      job.KindFile,
+		Enabled:   true,
+		Config:    cfg,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := e.repo.Create(context.Background(), j); err != nil {
 		t.Fatalf("create job: %v", err)
 	}
-	return job
+	return j
 }
 
 // closeTrackingRemote 包装 engineRemote 并记录 Close 调用次数。
@@ -433,8 +453,12 @@ func TestRunnerCompletesSynchronously(t *testing.T) {
 	if final.State != RunSucceeded {
 		t.Errorf("state = %q, want succeeded (error %q)", final.State, final.Error)
 	}
-	if final.Stats.FilesCreated != 1 {
-		t.Errorf("stats = %+v, want 1 created", final.Stats)
+	var finalStats RunStats
+	if err := json.Unmarshal(final.Result, &finalStats); err != nil {
+		t.Fatalf("parse final result: %v", err)
+	}
+	if finalStats.FilesCreated != 1 {
+		t.Errorf("stats = %+v, want 1 created", finalStats)
 	}
 	data, err := os.ReadFile(filepath.Join(env.root, "a.txt"))
 	if err != nil || string(data) != "v1" {
@@ -727,8 +751,8 @@ func TestRunnerOnceConsumptionMarkedOnJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if stored.OnceConsumedFor == nil || !stored.OnceConsumedFor.Equal(occ) {
-		t.Errorf("OnceConsumedFor = %v, want %v", stored.OnceConsumedFor, occ)
+	if stored.OnceConsumedAt == nil || !stored.OnceConsumedAt.Equal(occ) {
+		t.Errorf("OnceConsumedAt = %v, want %v", stored.OnceConsumedAt, occ)
 	}
 
 	// skipped 的 once 同样消费 occurrence（occurrence 已产生 run）。
@@ -745,13 +769,14 @@ func TestRunnerOnceConsumptionMarkedOnJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get job2: %v", err)
 	}
-	if stored2.OnceConsumedFor == nil || !stored2.OnceConsumedFor.Equal(occ2) {
-		t.Errorf("skipped OnceConsumedFor = %v, want %v", stored2.OnceConsumedFor, occ2)
+	if stored2.OnceConsumedAt == nil || !stored2.OnceConsumedAt.Equal(occ2) {
+		t.Errorf("skipped OnceConsumedAt = %v, want %v", stored2.OnceConsumedAt, occ2)
 	}
 
 	// NextRunAt 对已消费的 once 不再返回触发时刻。
 	job2.Schedule.Value = occ.Format(time.RFC3339)
-	job2.OnceConsumedFor = &occ
+	consumed := occ
+	job2.OnceConsumedAt = &consumed
 	if err := env.repo.Update(ctx, job2); err != nil {
 		t.Fatalf("set job2 consumed: %v", err)
 	}
@@ -850,15 +875,15 @@ func TestRunnerPersistsRun(t *testing.T) {
 func TestRunnerRejectsDisabled(t *testing.T) {
 	remote := buildRemote(nil, nil)
 	env := newRunnerEnv(t, remote)
-	job := env.mustJob(t, "disabled")
+	j := env.mustJob(t, "disabled")
 	ctx := context.Background()
 
-	updates := job
+	updates := j
 	updates.Enabled = false
 	if err := env.repo.Update(ctx, updates); err != nil {
 		t.Fatalf("disable job: %v", err)
 	}
-	if _, err := env.runner.Start(ctx, job.ID); !errors.Is(err, ErrJobDisabled) {
+	if _, err := env.runner.Start(ctx, j.ID); !errors.Is(err, ErrJobDisabled) {
 		t.Errorf("disabled job = %v, want ErrJobDisabled", err)
 	}
 
@@ -866,9 +891,19 @@ func TestRunnerRejectsDisabled(t *testing.T) {
 	if err := env.repo.Update(ctx, updates); err != nil {
 		t.Fatalf("enable job: %v", err)
 	}
+	// 禁用的 Source 属于 File 领域运行期检查：Start 照常受理（统一
+	// Runner 不理解 Source），run 收敛为 failed 并携带 ErrSourceDisabled。
 	env.creds.source.Enabled = false
-	if _, err := env.runner.Start(ctx, job.ID); !errors.Is(err, ErrSourceDisabled) {
-		t.Errorf("disabled source = %v, want ErrSourceDisabled", err)
+	runID, err := env.runner.Start(ctx, j.ID)
+	if err != nil {
+		t.Fatalf("Start with disabled source: %v", err)
+	}
+	status, err := env.runner.Wait(ctx, runID)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if status.State != RunFailed || !strings.Contains(status.Error, ErrSourceDisabled.Error()) {
+		t.Errorf("run with disabled source = %s (%q), want failed with source disabled", status.State, status.Error)
 	}
 }
 

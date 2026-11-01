@@ -10,10 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"tinysync/internal/job"
+	jobsqlite "tinysync/internal/job/sqlite"
 	"tinysync/internal/source"
 	"tinysync/internal/storage"
 	"tinysync/internal/syncjob"
-	jobsqlite "tinysync/internal/syncjob/sqlite"
+	managedsqlite "tinysync/internal/syncjob/sqlite"
 )
 
 // gateRemote 的 List 阻塞直到放行或 ctx 取消，模拟长运行同步。
@@ -69,17 +71,20 @@ func TestRunnerShutdownPersistsTerminalStateWithSQLite(t *testing.T) {
 	}
 
 	jobRepo := jobsqlite.NewRepository(db)
-	managedRepo := jobsqlite.NewManagedRepository(db)
+	managedRepo := managedsqlite.NewManagedRepository(db)
 	runRepo := jobsqlite.NewRunRepository(db)
 
 	gate := make(chan struct{})
 	runner := syncjob.NewRunner(jobRepo, managedRepo, staticGateway{remote: &gateRemote{gate: gate}}, runRepo)
 
 	now := time.Now().UTC().Add(-time.Minute)
-	job := syncjob.Job{
-		ID: "job_shutdown", Name: "shutdown", SourceID: "src_x",
-		RemoteRoot: "/", LocalRoot: t.TempDir(), Mode: syncjob.ModeCopy,
-		Enabled: true, Schedule: syncjob.Schedule{Type: syncjob.ScheduleManual},
+	cfg, err := syncjob.MarshalFileConfig("src_x", "/", t.TempDir(), syncjob.ModeCopy, nil, nil)
+	if err != nil {
+		t.Fatalf("marshal file config: %v", err)
+	}
+	job := job.Job{
+		ID: "job_shutdown", Name: "shutdown", Kind: job.KindFile,
+		Enabled: true, Config: cfg,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if err := jobRepo.Create(context.Background(), job); err != nil {

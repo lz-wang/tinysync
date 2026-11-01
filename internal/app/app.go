@@ -19,6 +19,8 @@ import (
 	"tinysync/internal/credential"
 	credentialsqlite "tinysync/internal/credential/sqlite"
 	"tinysync/internal/instance"
+	"tinysync/internal/job"
+	jobsqlite "tinysync/internal/job/sqlite"
 	"tinysync/internal/logging"
 	"tinysync/internal/notification"
 	notificationsqlite "tinysync/internal/notification/sqlite"
@@ -35,7 +37,7 @@ import (
 	"tinysync/internal/source/webdav"
 	"tinysync/internal/storage"
 	"tinysync/internal/syncjob"
-	jobsqlite "tinysync/internal/syncjob/sqlite"
+	managedsqlite "tinysync/internal/syncjob/sqlite"
 )
 
 // Run 建立持久化并启动 HTTP 服务，阻塞直至 ctx 取消（SIGINT/SIGTERM）。
@@ -103,23 +105,6 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 		logging.Infof("recovered %d stale running sync run(s) as failed", recovered)
 	}
 
-	// Job 仓库提前装配：启动期清理需要枚举已配置 Job 的 LocalRoot。
-	jobRepo := jobsqlite.NewRepository(db)
-
-	// crash 遗留的传输中间文件清理：此刻 Runner / Scheduler 尚未
-	// 启动、没有任何 active transfer，清理是安全的。legacy 随机
-	// 临时文件立即删除；v1 断点文件保留供断点续传，仅回收超过
-	// retention 的孤儿（ADR 0010）。清理是尽力而为：枚举或删除失败
-	// 只记录告警，不阻断启动（失败的传输本身由 pending metadata
-	// 机制在下一轮继续收敛）。
-	if jobList, lerr := jobRepo.List(context.Background()); lerr != nil {
-		logging.Warnf("enumerate jobs for transfer temp cleanup: %v", lerr)
-	} else if removed, cerr := syncjob.CleanupTransferTemps(context.Background(), jobLocalRoots(jobList)); cerr != nil {
-		logging.Warnf("cleanup transfer temp files: %v", cerr)
-	} else if removed > 0 {
-		logging.Infof("transfer_temp_files_removed=%d", removed)
-	}
-
 	// 装配 Source 领域：SQLite 仓库 + 协议注册表 + 应用服务。协议
 	// dispatch 只发生在 registry 一处，业务层不出现协议分支；
 	// REST / Web UI 共用该服务层。
@@ -137,16 +122,35 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 	credentials := credential.NewService(credentialsqlite.New(db))
 	sources.Credentials = credentials
 
-	// 装配 Sync Job 领域：仓库共享同一 DB（FK RESTRICT / CASCADE 生效），
-	// 应用服务带 LocalRoot 归属保护，Runner 提供手动运行并以持久化
-	// 历史为运行状态事实来源；并发上限来自运行配置。
-	managedRepo := jobsqlite.NewManagedRepository(db)
-	jobs := syncjob.NewService(jobRepo, sources, cfg.DataDir)
+	// 装配统一任务领域：仓库共享同一 DB（FK CASCADE 生效），应用服务
+	// 经执行器注册表做领域校验；File 执行器承载 LocalRoot 归属保护与
+	// 变更善后；Runner 提供手动运行并以持久化历史为运行状态事实来源，
+	// 并发上限来自运行配置。
+	jobRepo := jobsqlite.NewRepository(db)
+	managedRepo := managedsqlite.NewManagedRepository(db)
+	fileExec := syncjob.NewFileExecutor(sources, jobRepo, cfg.DataDir)
+	jobs := job.NewService(jobRepo, map[job.JobKind]job.Executor{
+		job.KindFile: fileExec,
+	})
 	runner := syncjob.NewRunner(jobRepo, managedRepo, sources, runs)
 	runner.MaxConcurrentJobs = cfg.MaxConcurrentJobs
 	runner.MaxConcurrentTransfers = cfg.MaxConcurrentTransfers
 	runner.TransferTimeout = cfg.TransferTimeout
 	scheduler := syncjob.NewScheduler(jobRepo, runner, runs)
+
+	// crash 遗留的传输中间文件清理：此刻 Runner / Scheduler 尚未
+	// 启动、没有任何 active transfer，清理是安全的。legacy 随机
+	// 临时文件立即删除；v1 断点文件保留供断点续传，仅回收超过
+	// retention 的孤儿（ADR 0010）。清理是尽力而为：枚举或删除失败
+	// 只记录告警，不阻断启动（失败的传输本身由 pending metadata
+	// 机制在下一轮继续收敛）。
+	if roots, lerr := fileExec.LocalRoots(context.Background()); lerr != nil {
+		logging.Warnf("enumerate jobs for transfer temp cleanup: %v", lerr)
+	} else if removed, cerr := syncjob.CleanupTransferTemps(context.Background(), roots); cerr != nil {
+		logging.Warnf("cleanup transfer temp files: %v", cerr)
+	} else if removed > 0 {
+		logging.Infof("transfer_temp_files_removed=%d", removed)
+	}
 
 	// 装配通知域（ADR 0006）：配置每次通知时从 SQLite 热读取（WebUI
 	// 保存即生效）；Runner 终态落库后经 CompletionHook 把完成事件投递
@@ -158,15 +162,15 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 	notificationDispatch.Start()
 
 	// 装配文件浏览：Remote 浏览复用 Source 服务的统一远端入口，
-	// 本地浏览以 Job.LocalRoot 为唯一 namespace，managed 标记来自
-	// managed_files 记录。
+	// 本地浏览以 file 任务的 LocalRoot 为唯一 namespace，managed 标记
+	// 来自 managed_files 记录。
 	files := browser.NewRemoteService(sources)
-	localFiles := browser.NewLocalService(jobs, managedRepo)
+	localFiles := browser.NewLocalService(fileExec, managedRepo)
 
-	// 装配共享策略：canonical local path 校验依赖 Job（目标可为文件/
-	// 目录/本地根，不做 managed 过滤——ADR-0002），公开 serving 与
-	// CRUD 共用同一服务层。
-	shares := share.NewService(sharesqlite.NewRepository(db), jobs)
+	// 装配共享策略：canonical local path 校验依赖 file 任务的本地根
+	//（目标可为文件/目录/本地根，不做 managed 过滤——ADR-0002），
+	// 公开 serving 与 CRUD 共用同一服务层。
+	shares := share.NewService(sharesqlite.NewRepository(db), fileExec)
 
 	server := api.NewServer(cfg, webFS, api.Dependencies{
 		Auth:                 authService,
@@ -227,19 +231,4 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 	}
 	logging.Infof("bye")
 	return nil
-}
-
-// jobLocalRoots 汇总全部 Job 的 LocalRoot（去重），供启动期临时文件
-// 清理枚举。
-func jobLocalRoots(jobs []syncjob.Job) []string {
-	seen := make(map[string]bool, len(jobs))
-	roots := make([]string, 0, len(jobs))
-	for _, j := range jobs {
-		if j.LocalRoot == "" || seen[j.LocalRoot] {
-			continue
-		}
-		seen[j.LocalRoot] = true
-		roots = append(roots, j.LocalRoot)
-	}
-	return roots
 }

@@ -18,11 +18,13 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"tinysync/internal/job"
+	jobsqlite "tinysync/internal/job/sqlite"
 	"tinysync/internal/source"
 	sourcesqlite "tinysync/internal/source/sqlite"
 	"tinysync/internal/storage"
 	"tinysync/internal/syncjob"
-	jobsqlite "tinysync/internal/syncjob/sqlite"
+	managedsqlite "tinysync/internal/syncjob/sqlite"
 )
 
 // fakeJobRemote 是可控的 Remote：List 按预设返回文件或错误。
@@ -90,8 +92,9 @@ func newJobRouter(t *testing.T, remote source.Remote) testRouter {
 	}
 	sourceSvc := source.NewService(sourcesqlite.New(db), fakeFactory{remote: remote})
 	jobRepo := jobsqlite.NewRepository(db)
-	managedRepo := jobsqlite.NewManagedRepository(db)
-	jobSvc := syncjob.NewService(jobRepo, sourceSvc, dataDir)
+	managedRepo := managedsqlite.NewManagedRepository(db)
+	fileExec := syncjob.NewFileExecutor(sourceSvc, jobRepo, dataDir)
+	jobSvc := job.NewService(jobRepo, map[job.JobKind]job.Executor{job.KindFile: fileExec})
 	runner := syncjob.NewRunner(jobRepo, managedRepo, sourceSvc, jobsqlite.NewRunRepository(db))
 	return newTestAuth(t, db, Dependencies{Sources: sourceSvc, Jobs: jobSvc, Runner: runner})
 }
@@ -112,7 +115,8 @@ func createSourceViaAPI(t *testing.T, router testRouter, name string, enabled bo
 	return id
 }
 
-// jobPayload 构造创建 Job 的请求体，localRoot 指向新临时目录。
+// jobPayload 构造创建 file 任务的请求体（统一 kind + config 形态），
+// localRoot 指向新临时目录。
 func jobPayload(t *testing.T, name, sourceID, mode string, enabled bool) (string, string) {
 	t.Helper()
 	localRoot := filepath.ToSlash(filepath.Join(t.TempDir(), "root"))
@@ -120,8 +124,9 @@ func jobPayload(t *testing.T, name, sourceID, mode string, enabled bool) (string
 		t.Fatalf("mkdir local root: %v", err)
 	}
 	body := fmt.Sprintf(`{
-		"name": %q, "source_id": %q, "remote_root": "/photos",
-		"local_root": %q, "mode": %q, "include": ["**/*.jpg"], "exclude": [],
+		"name": %q, "kind": "file",
+		"config": {"source_id": %q, "remote_root": "/photos",
+			"local_root": %q, "mode": %q, "include": ["**/*.jpg"], "exclude": []},
 		"enabled": %t
 	}`, name, sourceID, localRoot, mode, enabled)
 	return body, localRoot
@@ -254,15 +259,19 @@ func TestJobLifecycleAPI(t *testing.T) {
 	if id == "" {
 		t.Fatalf("created job has no id: %s", rec.Body.String())
 	}
-	if created["mode"] != "copy" || created["enabled"] != true {
+	if created["kind"] != "file" || created["enabled"] != true {
 		t.Errorf("create defaults wrong: %s", rec.Body.String())
 	}
-	if created["remote_root"] != "/photos" {
-		t.Errorf("remote_root = %v, want /photos", created["remote_root"])
+	config, _ := created["config"].(map[string]any)
+	if config == nil {
+		t.Fatalf("created job has no config: %s", rec.Body.String())
 	}
-	include, _ := created["include"].([]any)
+	if config["remote_root"] != "/photos" || config["mode"] != "copy" {
+		t.Errorf("config = %v, want remote_root /photos mode copy", config)
+	}
+	include, _ := config["include"].([]any)
 	if len(include) != 1 || include[0] != "**/*.jpg" {
-		t.Errorf("include = %v, want [**/*.jpg]", created["include"])
+		t.Errorf("include = %v, want [**/*.jpg]", config["include"])
 	}
 	if created["created_at"] == "" || created["updated_at"] == "" {
 		t.Errorf("missing timestamps: %s", rec.Body.String())
@@ -290,22 +299,24 @@ func TestJobLifecycleAPI(t *testing.T) {
 		t.Errorf("initial status = %v, want idle", status["state"])
 	}
 
-	// PATCH：改 mode / 禁用 / 替换 include，其余保留。
-	rec = doJSON(t, router, "PATCH", "/api/v1/jobs/"+id,
-		`{"mode": "mirror", "enabled": false, "include": ["docs/**"]}`)
+	// PATCH：改 config（mode + include 整体替换）/ 禁用，其余保留。
+	patchConfig := fmt.Sprintf(`{"config": {"source_id": %q, "remote_root": "/photos", "local_root": %q, "mode": "mirror", "include": ["docs/**"], "exclude": []}, "enabled": false}`,
+		sourceID, config["local_root"])
+	rec = doJSON(t, router, "PATCH", "/api/v1/jobs/"+id, patchConfig)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PATCH status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	updated := decodeJSON(t, rec)
-	if updated["mode"] != "mirror" || updated["enabled"] != false {
+	updatedConfig, _ := updated["config"].(map[string]any)
+	if updatedConfig == nil || updatedConfig["mode"] != "mirror" || updated["enabled"] != false {
 		t.Errorf("patched fields wrong: %s", rec.Body.String())
 	}
 	if updated["name"] != "Photos" {
 		t.Errorf("patched name changed unexpectedly: %s", rec.Body.String())
 	}
-	patchedInclude, _ := updated["include"].([]any)
+	patchedInclude, _ := updatedConfig["include"].([]any)
 	if len(patchedInclude) != 1 || patchedInclude[0] != "docs/**" {
-		t.Errorf("patched include = %v, want [docs/**]", updated["include"])
+		t.Errorf("patched include = %v, want [docs/**]", updatedConfig["include"])
 	}
 
 	// DELETE 后 GET 与 status 均 404。
@@ -326,12 +337,17 @@ func TestJobLifecycleAPI(t *testing.T) {
 func TestJobCreateValidationAPI(t *testing.T) {
 	router := newJobRouter(t, fakeJobRemote{})
 	root := filepath.ToSlash(t.TempDir())
+	fileBody := func(name, sourceID, localRoot, mode string) string {
+		return fmt.Sprintf(`{"name": %q, "kind": "file", "config": {"source_id": %q, "remote_root": "/", "local_root": %q, "mode": %q}}`,
+			name, sourceID, localRoot, mode)
+	}
 
 	for name, body := range map[string]string{
-		"blank name":       fmt.Sprintf(`{"name": " ", "source_id": "src_x", "local_root": %q, "mode": "copy"}`, root),
-		"bad mode":         fmt.Sprintf(`{"name": "x", "source_id": "src_x", "local_root": %q, "mode": "sync"}`, root),
-		"missing source":   fmt.Sprintf(`{"name": "x", "source_id": "src_missing", "local_root": %q, "mode": "copy"}`, root),
-		"missing location": `{"name": "x", "source_id": "src_x", "local_root": "/nonexistent/dir", "mode": "copy"}`,
+		"blank name":       fileBody(" ", "src_x", root, "copy"),
+		"bad mode":         fileBody("x", "src_x", root, "sync"),
+		"missing source":   fileBody("x", "src_missing", root, "copy"),
+		"missing location": fileBody("x", "src_x", "/nonexistent/dir", "copy"),
+		"unsupported kind": `{"name": "git", "kind": "git", "config": {}}`,
 		"bad json":         `{`,
 	} {
 		rec := doJSON(t, router, "POST", "/api/v1/jobs", body)
@@ -388,7 +404,7 @@ func TestJobRootOverlapAPI(t *testing.T) {
 	}
 
 	// 相同 root。
-	same := fmt.Sprintf(`{"name": "B", "source_id": %q, "local_root": %q, "mode": "copy"}`, sourceID, root)
+	same := fmt.Sprintf(`{"name": "B", "kind": "file", "config": {"source_id": %q, "remote_root": "/", "local_root": %q, "mode": "copy"}}`, sourceID, root)
 	if rec := doJSON(t, router, "POST", "/api/v1/jobs", same); rec.Code != http.StatusConflict {
 		t.Errorf("same root status = %d, want 409, body = %s", rec.Code, rec.Body.String())
 	}
@@ -398,7 +414,7 @@ func TestJobRootOverlapAPI(t *testing.T) {
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatalf("mkdir nested: %v", err)
 	}
-	nestedBody := fmt.Sprintf(`{"name": "C", "source_id": %q, "local_root": %q, "mode": "copy"}`, sourceID, nested)
+	nestedBody := fmt.Sprintf(`{"name": "C", "kind": "file", "config": {"source_id": %q, "remote_root": "/", "local_root": %q, "mode": "copy"}}`, sourceID, nested)
 	if rec := doJSON(t, router, "POST", "/api/v1/jobs", nestedBody); rec.Code != http.StatusConflict {
 		t.Errorf("nested root status = %d, want 409", rec.Code)
 	}
@@ -432,15 +448,15 @@ func TestJobRunSuccessAPI(t *testing.T) {
 	if final["run_id"] != runID {
 		t.Errorf("status run_id = %v, want %v", final["run_id"], runID)
 	}
-	stats, ok := final["stats"].(map[string]any)
+	result, ok := final["result"].(map[string]any)
 	if !ok {
-		t.Fatalf("status missing stats object: %v", final)
+		t.Fatalf("status missing result object: %v", final)
 	}
 	for _, field := range []string{
 		"files_total", "files_created", "files_updated", "files_deleted", "files_skipped", "bytes_transferred",
 	} {
-		if _, has := stats[field]; !has {
-			t.Errorf("stats missing %s: %v", field, stats)
+		if _, has := result[field]; !has {
+			t.Errorf("result missing %s: %v", field, result)
 		}
 	}
 	if finishedAt, _ := final["finished_at"].(string); finishedAt == "" {
@@ -468,9 +484,18 @@ func TestJobRunRejectedWhenDisabledAPI(t *testing.T) {
 		t.Errorf("disabled job run = %d %s, want 409 disabled", rec.Code, rec.Body.String())
 	}
 
+	// 禁用 Source 的运行期检查由 File 执行器承担：Start 照常受理，
+	// run 收敛为 failed 并携带 source disabled。
 	rec = doJSON(t, router, "POST", "/api/v1/jobs/"+jobOnDisabledSourceID+"/run", "")
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "disabled") {
-		t.Errorf("disabled source run = %d %s, want 409 disabled", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("run on disabled source = %d %s, want 202", rec.Code, rec.Body.String())
+	}
+	final := waitForRunState(t, router, jobOnDisabledSourceID, syncjob.RunSucceeded, syncjob.RunFailed)
+	if final["state"] != string(syncjob.RunFailed) {
+		t.Fatalf("final state = %v, want failed", final["state"])
+	}
+	if errMsg, _ := final["error"].(string); !strings.Contains(errMsg, "disabled") {
+		t.Errorf("error = %q, want containing disabled", errMsg)
 	}
 }
 
@@ -800,12 +825,12 @@ func TestRunsAPI(t *testing.T) {
 	runs, _ := list["runs"].([]any)
 	run, _ := runs[0].(map[string]any)
 	runID, _ := run["id"].(string)
-	if run["job_id"] != jobID || run["job_name"] != "History" ||
+	if run["job_id"] != jobID || run["job_name"] != "History" || run["job_kind"] != "file" ||
 		run["trigger"] != "manual" || run["status"] != "succeeded" {
 		t.Fatalf("run summary = %v, want manual/succeeded with job name", run)
 	}
-	if _, has := run["stats"]; !has {
-		t.Errorf("run summary missing stats: %v", run)
+	if _, has := run["result"]; !has {
+		t.Errorf("run summary missing result: %v", run)
 	}
 
 	// 详情与 id 一致。
@@ -821,7 +846,7 @@ func TestRunsAPI(t *testing.T) {
 		t.Fatalf("items total = %v, want 1", itemTotal)
 	}
 	entry, _ := items["items"].([]any)[0].(map[string]any)
-	if entry["path"] != "a.jpg" || entry["action"] != "create" || entry["status"] != "succeeded" {
+	if entry["target"] != "a.jpg" || entry["action"] != "create" || entry["status"] != "succeeded" {
 		t.Errorf("run item = %v, want succeeded create a.jpg", entry)
 	}
 
@@ -1058,7 +1083,7 @@ func TestRunProgressAPI(t *testing.T) {
 		t.Fatalf("active files = %v, want 1", prog["active_files"])
 	}
 	f0, _ := files[0].(map[string]any)
-	if f0["path"] != "a.jpg" || f0["action"] != "create" {
+	if f0["target"] != "a.jpg" || f0["action"] != "create" {
 		t.Errorf("active file = %v, want create a.jpg", f0)
 	}
 	if total, _ := f0["bytes_total"].(float64); total != 2 {

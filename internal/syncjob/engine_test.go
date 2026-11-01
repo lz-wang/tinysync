@@ -569,12 +569,12 @@ func TestRunRecordsItemsOnlyForChanges(t *testing.T) {
 		switch item.Action {
 		case ItemUpdate:
 			updated++
-			if item.Path != "a.txt" || item.Status != ItemSucceeded {
+			if item.Target != "a.txt" || item.Status != ItemSucceeded {
 				t.Errorf("update item = %+v, want a.txt succeeded", item)
 			}
 		case ItemRelinquish:
 			relinquished++
-			if item.Path != "b.txt" || item.Status != ItemSucceeded {
+			if item.Target != "b.txt" || item.Status != ItemSucceeded {
 				t.Errorf("relinquish item = %+v, want b.txt succeeded", item)
 			}
 		}

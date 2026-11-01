@@ -9,14 +9,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"tinysync/internal/share"
 	sharesqlite "tinysync/internal/share/sqlite"
 	"tinysync/internal/source"
 	"tinysync/internal/source/sqlite"
 	"tinysync/internal/storage"
-	"tinysync/internal/syncjob"
 )
 
 // shareEnv 是共享 API 测试环境：真实 SQLite 持久化 + 临时 LocalRoot。
@@ -43,26 +41,13 @@ func newShareEnv(t *testing.T) *shareEnv {
 		t.Fatalf("storage.Ensure: %v", err)
 	}
 
-	jobRepo := newMemFileJobRepo()
 	jobID := "job_share_it"
-	now := time.Now().UTC()
-	if err := jobRepo.Create(context.Background(), syncjob.Job{
-		ID:        jobID,
-		Name:      "share-it",
-		Mode:      syncjob.ModeCopy,
-		LocalRoot: canonical,
-		Enabled:   true,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("create job: %v", err)
-	}
+	roots := staticFileRoots{jobID: canonical}
 
 	svc := source.NewService(sqlite.New(db), fakeFactory{})
-	jobs := syncjob.NewService(jobRepo, nil, dataDir)
-	shares := share.NewService(sharesqlite.NewRepository(db), jobs)
+	shares := share.NewService(sharesqlite.NewRepository(db), roots)
 	router := newTestAuth(t, db, Dependencies{
-		Sources: svc, Jobs: jobs, Share: shares,
+		Sources: svc, Share: shares,
 	})
 	return &shareEnv{router: router, svc: shares, jobID: jobID, root: canonical}
 }

@@ -161,7 +161,7 @@ func TestRunRecordsCanceledItemOnUserCancel(t *testing.T) {
 	got := items.all()
 	var succeededA, canceledB int
 	for _, item := range got {
-		switch item.Path {
+		switch item.Target {
 		case "a.txt":
 			if item.Status != ItemSucceeded {
 				t.Errorf("a.txt item = %+v, want succeeded (already converged)", item)

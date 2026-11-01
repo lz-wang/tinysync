@@ -23,12 +23,14 @@ import (
 	"tinysync/internal/auth"
 	authsqlite "tinysync/internal/auth/sqlite"
 	"tinysync/internal/config"
+	"tinysync/internal/job"
+	jobsqlite "tinysync/internal/job/sqlite"
 	"tinysync/internal/source"
 	sourcesqlite "tinysync/internal/source/sqlite"
 	"tinysync/internal/source/webdav"
 	"tinysync/internal/storage"
 	"tinysync/internal/syncjob"
-	jobsqlite "tinysync/internal/syncjob/sqlite"
+	managedsqlite "tinysync/internal/syncjob/sqlite"
 )
 
 // hardeningEnabled 报告重负载场景是否启用：10k 目录与 32 MiB 大传输
@@ -143,18 +145,27 @@ func parentOfLogical(logical string) string {
 	return logical[:i]
 }
 
+// statsOf 解析运行状态的 file 统计（X.Stats 旧断言的等价物）。
+func statsOf(t *testing.T, st syncjob.RunStatus) syncjob.RunStats {
+	t.Helper()
+	return fileStatsOf(t, st)
+}
+
 // relEnv 是可靠性场景的端到端环境：真实 WebDAV 服务 + SQLite +
-// Source / Job 服务 + Runner。
+// 统一任务栈 + Runner。
 type relEnv struct {
 	davURL    string
 	dataDir   string
 	localRoot string
 	db        *sql.DB
 	sources   *source.Service
-	runner    *syncjob.Runner
-	managed   *jobsqlite.ManagedRepository
-	history   *jobsqlite.RunRepository
-	jobID     string
+	stack     *fileJobStack
+
+	// 便捷字段（指向 stack 的同名组件）。
+	runner  *syncjob.Runner
+	managed *managedsqlite.ManagedRepository
+	history *jobsqlite.RunRepository
+	jobID   string
 }
 
 // newReliabilityEnv 在指定 dav endpoint、datadir 与 localRoot 上
@@ -172,11 +183,10 @@ func newReliabilityEnv(t *testing.T, davURL, dataDir, localRoot, mode string) *r
 		db:        db,
 	}
 	e.sources = source.NewService(sourcesqlite.New(db), webdav.NewFactory())
-	jobRepo := jobsqlite.NewRepository(db)
-	e.managed = jobsqlite.NewManagedRepository(db)
-	e.history = jobsqlite.NewRunRepository(db)
-	jobs := syncjob.NewService(jobRepo, e.sources, dataDir)
-	e.runner = syncjob.NewRunner(jobRepo, e.managed, e.sources, e.history)
+	e.stack = newFileJobStack(db, e.sources, dataDir)
+	e.runner = e.stack.Runner
+	e.managed = e.stack.Managed
+	e.history = e.stack.Runs
 
 	if jobID := e.existingJobID(t); jobID != "" {
 		e.jobID = jobID
@@ -193,17 +203,7 @@ func newReliabilityEnv(t *testing.T, davURL, dataDir, localRoot, mode string) *r
 	if err != nil {
 		t.Fatalf("create source: %v", err)
 	}
-	job, err := jobs.Create(context.Background(), syncjob.CreateInput{
-		Name:       "reliability-job",
-		SourceID:   src.ID,
-		RemoteRoot: "/",
-		LocalRoot:  localRoot,
-		Mode:       syncjob.Mode(mode),
-		Enabled:    true,
-	})
-	if err != nil {
-		t.Fatalf("create job: %v", err)
-	}
+	job := e.stack.createFileJob(context.Background(), t, "reliability-job", src.ID, "/", localRoot, syncjob.Mode(mode), nil, nil)
 	e.jobID = job.ID
 	return e
 }
@@ -265,8 +265,9 @@ func TestTransientTransferFailureRetries(t *testing.T) {
 
 	st := e.runAndWait(t, 30*time.Second)
 	requireSucceeded(t, "transient retry", st)
-	if st.Stats.FilesCreated != 1 || st.Stats.BytesTransferred != int64(len("retry-content")) {
-		t.Errorf("stats = %+v, want 1 created with full bytes", st.Stats)
+	stStats := statsOf(t, st)
+	if stStats.FilesCreated != 1 || stStats.BytesTransferred != int64(len("retry-content")) {
+		t.Errorf("stats = %+v, want 1 created with full bytes", stStats)
 	}
 	if got := f.getHits("/docs/retry.txt"); got != 2 {
 		t.Errorf("GET hits = %d, want 2 (503 + successful retry)", got)
@@ -344,31 +345,31 @@ func TestRepeatedRunsIdempotent(t *testing.T) {
 
 			st1 := e.runAndWait(t, 30*time.Second)
 			requireSucceeded(t, "run1", st1)
-			if st1.Stats.FilesCreated != 3 {
-				t.Fatalf("run1 stats = %+v, want 3 created", st1.Stats)
+			if statsOf(t, st1).FilesCreated != 3 {
+				t.Fatalf("run1 stats = %+v, want 3 created", statsOf(t, st1))
 			}
 
 			st2 := e.runAndWait(t, 30*time.Second)
 			requireSucceeded(t, "run2", st2)
-			assertOnlySkips(t, "run2", st2.Stats)
+			assertOnlySkips(t, "run2", statsOf(t, st2))
 
 			st3 := e.runAndWait(t, 30*time.Second)
 			requireSucceeded(t, "run3", st3)
-			assertOnlySkips(t, "run3", st3.Stats)
+			assertOnlySkips(t, "run3", statsOf(t, st3))
 
 			if mode == string(syncjob.ModeMirror) {
 				dav.remove(t, "/b.txt")
 				st4 := e.runAndWait(t, 30*time.Second)
 				requireSucceeded(t, "run4 mirror delete", st4)
-				if st4.Stats.FilesDeleted != 1 {
-					t.Fatalf("run4 stats = %+v, want 1 deleted", st4.Stats)
+				if statsOf(t, st4).FilesDeleted != 1 {
+					t.Fatalf("run4 stats = %+v, want 1 deleted", statsOf(t, st4))
 				}
 				if _, err := os.Stat(filepath.Join(e.localRoot, "b.txt")); !os.IsNotExist(err) {
 					t.Fatal("b.txt survived mirror delete")
 				}
 				st5 := e.runAndWait(t, 30*time.Second)
 				requireSucceeded(t, "run5", st5)
-				assertOnlySkips(t, "run5", st5.Stats)
+				assertOnlySkips(t, "run5", statsOf(t, st5))
 			}
 		})
 	}
@@ -412,9 +413,9 @@ func TestCrashRecoveryConvergesAfterRestart(t *testing.T) {
 		t.Fatalf("seed pending: %v", err)
 	}
 	staleID := fmt.Sprintf("run_%016x", time.Now().UnixNano())
-	if err := e.history.Insert(ctx, syncjob.RunRecord{
+	if err := e.history.Insert(ctx, job.RunRecord{
 		ID:        staleID,
-		JobKind:   syncjob.KindFile,
+		JobKind:   job.KindFile,
 		JobID:     e.jobID,
 		Trigger:   syncjob.TriggerManual,
 		State:     syncjob.RunRunning,
@@ -483,13 +484,13 @@ func TestLargeDirectory10K(t *testing.T) {
 	e := newReliabilityEnv(t, dav.srv.URL, t.TempDir(), filepath.Join(t.TempDir(), "local"), string(syncjob.ModeCopy))
 	st1 := e.runAndWait(t, 10*time.Minute)
 	requireSucceeded(t, "bulk run1", st1)
-	if st1.Stats.FilesCreated != total {
-		t.Fatalf("run1 created = %d, want %d", st1.Stats.FilesCreated, total)
+	if statsOf(t, st1).FilesCreated != total {
+		t.Fatalf("run1 created = %d, want %d", statsOf(t, st1).FilesCreated, total)
 	}
 	st2 := e.runAndWait(t, 10*time.Minute)
 	requireSucceeded(t, "bulk run2", st2)
-	if st2.Stats.FilesSkipped != total || st2.Stats.BytesTransferred != 0 {
-		t.Errorf("run2 stats = %+v, want %d skips and zero bytes", st2.Stats, total)
+	if st2Stats := statsOf(t, st2); st2Stats.FilesSkipped != total || st2Stats.BytesTransferred != 0 {
+		t.Errorf("run2 stats = %+v, want %d skips and zero bytes", st2Stats, total)
 	}
 }
 
@@ -506,8 +507,8 @@ func TestLargeTransfer32MiB(t *testing.T) {
 	e := newReliabilityEnv(t, dav.srv.URL, t.TempDir(), filepath.Join(t.TempDir(), "local"), string(syncjob.ModeCopy))
 	st := e.runAndWait(t, 10*time.Minute)
 	requireSucceeded(t, "large transfer", st)
-	if st.Stats.BytesTransferred != int64(len(payload)) {
-		t.Errorf("bytes = %d, want %d", st.Stats.BytesTransferred, len(payload))
+	if statsOf(t, st).BytesTransferred != int64(len(payload)) {
+		t.Errorf("bytes = %d, want %d", statsOf(t, st).BytesTransferred, len(payload))
 	}
 	data, err := os.ReadFile(filepath.Join(e.localRoot, "big-transfer.bin"))
 	if err != nil {

@@ -9,66 +9,20 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"tinysync/internal/filesafe"
+	"tinysync/internal/job"
 	"tinysync/internal/source"
 	"tinysync/internal/syncjob"
 )
 
-// localFixture 是本地浏览测试环境：Job 的 LocalRoot 指向临时目录，
+// localFixture 是本地浏览测试环境：任务的 LocalRoot 指向临时目录，
 // managed 记录可编程。
 type localFixture struct {
 	root    string
 	svc     *LocalService
 	jobID   string
 	managed *memManagedRepo
-}
-
-// memJobRepo 是最小化的内存 syncjob.Repository：只支持 Create / Get。
-type memJobRepo struct {
-	jobs map[string]syncjob.Job
-}
-
-func newMemJobRepo(jobs ...syncjob.Job) *memJobRepo {
-	m := &memJobRepo{jobs: map[string]syncjob.Job{}}
-	for _, j := range jobs {
-		m.jobs[j.ID] = j
-	}
-	return m
-}
-
-func (m *memJobRepo) Create(ctx context.Context, job syncjob.Job) error {
-	m.jobs[job.ID] = job
-	return nil
-}
-
-func (m *memJobRepo) Get(ctx context.Context, id string) (syncjob.Job, error) {
-	job, ok := m.jobs[id]
-	if !ok {
-		return syncjob.Job{}, fmt.Errorf("%w: %s", syncjob.ErrNotFound, id)
-	}
-	return job, nil
-}
-
-func (m *memJobRepo) List(ctx context.Context) ([]syncjob.Job, error) {
-	return nil, errors.New("not implemented")
-}
-
-func (m *memJobRepo) Update(ctx context.Context, job syncjob.Job) error {
-	return errors.New("not implemented")
-}
-
-func (m *memJobRepo) UpdateAndResetManaged(ctx context.Context, job syncjob.Job) error {
-	return errors.New("not implemented")
-}
-
-func (m *memJobRepo) Delete(ctx context.Context, id string) error {
-	return errors.New("not implemented")
-}
-
-func (m *memJobRepo) CountBySource(ctx context.Context, sourceID string) (int, error) {
-	return 0, errors.New("not implemented")
 }
 
 // memManagedRepo 是内存 ManagedRepository，只支持 ListByJob。
@@ -92,9 +46,8 @@ func (m *memManagedRepo) DeleteAllForJob(ctx context.Context, jobID string) erro
 	return errors.New("not implemented")
 }
 
-// newLocalFixture 构造 Job：LocalRoot 指向临时目录。Job 经内存
-// Repository 直接落库（Service.Create 会校验 Source 存在，浏览测试
-// 不涉及该依赖），LocalRoot 传入 canonical 形态与领域规则一致。
+// newLocalFixture 构造任务：LocalRoot 指向临时目录（canonical 形态，
+// 与领域规则一致）。LocalRootLookup 用内存桩实现。
 func newLocalFixture(t *testing.T) *localFixture {
 	t.Helper()
 	f := &localFixture{root: t.TempDir()}
@@ -106,21 +59,20 @@ func newLocalFixture(t *testing.T) *localFixture {
 	f.root = canonical
 
 	f.managed = &memManagedRepo{}
-	now := time.Now().UTC()
-	job := syncjob.Job{
-		ID:        "job_browse_it",
-		Name:      "browse-it",
-		Mode:      syncjob.ModeCopy,
-		LocalRoot: f.root,
-		Enabled:   true,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	repo := newMemJobRepo(job)
-	jobs := syncjob.NewService(repo, nil, t.TempDir())
-	f.jobID = job.ID
-	f.svc = NewLocalService(jobs, f.managed)
+	f.jobID = "job_browse_it"
+	f.svc = NewLocalService(memLocalRoots{f.jobID: f.root}, f.managed)
 	return f
+}
+
+// memLocalRoots 是 LocalRootLookup 的内存桩。
+type memLocalRoots map[string]string
+
+func (m memLocalRoots) LocalRootOf(ctx context.Context, jobID string) (string, error) {
+	root, ok := m[jobID]
+	if !ok {
+		return "", job.ErrNotFound
+	}
+	return root, nil
 }
 
 func (f *localFixture) write(t *testing.T, rel, content string) {

@@ -32,27 +32,6 @@ type ManagedFile struct {
 	UpdatedAt    time.Time
 }
 
-// Repository 是 Sync Job 的持久化接口。
-type Repository interface {
-	// Create 插入 Job；name 冲突时返回 ErrConflict。
-	Create(ctx context.Context, job Job) error
-	// Get 按 ID 读取；不存在时返回 ErrNotFound。
-	Get(ctx context.Context, id string) (Job, error)
-	// List 返回全部 Job，按 name 大小写不敏感排序。
-	List(ctx context.Context) ([]Job, error)
-	// Update 整体替换可变字段；不存在时返回 ErrNotFound。
-	Update(ctx context.Context, job Job) error
-	// UpdateAndResetManaged 在单个事务中更新 Job 并删除其全部 managed
-	// 记录。mapping（source / remoteRoot / localRoot）变更必须原子：
-	// metadata 释放与配置替换同成功同失败，不存在半成功状态。
-	UpdateAndResetManaged(ctx context.Context, job Job) error
-	// Delete 硬删除 Job（managed metadata 由 FK CASCADE 清理）；
-	// 不存在时返回 ErrNotFound。
-	Delete(ctx context.Context, id string) error
-	// CountBySource 统计引用给定 Source 的 Job 数，用于 Source 删除保护。
-	CountBySource(ctx context.Context, sourceID string) (int, error)
-}
-
 // ManagedRepository 是 managed_files 的持久化接口。
 // 批量操作在实现内部保持原子性，供同步引擎在单个事务边界内推进状态。
 type ManagedRepository interface {

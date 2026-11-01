@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"tinysync/internal/job"
 	"tinysync/internal/source"
 )
 
@@ -15,7 +16,7 @@ type failingListRepo struct {
 	err error
 }
 
-func (r *failingListRepo) List(ctx context.Context) ([]Job, error) {
+func (r *failingListRepo) List(ctx context.Context) ([]job.Job, error) {
 	if r.err != nil {
 		return nil, r.err
 	}
@@ -65,15 +66,15 @@ func (e *schedulerEnv) restartAt(at time.Time) {
 	e.scheduler.mu.Unlock()
 }
 
-// mustScheduledJob 为测试 Job 设置 schedule。
-func (e *schedulerEnv) mustScheduledJob(t *testing.T, name string, schedule Schedule) Job {
+// mustScheduledJob 为测试任务设置 schedule。
+func (e *schedulerEnv) mustScheduledJob(t *testing.T, name string, schedule Schedule) job.Job {
 	t.Helper()
-	job := e.mustJob(t, name)
-	job.Schedule = schedule
-	if err := e.repo.Update(context.Background(), job); err != nil {
+	j := e.mustJob(t, name)
+	j.Schedule = schedule
+	if err := e.repo.Update(context.Background(), j); err != nil {
 		t.Fatalf("set schedule: %v", err)
 	}
-	return job
+	return j
 }
 
 // runCount 统计 Job 的持久化 run 数。
@@ -347,7 +348,7 @@ func TestSchedulerOnceConsumptionSurvivesPrunedHistory(t *testing.T) {
 
 	// 模拟 once 已执行且消费状态已写入，但运行历史随后被裁剪。
 	consumedAt := at
-	job.OnceConsumedFor = &consumedAt
+	job.OnceConsumedAt = &consumedAt
 	if err := env.repo.Update(ctx, job); err != nil {
 		t.Fatalf("set once consumed: %v", err)
 	}
@@ -363,7 +364,7 @@ func TestSchedulerOnceConsumptionSurvivesPrunedHistory(t *testing.T) {
 		t.Fatalf("Get: %v", err)
 	}
 	fresh.Schedule = Schedule{Type: ScheduleOnce, Value: newAt.Format(time.RFC3339)}
-	fresh.OnceConsumedFor = nil
+	fresh.OnceConsumedAt = nil
 	if err := env.repo.Update(ctx, fresh); err != nil {
 		t.Fatalf("set new once: %v", err)
 	}

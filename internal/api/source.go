@@ -14,16 +14,17 @@ import (
 
 	"tinysync/internal/auth"
 	"tinysync/internal/credential"
+	"tinysync/internal/job"
 	"tinysync/internal/source"
 	"tinysync/internal/syncjob"
 )
 
 // registerSourceRoutes 注册 Source 管理端点。svc 为 nil 时跳过注册
 // （依赖缺失时由未知路径 404 兜底，避免生产静默降级之外的 panic）。
-// jobs 非 nil 时启用引用保护：被 Job 引用的 Source 返回 409，
-// 数据库层 FK RESTRICT 作为并发路径的兜底。credentials 非 nil 时启用
-// 「提升为凭据」端点（编排凭据服务，见 promote）。
-func registerSourceRoutes(group *gin.RouterGroup, svc *source.Service, jobs *syncjob.Service, credentials *credential.Service) {
+// jobs 非 nil 时启用引用保护：被 file 任务引用的 Source 返回 409
+// （应用层守卫，统一 jobs 表的 source_id 位于 config_json 内）。
+// credentials 非 nil 时启用「提升为凭据」端点（编排凭据服务，见 promote）。
+func registerSourceRoutes(group *gin.RouterGroup, svc *source.Service, jobs *job.Service, credentials *credential.Service) {
 	if svc == nil {
 		return
 	}

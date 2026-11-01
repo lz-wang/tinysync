@@ -28,8 +28,8 @@ func TestNewID(t *testing.T) {
 		if !strings.HasPrefix(id, "job_") {
 			t.Fatalf("id = %q, want job_ prefix", id)
 		}
-		if len(id) != len("job_")+2*newIDSize {
-			t.Fatalf("id = %q, want %d hex chars after prefix", id, 2*newIDSize)
+		if len(id) != len("job_")+2*16 {
+			t.Fatalf("id = %q, want %d hex chars after prefix", id, 2*16)
 		}
 		if seen[id] {
 			t.Fatalf("duplicate id %q", id)

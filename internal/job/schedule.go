@@ -1,4 +1,4 @@
-package syncjob
+package job
 
 import (
 	"fmt"
@@ -40,14 +40,14 @@ const MinInterval = time.Minute
 // Runner、历史与并发策略仍由 TinySync 自己的 Scheduler 负责。
 var cronParser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 
-// Schedule 是 Job 的调度配置，与 sync_jobs 的扁平列一一对应：
+// Schedule 是 Job 的调度配置，与 jobs 的扁平列一一对应：
 // Type → schedule_type，Value → schedule_value（按 Type 解释），
 // Timezone → schedule_timezone，AnchorAt → schedule_anchor_at。
 // REST / Web 在其上映射 discriminated object，不暴露互斥 nullable 字段。
 type Schedule struct {
 	Type ScheduleType
 	// Value 按 Type 解释：manual 恒为空；once 为 RFC3339 绝对时间
-	// （入库归一为 UTC）；interval 为 Go duration（如 30m、6h）；
+	//（入库归一为 UTC）；interval 为 Go duration（如 30m、6h）；
 	// cron 为 5-field 表达式（如 0 3 * * *）。
 	Value string
 	// Timezone 仅 cron 有效：IANA 名称（如 Asia/Singapore），空为运行机器
@@ -248,9 +248,22 @@ func (s Schedule) DueOccurrence(from, now time.Time) (time.Time, bool) {
 }
 
 // onceConsumed 判断 once 的 occurrence 是否已被消费。消费状态在
-// sync_jobs.once_consumed_for（毫秒精度持久化），与可被 retention
-// 裁剪的运行历史解耦——once 的「只执行一次」语义不依赖历史行存活。
-func onceConsumed(job Job, at time.Time) bool {
-	return job.OnceConsumedFor != nil &&
-		job.OnceConsumedFor.UnixMilli() == at.UnixMilli()
+// jobs.once_consumed_at（毫秒精度持久化），与可被 retention 裁剪的
+// 运行历史解耦——once 的「只执行一次」语义不依赖历史行存活。
+func onceConsumed(j Job, at time.Time) bool {
+	return j.OnceConsumedAt != nil &&
+		j.OnceConsumedAt.UnixMilli() == at.UnixMilli()
+}
+
+// OnceConsumed 判断 Job 的 once occurrence（若为 once 调度且可解析）
+// 是否已被消费；非 once 或无法解析时为 false。
+func OnceConsumed(j Job) bool {
+	if j.Schedule.Type != ScheduleOnce {
+		return false
+	}
+	at, err := j.Schedule.OnceAt()
+	if err != nil {
+		return false
+	}
+	return onceConsumed(j, at)
 }

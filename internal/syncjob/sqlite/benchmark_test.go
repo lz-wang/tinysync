@@ -4,12 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"tinysync/internal/storage"
-	"tinysync/internal/syncjob"
 )
 
 // seedManaged100K 向 managed_files 批量插入 100k 行（benchmark
@@ -56,26 +54,14 @@ func BenchmarkSQLiteManaged100K(b *testing.B) {
 		b.Fatalf("ensure: %v", err)
 	}
 
-	jobRepo := NewRepository(db)
 	managed := NewManagedRepository(db)
 
 	jobID := "job_bench100k"
-	// FK 依赖：先插入 Source 行。
-	if _, err := db.Exec(`INSERT INTO sources
-		(id, name, type, endpoint, username, password, enabled, created_at, updated_at)
-		VALUES ('src_bench', 'bench', 'webdav', 'https://bench.example.com', '', '', 1, 1, 1)`); err != nil {
-		b.Fatalf("seed source: %v", err)
-	}
-	if err := jobRepo.Create(ctx, syncjob.Job{
-		ID:         jobID,
-		Name:       "bench",
-		SourceID:   "src_bench",
-		RemoteRoot: "/",
-		LocalRoot:  filepath.Join(datadir, "local"),
-		Mode:       syncjob.ModeCopy,
-		Enabled:    true,
-	}); err != nil {
-		b.Fatalf("create job: %v", err)
+	// FK 依赖：先插入最小 file 任务行。
+	if _, err := db.Exec(`INSERT INTO jobs
+		(id, name, kind, enabled, config_json, created_at, updated_at)
+		VALUES (?, 'bench', 'file', 1, '{}', 1, 1)`, jobID); err != nil {
+		b.Fatalf("seed job: %v", err)
 	}
 	seedManaged100K(b, db, jobID)
 

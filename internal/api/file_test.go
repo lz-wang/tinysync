@@ -22,49 +22,8 @@ import (
 	"tinysync/internal/syncjob"
 )
 
-// memFileJobRepo 是文件 API 测试的内存 Job 仓库（syncjob.Repository
-// 读取路径）。Repository 与 ManagedRepository 的 Delete 签名不同，
-// 单一 struct 无法同时实现，managed 拆到 memFileManagedRepo。
-type memFileJobRepo struct {
-	jobs map[string]syncjob.Job
-}
-
-func newMemFileJobRepo() *memFileJobRepo {
-	return &memFileJobRepo{jobs: map[string]syncjob.Job{}}
-}
-
-func (m *memFileJobRepo) Create(ctx context.Context, job syncjob.Job) error {
-	m.jobs[job.ID] = job
-	return nil
-}
-
-func (m *memFileJobRepo) Get(ctx context.Context, id string) (syncjob.Job, error) {
-	job, ok := m.jobs[id]
-	if !ok {
-		return syncjob.Job{}, fmt.Errorf("%w: %s", syncjob.ErrNotFound, id)
-	}
-	return job, nil
-}
-
-func (m *memFileJobRepo) List(ctx context.Context) ([]syncjob.Job, error) {
-	return nil, errors.New("not implemented")
-}
-
-func (m *memFileJobRepo) Update(ctx context.Context, job syncjob.Job) error {
-	return errors.New("not implemented")
-}
-
-func (m *memFileJobRepo) UpdateAndResetManaged(ctx context.Context, job syncjob.Job) error {
-	return errors.New("not implemented")
-}
-
-func (m *memFileJobRepo) Delete(ctx context.Context, id string) error {
-	return errors.New("not implemented")
-}
-
-func (m *memFileJobRepo) CountBySource(ctx context.Context, sourceID string) (int, error) {
-	return 0, errors.New("not implemented")
-}
+// memFileJobRepo 已由 staticFileRoots 桩取代：统一任务模型下本地浏览
+// 只依赖 jobID → LocalRoot 的解析，不再需要完整 Repository。
 
 // memFileManagedRepo 是文件 API 测试的内存 managed 记录仓库。
 type memFileManagedRepo struct {
@@ -402,26 +361,12 @@ func newLocalFilesEnv(t *testing.T) *localFilesEnv {
 		t.Fatalf("storage.Ensure: %v", err)
 	}
 	svc := source.NewService(sqlite.New(db), fakeFactory{})
-	jobRepo := newMemFileJobRepo()
 	managedRepo := &memFileManagedRepo{}
-	now := time.Now().UTC()
-	job := syncjob.Job{
-		ID:        "job_local_api",
-		Name:      "local-api",
-		Mode:      syncjob.ModeCopy,
-		LocalRoot: root,
-		Enabled:   true,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	if err := jobRepo.Create(context.Background(), job); err != nil {
-		t.Fatalf("create job: %v", err)
-	}
-	jobs := syncjob.NewService(jobRepo, nil, dataDir)
+	roots := staticFileRoots{"job_local_api": root}
 	files := browser.NewRemoteService(svc)
-	local := browser.NewLocalService(jobs, managedRepo)
-	router := newTestAuth(t, db, Dependencies{Sources: svc, Jobs: jobs, Runner: nil, Browser: files, LocalFiles: local})
-	return &localFilesEnv{router: router, jobID: job.ID, root: root}
+	local := browser.NewLocalService(roots, managedRepo)
+	router := newTestAuth(t, db, Dependencies{Sources: svc, Runner: nil, Browser: files, LocalFiles: local})
+	return &localFilesEnv{router: router, jobID: "job_local_api", root: root}
 }
 
 func (e *localFilesEnv) write(t *testing.T, rel, content string) {

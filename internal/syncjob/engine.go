@@ -47,12 +47,12 @@ type ItemRecorder interface {
 
 // RunStats 是一轮同步的统计摘要。
 type RunStats struct {
-	FilesTotal       int
-	FilesCreated     int
-	FilesUpdated     int
-	FilesDeleted     int
-	FilesSkipped     int
-	BytesTransferred int64
+	FilesTotal       int   `json:"files_total"`
+	FilesCreated     int   `json:"files_created"`
+	FilesUpdated     int   `json:"files_updated"`
+	FilesDeleted     int   `json:"files_deleted"`
+	FilesSkipped     int   `json:"files_skipped"`
+	BytesTransferred int64 `json:"bytes_transferred"`
 }
 
 // transferJob 是待传输的单文件任务。
@@ -156,7 +156,7 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 		}
 		item.RunID = opts.RunID
 		if err := opts.Items.RecordItem(ctx, item); err != nil {
-			return fmt.Errorf("record run item %s: %w", item.Path, err)
+			return fmt.Errorf("record run item %s: %w", item.Target, err)
 		}
 		return nil
 	}
@@ -212,7 +212,7 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 			return err
 		}
 		if err := recordItem(RunItem{
-			Path:   j.entry.relPath,
+			Target: j.entry.relPath,
 			Action: j.action,
 			Status: ItemSucceeded,
 			Bytes:  size,
@@ -245,7 +245,7 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 		stats.FilesSkipped++
 		progress.AddWorkDone(1)
 		if err := recordItem(RunItem{
-			Path:   e.relPath,
+			Target: e.relPath,
 			Action: action,
 			Status: ItemSkipped,
 			Error:  "path is reserved for internal partial files",
@@ -282,7 +282,7 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 			stats.FilesSkipped++
 			progress.AddWorkDone(1)
 			if err := recordItem(RunItem{
-				Path:   e.relPath,
+				Target: e.relPath,
 				Action: ItemCreate,
 				Status: ItemSkipped,
 				Error:  reason,
@@ -407,7 +407,7 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 				status = ItemCanceled
 			}
 			recordDetachedItem(RunItem{
-				Path:   out.job.entry.relPath,
+				Target: out.job.entry.relPath,
 				Action: out.job.action,
 				Status: status,
 				Error:  out.err.Error(),
@@ -444,7 +444,7 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 			if err != nil {
 				return stats, err
 			}
-			if err := recordItem(RunItem{Path: rel, Action: ItemRelinquish, Status: ItemSucceeded}); err != nil {
+			if err := recordItem(RunItem{Target: rel, Action: ItemRelinquish, Status: ItemSucceeded}); err != nil {
 				return stats, err
 			}
 			progress.AddWorkDone(1)
@@ -480,7 +480,7 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 					job.ID, opts.RunID, rel, err.Error())
 				// 主错误优先；失败明细尽力记录。
 				_ = recordItem(RunItem{
-					Path:   rel,
+					Target: rel,
 					Action: ItemDelete,
 					Status: ItemFailed,
 					Error:  err.Error(),
@@ -488,7 +488,7 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 				return stats, fmt.Errorf("mirror delete %s: %w", target, err)
 			}
 			stats.FilesDeleted++
-			if err := recordItem(RunItem{Path: rel, Action: ItemDelete, Status: ItemSucceeded}); err != nil {
+			if err := recordItem(RunItem{Target: rel, Action: ItemDelete, Status: ItemSucceeded}); err != nil {
 				return stats, err
 			}
 			progress.AddWorkDone(1)

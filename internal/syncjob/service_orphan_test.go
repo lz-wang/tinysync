@@ -33,7 +33,7 @@ func seedTransferTemps(t *testing.T, root string) {
 	}
 }
 
-// 删除 Job：旧 LocalRoot 退出配置面后，其中的传输中间文件（legacy
+// 删除任务：旧 LocalRoot 退出配置面后，其中的传输中间文件（legacy
 // 临时文件、v1 断点文件、断点形态 symlink）立即回收——启动期清理
 // 不再枚举这个 root，partialRetention 对此类 mapping 变更孤儿实际
 // 无效。用户文件与 symlink 指向的目标保留。
@@ -41,16 +41,17 @@ func TestDeleteJobCleansOrphanedTransferTemps(t *testing.T) {
 	env := newTestEnv(t)
 	ctx := context.Background()
 	input := env.validInput(t, "cleanup")
-	job, err := env.service.Create(ctx, input)
+	j, err := env.createFileJob(ctx, input)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	seedTransferTemps(t, job.LocalRoot)
+	root := fileConfigOf(t, j).LocalRoot
+	seedTransferTemps(t, root)
 
-	if err := env.service.Delete(ctx, job.ID); err != nil {
+	if err := env.service.Delete(ctx, j.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	entries, err := os.ReadDir(job.LocalRoot)
+	entries, err := os.ReadDir(root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +63,7 @@ func TestDeleteJobCleansOrphanedTransferTemps(t *testing.T) {
 		t.Fatalf("root entries after delete = %v, want only user file", names)
 	}
 	// symlink 只摘链接本身：链接指向的用户文件原样保留。
-	if _, err := os.Stat(filepath.Join(job.LocalRoot, ".tinysync-part-0123456789ab")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(root, ".tinysync-part-0123456789ab")); !os.IsNotExist(err) {
 		t.Errorf("legacy temp survived orphan cleanup (stat err=%v)", err)
 	}
 }
@@ -122,11 +123,12 @@ func TestUpdateLocalRootCleansOldRootTransferTemps(t *testing.T) {
 	env := newTestEnv(t)
 	ctx := context.Background()
 	input := env.validInput(t, "rebase")
-	job, err := env.service.Create(ctx, input)
+	j, err := env.createFileJob(ctx, input)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	seedTransferTemps(t, job.LocalRoot)
+	oldRoot := fileConfigOf(t, j).LocalRoot
+	seedTransferTemps(t, oldRoot)
 	newRoot := t.TempDir()
 	// canonical LocalRoot 经 EvalSymlinks（macOS /var → /private/var）。
 	resolved, err := filepath.EvalSymlinks(newRoot)
@@ -135,15 +137,14 @@ func TestUpdateLocalRootCleansOldRootTransferTemps(t *testing.T) {
 	}
 	newRoot = resolved
 
-	newLocalRoot := newRoot
-	updated, err := env.service.Update(ctx, job.ID, syncjob.UpdateInput{LocalRoot: &newLocalRoot})
+	updated, err := env.updateFileJob(ctx, j.ID, filePatch{LocalRoot: &newRoot})
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	if updated.LocalRoot != newRoot {
-		t.Fatalf("updated LocalRoot = %q, want %q", updated.LocalRoot, newRoot)
+	if got := fileConfigOf(t, updated); got.LocalRoot != newRoot {
+		t.Fatalf("updated LocalRoot = %q, want %q", got.LocalRoot, newRoot)
 	}
-	entries, err := os.ReadDir(job.LocalRoot)
+	entries, err := os.ReadDir(oldRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,22 +166,23 @@ func TestUpdateNonMappingKeepsTransferTemps(t *testing.T) {
 	env := newTestEnv(t)
 	ctx := context.Background()
 	input := env.validInput(t, "keep")
-	job, err := env.service.Create(ctx, input)
+	j, err := env.createFileJob(ctx, input)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	seedTransferTemps(t, job.LocalRoot)
+	root := fileConfigOf(t, j).LocalRoot
+	seedTransferTemps(t, root)
 
 	enabled := false
-	if _, err := env.service.Update(ctx, job.ID, syncjob.UpdateInput{Enabled: &enabled}); err != nil {
+	if _, err := env.updateFileJob(ctx, j.ID, filePatch{Enabled: &enabled}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(job.LocalRoot, ".tinysync-part-0123456789ab")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, ".tinysync-part-0123456789ab")); err != nil {
 		t.Errorf("legacy temp removed by non-mapping update: %v", err)
 	}
 }
 
-// RemoveTransferTemps 对不存在的 root 静默跳过（Job 从未运行）。
+// RemoveTransferTemps 对不存在的 root 静默跳过（任务从未运行）。
 func TestRemoveTransferTempsMissingRoot(t *testing.T) {
 	removed, err := syncjob.RemoveTransferTemps(filepath.Join(t.TempDir(), "missing"))
 	if err != nil {

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"tinysync/internal/job"
 	"tinysync/internal/source"
-	"tinysync/internal/syncjob"
 )
 
 // memRepo 是内存 Repository：行为覆盖 Create/Update 冲突与 Get/List。
@@ -79,16 +79,17 @@ func (m *memRepo) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// memJobs 是内存 Job 读取桩。
+// memJobs 是内存 LocalRoot 解析桩。
 type memJobs struct {
-	job syncjob.Job
+	jobID string
+	root  string
 }
 
-func (m *memJobs) Get(ctx context.Context, id string) (syncjob.Job, error) {
-	if m.job.ID != id {
-		return syncjob.Job{}, fmt.Errorf("%w: %s", syncjob.ErrNotFound, id)
+func (m *memJobs) LocalRootOf(ctx context.Context, id string) (string, error) {
+	if m.jobID != id {
+		return "", fmt.Errorf("%w: %s", job.ErrNotFound, id)
 	}
-	return m.job, nil
+	return m.root, nil
 }
 
 // serviceEnv 组装 Service 与受控环境。
@@ -113,11 +114,7 @@ func newServiceEnv(t *testing.T) *serviceEnv {
 	}
 	env.root = canonical
 	env.jobID = "job_share"
-	env.jobs = &memJobs{job: syncjob.Job{
-		ID:        env.jobID,
-		LocalRoot: canonical,
-		Mode:      syncjob.ModeCopy,
-	}}
+	env.jobs = &memJobs{jobID: env.jobID, root: canonical}
 	env.svc = NewService(env.repo, env.jobs)
 	env.svc.Now = func() time.Time { return env.now }
 	return env

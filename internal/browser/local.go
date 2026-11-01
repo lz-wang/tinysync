@@ -12,23 +12,30 @@ import (
 	"strings"
 
 	"tinysync/internal/filesafe"
+	"tinysync/internal/job"
 	"tinysync/internal/source"
 	"tinysync/internal/syncjob"
 )
 
-// LocalService 是本地文件浏览的应用服务：唯一 namespace 是 Job——
-// job ID 解析为 Job.LocalRoot（创建时已 canonicalize），逻辑路径经
+// LocalRootLookup 提供 file 任务的本地根解析（由 File 执行器或等价
+// 适配器实现）；job 不存在返回 job.ErrNotFound。
+type LocalRootLookup interface {
+	LocalRootOf(ctx context.Context, jobID string) (string, error)
+}
+
+// LocalService 是本地文件浏览的应用服务：唯一 namespace 是 file 任务——
+// job ID 解析为其 LocalRoot（创建时已 canonicalize），逻辑路径经
 // filesafe 的 root confinement 解析。可以看到 LocalRoot 下真实存在
 // 的所有条目（含非 TinySync 管理的文件），managed 标记由
 // managed_files 记录推导。
 type LocalService struct {
-	jobs    *syncjob.Service
+	roots   LocalRootLookup
 	managed syncjob.ManagedRepository
 }
 
 // NewLocalService 构造本地浏览服务。
-func NewLocalService(jobs *syncjob.Service, managed syncjob.ManagedRepository) *LocalService {
-	return &LocalService{jobs: jobs, managed: managed}
+func NewLocalService(roots LocalRootLookup, managed syncjob.ManagedRepository) *LocalService {
+	return &LocalService{roots: roots, managed: managed}
 }
 
 // validateLogicalPath 校验本地逻辑路径并标记领域错误：基础规则与
@@ -79,17 +86,17 @@ func resolveDir(root, logicalPath string) (string, error) {
 	return resolved, nil
 }
 
-// localRoot 解析 Job 并返回 canonical LocalRoot；Job 不存在映射为
+// localRoot 解析 file 任务并返回 canonical LocalRoot；Job 不存在映射为
 // ErrNotFound。
 func (s *LocalService) localRoot(ctx context.Context, jobID string) (string, error) {
-	job, err := s.jobs.Get(ctx, jobID)
+	root, err := s.roots.LocalRootOf(ctx, jobID)
 	if err != nil {
-		if errors.Is(err, syncjob.ErrNotFound) {
+		if errors.Is(err, job.ErrNotFound) {
 			return "", fmt.Errorf("%w: job not found", ErrNotFound)
 		}
 		return "", err
 	}
-	return job.LocalRoot, nil
+	return root, nil
 }
 
 // managedRelPaths 返回该 Job 全部 managed 记录的本地相对路径集合。
@@ -262,9 +269,9 @@ func (s *LocalService) SearchManaged(ctx context.Context, jobID string, opts Sea
 		return SearchResult{}, fmt.Errorf("%w: limit must be in 1..%d", ErrInvalid, searchMaxLimit)
 	}
 
-	job, err := s.jobs.Get(ctx, jobID)
+	root, err := s.roots.LocalRootOf(ctx, jobID)
 	if err != nil {
-		if errors.Is(err, syncjob.ErrNotFound) {
+		if errors.Is(err, job.ErrNotFound) {
 			return SearchResult{}, fmt.Errorf("%w: job not found", ErrNotFound)
 		}
 		return SearchResult{}, err
@@ -296,7 +303,7 @@ func (s *LocalService) SearchManaged(ctx context.Context, jobID string, opts Sea
 		if ctx.Err() != nil {
 			return SearchResult{}, ctx.Err()
 		}
-		entry, err := statWithin(job.LocalRoot, managedSet, "/"+rel)
+		entry, err := statWithin(root, managedSet, "/"+rel)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				continue

@@ -11,11 +11,13 @@ import (
 	"testing"
 	"time"
 
+	"tinysync/internal/job"
+	jobsqlite "tinysync/internal/job/sqlite"
 	"tinysync/internal/source"
 	sourcesqlite "tinysync/internal/source/sqlite"
 	"tinysync/internal/storage"
 	"tinysync/internal/syncjob"
-	jobsqlite "tinysync/internal/syncjob/sqlite"
+	managedsqlite "tinysync/internal/syncjob/sqlite"
 )
 
 // scopeTestEnv 携带 session（admin）、裸引擎与 db：scope 矩阵与
@@ -53,8 +55,9 @@ func newScopeTestEnv(t *testing.T) *scopeTestEnv {
 	}
 	sourceSvc := source.NewService(sourcesqlite.New(db), fakeFactory{remote: fakeRemote{}})
 	jobRepo := jobsqlite.NewRepository(db)
-	managedRepo := jobsqlite.NewManagedRepository(db)
-	jobSvc := syncjob.NewService(jobRepo, sourceSvc, dataDir)
+	managedRepo := managedsqlite.NewManagedRepository(db)
+	fileExec := syncjob.NewFileExecutor(sourceSvc, jobRepo, dataDir)
+	jobSvc := job.NewService(jobRepo, map[job.JobKind]job.Executor{job.KindFile: fileExec})
 	runner := syncjob.NewRunner(jobRepo, managedRepo, sourceSvc, jobsqlite.NewRunRepository(db))
 	router := newTestAuth(t, db, Dependencies{Sources: sourceSvc, Jobs: jobSvc, Runner: runner})
 	return &scopeTestEnv{router: router, db: db}

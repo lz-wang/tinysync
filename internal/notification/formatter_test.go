@@ -1,34 +1,38 @@
 package notification
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
+	"tinysync/internal/job"
 	"tinysync/internal/syncjob"
 )
 
 // completedRun 构造格式化测试的基准事件，子测试按需改写。
-func completedRun() syncjob.RunCompletion {
+func completedRun() job.RunCompletion {
 	start := time.Unix(1760000000, 0).UTC()
-	return syncjob.RunCompletion{
+	stats := syncjob.RunStats{
+		FilesTotal:       75,
+		FilesCreated:     20,
+		FilesUpdated:     5,
+		FilesDeleted:     0,
+		FilesSkipped:     50,
+		BytesTransferred: 14.5 * 1024 * 1024,
+	}
+	result, _ := json.Marshal(stats)
+	return job.RunCompletion{
 		RunID:     "run_abc123",
 		JobID:     "job_1",
+		JobKind:   job.KindFile,
 		JobName:   "photos",
-		SourceID:  "src_1",
-		Trigger:   syncjob.TriggerCron,
-		State:     syncjob.RunSucceeded,
+		Trigger:   job.TriggerCron,
+		State:     job.RunSucceeded,
 		StartedAt: start,
 		// 92 秒后结束：耗时显示 1m32s。
 		FinishedAt: start.Add(92 * time.Second),
-		Stats: syncjob.RunStats{
-			FilesTotal:       75,
-			FilesCreated:     20,
-			FilesUpdated:     5,
-			FilesDeleted:     0,
-			FilesSkipped:     50,
-			BytesTransferred: 14.5 * 1024 * 1024,
-		},
+		Result:     result,
 	}
 }
 
@@ -62,7 +66,7 @@ func TestFormatRunSucceeded(t *testing.T) {
 
 func TestFormatRunFailed(t *testing.T) {
 	run := completedRun()
-	run.State = syncjob.RunFailed
+	run.State = job.RunFailed
 	run.Error = "remote scan failed: 404 not found"
 	message := FormatRun(run)
 	if message.Title != "TinySync · photos · 同步失败" {
@@ -78,7 +82,7 @@ func TestFormatRunFailed(t *testing.T) {
 
 func TestFormatRunCanceled(t *testing.T) {
 	run := completedRun()
-	run.State = syncjob.RunCanceled
+	run.State = job.RunCanceled
 	message := FormatRun(run)
 	if message.Title != "TinySync · photos · 已取消" {
 		t.Fatalf("Title = %q", message.Title)

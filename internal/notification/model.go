@@ -1,6 +1,6 @@
 // Package notification 承载运行完成通知领域：配置持久化（本文件与
 // repository / service）、消息格式化与 Pushover / SMTP 发送（formatter /
-// pushover / email），以及消费 syncjob.RunCompletion 的旁路分发
+// pushover / email），以及消费 job.RunCompletion 的旁路分发
 // （dispatcher）。通知是同步运行的辅助提醒：任务历史才是权威事实，
 // 任何发送失败只记结构化日志，绝不影响 run 终态（ADR 0006）。
 package notification

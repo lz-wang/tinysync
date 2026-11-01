@@ -9,12 +9,13 @@ import (
 	"testing"
 
 	"tinysync/internal/browser"
+	"tinysync/internal/job"
+	jobsqlite "tinysync/internal/job/sqlite"
 	"tinysync/internal/source"
 	localadapter "tinysync/internal/source/local"
 	sourcesqlite "tinysync/internal/source/sqlite"
 	"tinysync/internal/storage"
 	"tinysync/internal/syncjob"
-	jobsqlite "tinysync/internal/syncjob/sqlite"
 )
 
 func newLocalSourceRouter(t *testing.T) testRouter {
@@ -30,7 +31,9 @@ func newLocalSourceRouter(t *testing.T) testRouter {
 		t.Fatal(err)
 	}
 	svc := source.NewService(sourcesqlite.New(db), localadapter.NewFactory())
-	jobs := syncjob.NewService(jobsqlite.NewRepository(db), svc, dataDir)
+	jobRepo := jobsqlite.NewRepository(db)
+	fileExec := syncjob.NewFileExecutor(svc, jobRepo, dataDir)
+	jobs := job.NewService(jobRepo, map[job.JobKind]job.Executor{job.KindFile: fileExec})
 	return newTestAuth(t, db, Dependencies{Sources: svc, Jobs: jobs, Browser: browser.NewRemoteService(svc)})
 }
 
@@ -88,7 +91,9 @@ func TestLocalSourceAPI(t *testing.T) {
 			t.Fatalf("invalid: %d %s", w.Code, w.Body)
 		}
 	}
-	jobReq := map[string]any{"name": "job", "source_id": id, "remote_root": "/", "local_root": t.TempDir(), "mode": "mirror"}
+	jobReq := map[string]any{"name": "job", "kind": "file", "config": map[string]any{
+		"source_id": id, "remote_root": "/", "local_root": t.TempDir(), "mode": "mirror",
+	}}
 	if w := doJSON(t, router, http.MethodPost, "/api/v1/jobs", jsonBody(t, jobReq)); w.Code != http.StatusCreated {
 		t.Fatalf("job: %d %s", w.Code, w.Body)
 	}

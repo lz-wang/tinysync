@@ -84,8 +84,8 @@ func testHTTPMirrorUnprovableSnapshot(t *testing.T, body string) {
 	if status.State != syncjob.RunFailed {
 		t.Fatalf("run state = %s (%s), want failed", status.State, status.Error)
 	}
-	if status.Stats.FilesDeleted != 0 {
-		t.Errorf("deleted = %d on unprovable snapshot, want 0", status.Stats.FilesDeleted)
+	if fileStatsOf(t, status).FilesDeleted != 0 {
+		t.Errorf("deleted = %d on unprovable snapshot, want 0", fileStatsOf(t, status).FilesDeleted)
 	}
 
 	// 3. managed files 一个都不删除。

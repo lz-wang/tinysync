@@ -8,13 +8,23 @@ import (
 	"path/filepath"
 	"testing"
 
-	"tinysync/internal/source"
-	sourcesqlite "tinysync/internal/source/sqlite"
-	"tinysync/internal/source/webdav"
+	"tinysync/internal/job"
+	jobsqlite "tinysync/internal/job/sqlite"
 	"tinysync/internal/storage"
 	"tinysync/internal/syncjob"
-	jobsqlite "tinysync/internal/syncjob/sqlite"
+	managedsqlite "tinysync/internal/syncjob/sqlite"
 )
+
+// staticLocalRoots 是可写的 LocalRootLookup 桩（benchmark 装配用）。
+type staticLocalRoots map[string]string
+
+func (m staticLocalRoots) LocalRootOf(ctx context.Context, jobID string) (string, error) {
+	root, ok := m[jobID]
+	if !ok {
+		return "", job.ErrNotFound
+	}
+	return root, nil
+}
 
 // BenchmarkManagedSearch100K：100k managed 行上的文件搜索
 // （SearchManaged：全量行过滤 + 前 limit+1 命中的实时 stat）。
@@ -32,44 +42,37 @@ func BenchmarkManagedSearch100K(b *testing.B) {
 	if err := storage.Ensure(ctx, db); err != nil {
 		b.Fatalf("ensure: %v", err)
 	}
-	remotes, err := source.NewRemoteRegistry(webdav.NewFactory())
-	if err != nil {
-		b.Fatalf("registry: %v", err)
-	}
-	sources := source.NewService(sourcesqlite.New(db), remotes)
 	jobRepo := jobsqlite.NewRepository(db)
-	managed := jobsqlite.NewManagedRepository(db)
-	jobs := syncjob.NewService(jobRepo, sources, datadir)
-	local := NewLocalService(jobs, managed)
+	managed := managedsqlite.NewManagedRepository(db)
+	roots := staticLocalRoots{}
+	local := NewLocalService(roots, managed)
 
 	if err := os.MkdirAll(localRoot, 0o755); err != nil {
 		b.Fatalf("mkdir: %v", err)
 	}
 
-	job, err := func() (syncjob.Job, error) {
-		src, err := sources.Create(ctx, source.CreateInput{
-			Name: "bench-source",
-			Type: source.TypeWebDAV,
-			Config: source.Config{WebDAV: &source.WebDAVConfig{
-				Endpoint: "https://bench.example.com/dav",
-			}},
-			Enabled: true,
-		})
+	job, err := func() (job.Job, error) {
+		id, err := job.NewID()
 		if err != nil {
-			return syncjob.Job{}, err
+			return job.Job{}, err
 		}
-		return jobs.Create(ctx, syncjob.CreateInput{
-			Name:       "bench",
-			SourceID:   src.ID,
-			RemoteRoot: "/",
-			LocalRoot:  localRoot,
-			Mode:       syncjob.ModeCopy,
-			Enabled:    true,
-		})
+		cfg, err := syncjob.MarshalFileConfig("src_bench", "/", localRoot, syncjob.ModeCopy, nil, nil)
+		if err != nil {
+			return job.Job{}, err
+		}
+		j := job.Job{
+			ID: id, Name: "bench", Kind: job.KindFile, Enabled: true,
+			Config: cfg,
+		}
+		if err := jobRepo.Create(ctx, j); err != nil {
+			return job.Job{}, err
+		}
+		return j, nil
 	}()
 	if err != nil {
 		b.Fatalf("create job: %v", err)
 	}
+	roots[job.ID] = localRoot
 
 	seed100kManaged(b, db, job.ID)
 	// 预置 60 个真实文件：搜索在前 51 次实时 stat 内命中 limit+1

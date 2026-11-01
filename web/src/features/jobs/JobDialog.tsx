@@ -16,6 +16,7 @@ import {
 import { useEffect, useState } from 'react'
 import {
     createJob,
+    type FileJobConfig,
     type GitHubReleaseConfig,
     type JobMode,
     type JobResponse,
@@ -118,13 +119,14 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
             return
         }
         const schedule = job?.schedule
+        const config = job?.config
         setName(job?.name ?? '')
-        setSourceId(job?.source_id ?? '')
-        setRemoteRoot(job?.remote_root ?? '/')
-        setLocalRoot(job?.local_root ?? '')
-        setMode(job?.mode ?? 'copy')
-        setIncludeText(patternsToText(job?.include ?? []))
-        setExcludeText(patternsToText(job?.exclude ?? []))
+        setSourceId(config?.source_id ?? '')
+        setRemoteRoot(config?.remote_root ?? '/')
+        setLocalRoot(config?.local_root ?? '')
+        setMode(config?.mode ?? 'copy')
+        setIncludeText(patternsToText(config?.include ?? []))
+        setExcludeText(patternsToText(config?.exclude ?? []))
         setEnabled(job?.enabled ?? true)
         setScheduleType(schedule?.type ?? 'manual')
         setOnceAt(toDatetimeLocal(schedule?.at))
@@ -193,16 +195,20 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
         setError(null)
         const include = textToPatterns(includeText)
         const exclude = textToPatterns(excludeText)
+        const config: FileJobConfig = {
+            source_id: sourceId,
+            remote_root: remoteRoot.trim() === '' ? '/' : remoteRoot.trim(),
+            local_root: localRoot.trim(),
+            mode,
+            include,
+            exclude,
+        }
         try {
             if (job === null) {
                 const created = await createJob({
                     name,
-                    source_id: sourceId,
-                    remote_root: remoteRoot.trim() === '' ? '/' : remoteRoot.trim(),
-                    local_root: localRoot.trim(),
-                    mode,
-                    include,
-                    exclude,
+                    kind: 'file',
+                    config,
                     enabled,
                     schedule,
                 })
@@ -213,23 +219,16 @@ export default function JobDialog({ open, job, sources, onClose, onSaved }: JobD
             if (name !== job.name) {
                 patch.name = name
             }
-            if (sourceId !== job.source_id) {
-                patch.source_id = sourceId
-            }
-            if (remoteRoot.trim() !== job.remote_root) {
-                patch.remote_root = remoteRoot.trim() === '' ? '/' : remoteRoot.trim()
-            }
-            if (localRoot.trim() !== job.local_root) {
-                patch.local_root = localRoot.trim()
-            }
-            if (mode !== job.mode) {
-                patch.mode = mode
-            }
-            if (include.join('\n') !== patternsToText(job.include)) {
-                patch.include = include
-            }
-            if (exclude.join('\n') !== patternsToText(job.exclude)) {
-                patch.exclude = exclude
+            const current = job.config
+            if (
+                config.source_id !== current.source_id ||
+                config.remote_root !== current.remote_root ||
+                config.local_root !== current.local_root ||
+                config.mode !== current.mode ||
+                include.join('\n') !== patternsToText(current.include) ||
+                exclude.join('\n') !== patternsToText(current.exclude)
+            ) {
+                patch.config = config
             }
             if (enabled !== job.enabled) {
                 patch.enabled = enabled

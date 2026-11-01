@@ -188,7 +188,7 @@ func TestRunSkipsReservedPartialNamespace(t *testing.T) {
 	}
 	var found bool
 	for _, item := range items.all() {
-		if item.Path == "docs/"+name && item.Status == ItemSkipped {
+		if item.Target == "docs/"+name && item.Status == ItemSkipped {
 			found = true
 		}
 	}

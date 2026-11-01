@@ -26,6 +26,7 @@ import (
 	xnetdav "golang.org/x/net/webdav"
 
 	"tinysync/internal/filesafe"
+	jobsqlite "tinysync/internal/job/sqlite"
 	"tinysync/internal/source"
 	httpadapter "tinysync/internal/source/http"
 	localadapter "tinysync/internal/source/local"
@@ -35,7 +36,7 @@ import (
 	sourcesqlite "tinysync/internal/source/sqlite"
 	"tinysync/internal/source/webdav"
 	"tinysync/internal/syncjob"
-	jobsqlite "tinysync/internal/syncjob/sqlite"
+	managedsqlite "tinysync/internal/syncjob/sqlite"
 )
 
 // 协议矩阵：网络协议与本地文件源经过同一个 Remote → Scanner → Selector → Planner
@@ -517,8 +518,11 @@ func newSFTPFixture(t *testing.T) matrixRemote {
 // matrixEnv 是一台协议无关的同步环境：真实 SQLite + Runner。
 type matrixEnv struct {
 	dataDir string
+	stack   *fileJobStack
+
+	// 便捷字段（指向 stack 的同名组件，Runner 为矩阵 gateway 定制版）。
 	jobRepo *jobsqlite.Repository
-	managed *jobsqlite.ManagedRepository
+	managed *managedsqlite.ManagedRepository
 	runner  *syncjob.Runner
 	runs    *jobsqlite.RunRepository
 }
@@ -528,8 +532,8 @@ func newMatrixEnv(t *testing.T, fixture matrixRemote) *matrixEnv {
 	dataDir := t.TempDir()
 	db := openDB(t, dataDir)
 	t.Cleanup(func() { _ = db.Close() })
-	// Job 表的 FK 引用 Source：经真实 Source repository 落一行矩阵
-	// Source（协议无关——Runner 只消费 gateway 提供的 Remote）。
+	// 经真实 Source repository 落一行矩阵 Source（协议无关——Runner
+	// 只消费 gateway 提供的 Remote）。
 	srcRepo := sourcesqlite.New(db)
 	now := time.Unix(1757879400, 0).UTC()
 	src := matrixSource(fixture, "src_matrix", "matrix", now)
@@ -537,38 +541,33 @@ func newMatrixEnv(t *testing.T, fixture matrixRemote) *matrixEnv {
 		t.Fatalf("create matrix source row: %v", err)
 	}
 	gw := matrixGateway{src: src, openRemote: fixture.openRemote}
-	env := &matrixEnv{
+	stack := newFileJobStack(db, source.NewService(srcRepo, bridgedFactory{fixture: fixture}), dataDir)
+	stack.Runner = syncjob.NewRunner(stack.Repo, stack.Managed, gw, stack.Runs)
+	return &matrixEnv{
 		dataDir: dataDir,
-		jobRepo: jobsqlite.NewRepository(db),
-		managed: jobsqlite.NewManagedRepository(db),
-		runs:    jobsqlite.NewRunRepository(db),
+		stack:   stack,
+		jobRepo: stack.Repo,
+		managed: stack.Managed,
+		runner:  stack.Runner,
+		runs:    stack.Runs,
 	}
-	env.runner = syncjob.NewRunner(env.jobRepo, env.managed, gw, env.runs)
-	return env
 }
 
-func newMatrixJob(t *testing.T, e *matrixEnv, localRoot, mode string) syncjob.Job {
+// matrixJobView 是矩阵场景的任务视图：断言只关心 ID 与 LocalRoot。
+type matrixJobView struct {
+	ID        string
+	LocalRoot string
+}
+
+func newMatrixJob(t *testing.T, e *matrixEnv, localRoot, mode string) matrixJobView {
 	t.Helper()
 	canonical, err := filesafe.CanonicalExistingDir(localRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
 	localRoot = canonical
-	id, err := syncjob.NewID()
-	if err != nil {
-		t.Fatalf("new job id: %v", err)
-	}
-	now := time.Unix(1757879400, 0).UTC()
-	job := syncjob.Job{
-		ID: id, Name: "job-" + id, SourceID: "src_matrix",
-		RemoteRoot: "/", LocalRoot: localRoot,
-		Mode: syncjob.Mode(mode), Enabled: true,
-		CreatedAt: now, UpdatedAt: now,
-	}
-	if err := e.jobRepo.Create(context.Background(), job); err != nil {
-		t.Fatalf("create job: %v", err)
-	}
-	return job
+	j := e.stack.createFileJob(context.Background(), t, "matrix", "src_matrix", "/", localRoot, syncjob.Mode(mode), nil, nil)
+	return matrixJobView{ID: j.ID, LocalRoot: localRoot}
 }
 
 func runAndWait(t *testing.T, e *matrixEnv, jobID string) syncjob.RunStats {
@@ -584,7 +583,7 @@ func runAndWait(t *testing.T, e *matrixEnv, jobID string) syncjob.RunStats {
 	if status.State != syncjob.RunSucceeded {
 		t.Fatalf("run state = %s (%s), want succeeded", status.State, status.Error)
 	}
-	return status.Stats
+	return fileStatsOf(t, status)
 }
 
 // TestSyncAcrossProtocols 是 v0.5 的核心验收：三协议同场景全通过，
@@ -679,7 +678,7 @@ func runCommonSyncScenario(t *testing.T, remote matrixRemote) {
 	foundDelete := false
 	for _, item := range items {
 		if item.Action == syncjob.ItemDelete && item.Status == syncjob.ItemSucceeded &&
-			strings.HasSuffix(item.Path, "b.txt") {
+			strings.HasSuffix(item.Target, "b.txt") {
 			foundDelete = true
 		}
 	}
@@ -688,15 +687,37 @@ func runCommonSyncScenario(t *testing.T, remote matrixRemote) {
 	}
 }
 
-func newMatrixJobWithSelector(t *testing.T, e *matrixEnv, localRoot, mode string, include, exclude []string) syncjob.Job {
+func newMatrixJobWithSelector(t *testing.T, e *matrixEnv, localRoot, mode string, include, exclude []string) matrixJobView {
 	t.Helper()
 	job := newMatrixJob(t, e, localRoot, mode)
-	job.Include = include
-	job.Exclude = exclude
-	if err := e.jobRepo.Update(context.Background(), job); err != nil {
-		t.Fatalf("update job selector: %v", err)
-	}
+	e.updateMatrixJob(t, job.ID, func(cfg *syncjob.FileConfig) {
+		cfg.Include = include
+		cfg.Exclude = exclude
+	})
 	return job
+}
+
+// updateMatrixJob 读取统一任务、改写 File 配置并整体保存。
+func (e *matrixEnv) updateMatrixJob(t *testing.T, jobID string, mutate func(cfg *syncjob.FileConfig)) {
+	t.Helper()
+	ctx := context.Background()
+	j, err := e.jobRepo.Get(ctx, jobID)
+	if err != nil {
+		t.Fatalf("get job %s: %v", jobID, err)
+	}
+	cfg, err := syncjob.ParseFileConfig(j.Config)
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	mutate(&cfg)
+	raw, err := syncjob.MarshalFileConfig(cfg.SourceID, cfg.RemoteRoot, cfg.LocalRoot, cfg.ModeOf(), cfg.Include, cfg.Exclude)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	j.Config = raw
+	if err := e.jobRepo.Update(ctx, j); err != nil {
+		t.Fatalf("update job: %v", err)
+	}
 }
 
 func assertLocalFile(t *testing.T, root, rel, want string) {

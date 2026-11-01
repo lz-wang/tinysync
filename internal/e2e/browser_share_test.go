@@ -18,12 +18,12 @@ import (
 	"tinysync/internal/auth"
 	authsqlite "tinysync/internal/auth/sqlite"
 	"tinysync/internal/browser"
+	"tinysync/internal/job"
 	"tinysync/internal/share"
 	sharesqlite "tinysync/internal/share/sqlite"
 	"tinysync/internal/source"
 	sourcesqlite "tinysync/internal/source/sqlite"
 	"tinysync/internal/syncjob"
-	jobsqlite "tinysync/internal/syncjob/sqlite"
 )
 
 // 文件浏览与共享的端到端覆盖：完整 HTTP 栈（Gin router + 真实
@@ -53,10 +53,8 @@ type browserEnv struct {
 	db      *sql.DB
 
 	dataDir   string
-	jobRepo   *jobsqlite.Repository
-	managed   *jobsqlite.ManagedRepository
-	runner    *syncjob.Runner
-	job       syncjob.Job
+	stack     *fileJobStack
+	job       job.Job
 	localRoot string
 	remote    matrixRemote
 }
@@ -74,18 +72,17 @@ func newBrowserEnv(t *testing.T, fixture matrixRemote) *browserEnv {
 		t.Fatalf("create source row: %v", err)
 	}
 
-	jobRepo := jobsqlite.NewRepository(db)
-	managed := jobsqlite.NewManagedRepository(db)
 	sources := source.NewService(srcRepo, bridgedFactory{fixture: fixture})
-	jobs := syncjob.NewService(jobRepo, sources, dataDir)
-	runner := syncjob.NewRunner(jobRepo, managed, matrixGateway{
+	stack := newFileJobStack(db, sources, dataDir)
+	stack.Runner = syncjob.NewRunner(stack.Repo, stack.Managed, matrixGateway{
 		src:        src,
 		openRemote: fixture.openRemote,
-	}, jobsqlite.NewRunRepository(db))
+	}, stack.Runs)
+	stack.Scheduler = syncjob.NewScheduler(stack.Repo, stack.Runner, stack.Runs)
 
 	files := browser.NewRemoteService(sources)
-	localFiles := browser.NewLocalService(jobs, managed)
-	shares := share.NewService(sharesqlite.NewRepository(db), jobs)
+	localFiles := browser.NewLocalService(stack.Exec, stack.Managed)
+	shares := share.NewService(sharesqlite.NewRepository(db), stack.Exec)
 
 	// v0.7 起管理 API default-deny：为 E2E 路由装配认证服务并登录。
 	authService := auth.NewService(authsqlite.NewRepository(db))
@@ -100,8 +97,8 @@ func newBrowserEnv(t *testing.T, fixture matrixRemote) *browserEnv {
 	router := api.NewRouter(fstest.MapFS{}, api.Dependencies{
 		Auth:       authService,
 		Sources:    sources,
-		Jobs:       jobs,
-		Runner:     runner,
+		Jobs:       stack.Jobs,
+		Runner:     stack.Runner,
 		Browser:    files,
 		LocalFiles: localFiles,
 		Share:      shares,
@@ -112,9 +109,7 @@ func newBrowserEnv(t *testing.T, fixture matrixRemote) *browserEnv {
 		session:   &http.Cookie{Name: "tinysync_session", Value: rawSession},
 		db:        db,
 		dataDir:   dataDir,
-		jobRepo:   jobRepo,
-		managed:   managed,
-		runner:    runner,
+		stack:     stack,
 		localRoot: t.TempDir(),
 		remote:    fixture,
 	}
@@ -122,35 +117,22 @@ func newBrowserEnv(t *testing.T, fixture matrixRemote) *browserEnv {
 
 func (e *browserEnv) createJob(mode syncjob.Mode) {
 	e.t.Helper()
-	id, err := syncjob.NewID()
-	if err != nil {
-		e.t.Fatalf("new job id: %v", err)
-	}
 	// LocalRoot 按领域规则 canonicalize（abs + EvalSymlinks）。
 	canonical, err := filepath.EvalSymlinks(e.localRoot)
 	if err != nil {
 		e.t.Fatalf("evalsymlinks local root: %v", err)
 	}
 	e.localRoot = canonical
-	now := time.Unix(1757879400, 0).UTC()
-	e.job = syncjob.Job{
-		ID: id, Name: "job-" + id, SourceID: "src_browser",
-		RemoteRoot: "/", LocalRoot: e.localRoot,
-		Mode: mode, Enabled: true,
-		CreatedAt: now, UpdatedAt: now,
-	}
-	if err := e.jobRepo.Create(context.Background(), e.job); err != nil {
-		e.t.Fatalf("create job: %v", err)
-	}
+	e.job = e.stack.createFileJob(context.Background(), e.t, "browser", "src_browser", "/", e.localRoot, mode, nil, nil)
 }
 
 func (e *browserEnv) sync() {
 	e.t.Helper()
-	runID, err := e.runner.Start(context.Background(), e.job.ID)
+	runID, err := e.stack.Runner.Start(context.Background(), e.job.ID)
 	if err != nil {
 		e.t.Fatalf("Start: %v", err)
 	}
-	status, err := e.runner.Wait(context.Background(), runID)
+	status, err := e.stack.Runner.Wait(context.Background(), runID)
 	if err != nil {
 		e.t.Fatalf("Wait: %v", err)
 	}
