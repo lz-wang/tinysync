@@ -20,7 +20,6 @@ import (
 	credentialsqlite "tinysync/internal/credential/sqlite"
 	"tinysync/internal/instance"
 	"tinysync/internal/logging"
-	"tinysync/internal/mcp"
 	"tinysync/internal/notification"
 	notificationsqlite "tinysync/internal/notification/sqlite"
 	"tinysync/internal/share"
@@ -123,7 +122,7 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 
 	// 装配 Source 领域：SQLite 仓库 + 协议注册表 + 应用服务。协议
 	// dispatch 只发生在 registry 一处，业务层不出现协议分支；
-	// REST / Web UI / MCP 共用该服务层。
+	// REST / Web UI 共用该服务层。
 	remotes, err := source.NewRemoteRegistry(webdav.NewFactory(), s3adapter.NewFactory(), sftpadapter.NewFactory(), smbadapter.NewFactory(), githubrelease.NewFactory(), localadapter.NewFactory(), httpadapter.NewFactory())
 	if err != nil {
 		return fmt.Errorf("assemble remote registry: %w", err)
@@ -169,16 +168,6 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 	// CRUD 共用同一服务层。
 	shares := share.NewService(sharesqlite.NewRepository(db), jobs)
 
-	// 装配 MCP adapter：复用同一批应用服务，自带 Bearer 认证与跨源
-	// 防护；REST / Web UI / MCP 至此共用一个 composition root。
-	mcpHandler := mcp.New(mcp.Deps{
-		Auth:       authService,
-		Sources:    sources,
-		Jobs:       jobs,
-		Runner:     runner,
-		LocalFiles: localFiles,
-	})
-
 	server := api.NewServer(cfg, webFS, api.Dependencies{
 		Auth:                 authService,
 		Sources:              sources,
@@ -191,7 +180,6 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 		Browser:              files,
 		LocalFiles:           localFiles,
 		Share:                shares,
-		MCP:                  mcpHandler,
 	})
 
 	serveErr := make(chan error, 1)

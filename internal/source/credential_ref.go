@@ -8,7 +8,7 @@ import (
 // 引用态 secret 解析：SFTP 源经 config 的 credential_id 引用凭据库
 // （ADR 0005）。引用与内联互斥——引用态的生效 secret 在远端客户端
 // 构造时（OpenRemote / TestConnection 唯一凭据读取路径）从凭据库
-// 解析，同步引擎、MCP 与文件浏览零改动透传。
+// 解析，同步引擎与文件浏览零改动透传。
 
 // ReferencedKeySecret 是凭据引用解析出的 SSH 私钥 secret：私钥与其
 // 解密口令不可分割。

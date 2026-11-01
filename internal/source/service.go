@@ -10,7 +10,7 @@ import (
 // testTimeout 是 Connection Test 的最长时间。
 const testTimeout = 10 * time.Second
 
-// Service 是 Source 的应用服务：REST API、Web UI 与 MCP 共用的业务入口。
+// Service 是 Source 的应用服务：REST API 与 Web UI 共用的业务入口。
 // 统一处理校验、ID 与时间戳生成、凭据三态更新语义、远端客户端构造与
 // 连接测试超时；调用方不接触存储细节。
 type Service struct {
@@ -286,7 +286,7 @@ func (s *Service) effectiveHTTPCredentials(ctx context.Context, id string, cfg C
 }
 
 // OpenRemote 按 ID 读取 Source 并构造其远端客户端：凭据查询与协议
-// dispatch 集中在此一条链路，Runner 与未来 MCP / browser 复用同一
+// dispatch 集中在此一条链路，Runner 与 browser 复用同一
 // 入口，不各自接触凭据或 factory。调用方负责在用毕后 Close 返回的
 // Remote。返回 Source 供调用方执行 Enabled 等策略检查；凭据明文不
 // 经过该入口以外的任何路径。

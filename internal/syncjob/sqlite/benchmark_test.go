@@ -42,7 +42,7 @@ func seedManaged100K(b *testing.B, db *sql.DB, jobID string) {
 }
 
 // BenchmarkSQLiteManaged100K：100k managed 行下的 ListByJob 全量
-// 读取成本（MCP 搜索与引擎 planning 的底层查询）。基线证据：
+// 读取成本（文件搜索与引擎 planning 的底层查询）。基线证据：
 // 只有实测不可接受才追加查询优化。
 func BenchmarkSQLiteManaged100K(b *testing.B) {
 	datadir := b.TempDir()

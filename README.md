@@ -70,7 +70,7 @@ HTTP 文件源以只读目录镜像 URL 为源根（如 `https://mirror.example.
 | `--max-concurrent-transfers` | `TINYSYNC_MAX_CONCURRENT_TRANSFERS` | `4`，同时传输的文件数 |
 | `--transfer-timeout` | `TINYSYNC_TRANSFER_TIMEOUT` | `0`，不限制单文件单次传输耗时；可设为 `30m`、`1h` 等 |
 
-## API 与 MCP 接入
+## API 接入
 
 在 Web 界面的「API Tokens」中创建令牌，完整令牌只显示一次，可设置有效期并随时撤销。脚本通过 `Authorization: Bearer <令牌>` 访问 REST API。
 
@@ -85,16 +85,7 @@ curl -H "Authorization: Bearer $TINYSYNC_TOKEN" \
   http://127.0.0.1:9466/api/v1/sources
 ```
 
-Agent 可通过 MCP 查询同步源与任务、触发同步、搜索已同步文件和读取小型文本。使用 Streamable HTTP 连接 `/mcp`，建议创建同时具有 `read` 和 `run` 权限的令牌：
-
-```json
-{
-  "url": "https://tinysync.example/mcp",
-  "headers": {
-    "Authorization": "Bearer ts_xxx"
-  }
-}
-```
+MCP 集成暂未开放：设置页保留占位入口，待统一任务管理功能稳定后提供。
 
 ## 备份与维护
 

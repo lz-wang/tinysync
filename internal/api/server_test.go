@@ -78,18 +78,20 @@ func TestUnknownAPIPathReturns404(t *testing.T) {
 	}
 }
 
-// MCP namespace 的未知子路径必须 404，不能被 SPA fallback 吞掉；精确
-// /mcp 由装配的 MCP handler 接管，本测试覆盖未注册的 namespace 边界。
+// MCP 已移除：/mcp namespace 的任何路径、任何方法都必须 404 JSON，
+// 不能被 SPA fallback 吞掉（也不存在曾经挂载过的 handler）。
 func TestUnknownMCPPathReturns404(t *testing.T) {
 	for _, path := range []string{"/mcp", "/mcp/", "/mcp/not-found"} {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest("GET", path, nil)
-		NewRouter(testWebFS(), Dependencies{}).ServeHTTP(rec, req)
-		if rec.Code != 404 {
-			t.Errorf("GET %s status = %d, want 404", path, rec.Code)
-		}
-		if strings.Contains(rec.Body.String(), "<title>TinySync</title>") {
-			t.Errorf("GET %s unexpectedly returned SPA fallback", path)
+		for _, method := range []string{"GET", "POST", "DELETE"} {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(method, path, nil)
+			NewRouter(testWebFS(), Dependencies{}).ServeHTTP(rec, req)
+			if rec.Code != 404 {
+				t.Errorf("%s %s status = %d, want 404", method, path, rec.Code)
+			}
+			if strings.Contains(rec.Body.String(), "<title>TinySync</title>") {
+				t.Errorf("%s %s unexpectedly returned SPA fallback", method, path)
+			}
 		}
 	}
 }

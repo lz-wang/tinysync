@@ -104,11 +104,10 @@ GitHub Asset 字段 → TinySync `Fingerprint` 的映射（冻结）：
 - 存储：`credentials_json` 复用现有扁平 JSON（新增 `token` 键），API 不回传明文，编辑表单沿用 SecretField 三态（不填保留 / Clear 清除 / 输入替换）。
 - 被 Job 引用时的远端身份字段（修改返回 409，复用 `RemoteIdentityEqual`）：`repository`、`release_policy`、`tag`、`recent_count`、`include_prereleases`。非身份字段：`name`、`enabled`、`verify_sha256`、Token 轮换。改变版本选择策略应新建 Source 并经 Job 映射切换，同时重置对应 managed metadata（现有流程）。
 
-## 9. REST / MCP 表面
+## 9. REST 表面
 
 - 现有 Source CRUD、`POST /sources/:id/test`、Job / Run / 文件浏览接口全部兼容，`github_release` 作为第四类型自然接入。
 - 新增 `POST /api/v1/sources/inspect`（admin scope，不持久化）：请求按字段组合解释——仅 `source_id`（已存配置 + 已存凭据）；`source_id` + 提案 `config`（编辑表单微调后预览，服务端沿用已存凭据，无需重新索取 Token）；再传 `credentials.token` 则临时覆盖已存 Token；仅 `config` + 临时 Token（创建表单，匿名或提案 Token）。响应为连接状态、仓库名称、可见 Release 概览（版本、发布时间、prerelease 标记、Asset 数量与总大小、digest 可用性）。预览数据供「测试并预览」，不下载制品。
-- MCP `list_sources` DTO 按 `github_release` 分发同一份非敏感配置，不泄露 Token。
 
 ## 10. 验收清单
 

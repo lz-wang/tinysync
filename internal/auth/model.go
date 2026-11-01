@@ -1,6 +1,6 @@
 // Package auth 承载认证领域：单一 Local Admin 的密码凭据、Web Session
 // 与 scoped API Token 的模型、存储抽象与应用服务。REST / Web UI / CLI
-// / 未来 MCP 共用该服务层，认证逻辑不进入 HTTP middleware。
+// 认证逻辑不进入 HTTP middleware。
 package auth
 
 import (

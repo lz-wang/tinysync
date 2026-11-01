@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// Service 是认证应用服务：REST / Web UI / CLI / 未来 MCP 共用的业务
+// Service 是认证应用服务：REST / Web UI / CLI 共用的业务
 // 入口。密码策略、session 生命周期与 scope 授权语义都在此层判定，
 // 不进入 HTTP middleware。
 type Service struct {

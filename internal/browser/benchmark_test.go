@@ -16,7 +16,7 @@ import (
 	jobsqlite "tinysync/internal/syncjob/sqlite"
 )
 
-// BenchmarkManagedSearch100K：100k managed 行上的 MCP 文件搜索
+// BenchmarkManagedSearch100K：100k managed 行上的文件搜索
 // （SearchManaged：全量行过滤 + 前 limit+1 命中的实时 stat）。
 // 基线证据：只有实测不可接受才追加 repository 内查询优化。
 func BenchmarkManagedSearch100K(b *testing.B) {

@@ -214,7 +214,7 @@ curl -fsS -i -X POST http://127.0.0.1:9466/api/v1/auth/login \
 ## 7. HTTPS 与反向代理
 
 认证凭据应经 HTTPS 传输：反向代理转发 `X-Forwarded-Proto: https` 时，会话
-Cookie 自动附加 `Secure`。MCP 端点 `/mcp` 与公开共享页同样经由该代理暴露。
+Cookie 自动附加 `Secure`。公开共享页同样经由该代理暴露。
 
 nginx：
 

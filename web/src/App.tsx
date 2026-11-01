@@ -41,6 +41,7 @@ export default function App() {
                     <Route path="settings" element={<SettingsPage />} />
                     <Route path="settings/notifications" element={<SettingsPage />} />
                     <Route path="settings/tokens" element={<SettingsPage />} />
+                    <Route path="settings/mcp" element={<SettingsPage />} />
                     <Route path="*" element={<Navigate to="/" replace />} />
                 </Route>
             </Routes>

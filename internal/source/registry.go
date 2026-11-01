@@ -6,7 +6,7 @@ import (
 )
 
 // RemoteRegistry 把协议类型 dispatch 到对应 factory：协议边界只在此
-// 做一次类型分发，业务层（Runner / API / 未来 MCP）不允许出现
+// 做一次类型分发，业务层（Runner / API）不允许出现
 // switch source.Type。Registry 自身实现 RemoteFactory，可整体注入
 // Service。
 type RemoteRegistry struct {

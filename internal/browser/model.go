@@ -1,6 +1,6 @@
 // Package browser 是文件浏览的应用服务：Remote 浏览经
 // source.Service.OpenRemote 统一入口复用协议抽象，Local 浏览以
-// Job.LocalRoot 为唯一 namespace。REST API、Web UI 与未来 MCP
+// Job.LocalRoot 为唯一 namespace。REST API 与 Web UI
 // 共用本层，不各自接触凭据、factory 或本地路径代数。
 package browser
 

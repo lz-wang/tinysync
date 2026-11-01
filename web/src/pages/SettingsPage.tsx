@@ -3,23 +3,26 @@ import { Stack, Tab, Tabs } from '@mui/material'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { usePageTitle } from '../app/usePageTitle'
 import AccountSettings from '../features/settings/AccountSettings'
+import MCPIntegrationPlaceholder from '../features/settings/MCPIntegrationPlaceholder'
 import NotificationSettings from '../features/settings/NotificationSettings'
 import TokensPage from './TokensPage'
 
 // SettingsPage 是设置页的 tab / router shell：帐号、通知、开发者
-//（API Token）三类。各 tab 的实现分别在 features/settings 与
-// TokensPage，本组件只负责导航。
-type SettingsTab = 'account' | 'notifications' | 'developer'
+//（API Token）、MCP 集成（静态占位）四类。各 tab 的实现分别在
+// features/settings 与 TokensPage，本组件只负责导航。
+type SettingsTab = 'account' | 'notifications' | 'developer' | 'mcp'
 
 function tabFromPath(pathname: string): SettingsTab {
     if (pathname === '/settings/notifications') return 'notifications'
     if (pathname === '/settings/tokens') return 'developer'
+    if (pathname === '/settings/mcp') return 'mcp'
     return 'account'
 }
 
 function pathFromTab(tab: SettingsTab): string {
     if (tab === 'notifications') return '/settings/notifications'
     if (tab === 'developer') return '/settings/tokens'
+    if (tab === 'mcp') return '/settings/mcp'
     return '/settings'
 }
 
@@ -27,6 +30,7 @@ const TAB_TITLES: Record<SettingsTab, string> = {
     account: '帐号设置 · 设置',
     notifications: '通知 · 设置',
     developer: '开发者 · 设置',
+    mcp: 'MCP 集成 · 设置',
 }
 
 export default function SettingsPage() {
@@ -50,11 +54,14 @@ export default function SettingsPage() {
                     label="通知"
                 />
                 <Tab value="developer" label="开发者设置" />
+                <Tab value="mcp" label="MCP 集成" />
             </Tabs>
             {tab === 'notifications' ? (
                 <NotificationSettings />
             ) : tab === 'developer' ? (
                 <TokensPage />
+            ) : tab === 'mcp' ? (
+                <MCPIntegrationPlaceholder />
             ) : (
                 <AccountSettings />
             )}
