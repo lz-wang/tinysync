@@ -211,7 +211,7 @@ func newReliabilityEnv(t *testing.T, davURL, dataDir, localRoot, mode string) *r
 // existingJobID 返回已存在的 Job ID（跨重启复用同一 Job）。
 func (e *relEnv) existingJobID(t *testing.T) string {
 	t.Helper()
-	const query = "SELECT id FROM sync_jobs LIMIT 1"
+	const query = "SELECT id FROM jobs LIMIT 1"
 	var id string
 	if err := e.db.QueryRow(query).Scan(&id); err != nil {
 		if err == sql.ErrNoRows {
@@ -414,6 +414,7 @@ func TestCrashRecoveryConvergesAfterRestart(t *testing.T) {
 	staleID := fmt.Sprintf("run_%016x", time.Now().UnixNano())
 	if err := e.history.Insert(ctx, syncjob.RunRecord{
 		ID:        staleID,
+		JobKind:   syncjob.KindFile,
 		JobID:     e.jobID,
 		Trigger:   syncjob.TriggerManual,
 		State:     syncjob.RunRunning,
@@ -643,7 +644,7 @@ func runStateFromDB(t *testing.T, dataDir, runID string) string {
 	}
 	defer db.Close()
 	var state string
-	if err := db.QueryRow("SELECT status FROM sync_runs WHERE id = ?", runID).Scan(&state); err != nil {
+	if err := db.QueryRow("SELECT state FROM job_runs WHERE id = ?", runID).Scan(&state); err != nil {
 		t.Fatalf("query run %s: %v", runID, err)
 	}
 	return state

@@ -67,10 +67,12 @@ func (s RunItemStatus) Valid() bool {
 	return false
 }
 
-// RunRecord 是 sync_runs 的一行：一轮同步的持久化摘要，运行状态的唯一
+// RunRecord 是 job_runs 的一行：一轮同步的持久化摘要，运行状态的唯一
 // 事实来源（进程重启后仍可查询）。
 type RunRecord struct {
-	ID      string
+	ID string
+	// JobKind 是任务类型快照（file / oci / git），落库于 job_runs.job_kind。
+	JobKind string
 	JobID   string
 	Trigger RunTrigger
 	// ScheduledFor 是计划触发的 occurrence 时间；手动运行为 nil。

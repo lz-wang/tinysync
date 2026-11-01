@@ -29,8 +29,8 @@ func BenchmarkManagedSearch100K(b *testing.B) {
 	b.Cleanup(func() { _ = db.Close() })
 	ctx := context.Background()
 
-	if err := storage.Migrate(ctx, db, datadir); err != nil {
-		b.Fatalf("migrate: %v", err)
+	if err := storage.Ensure(ctx, db); err != nil {
+		b.Fatalf("ensure: %v", err)
 	}
 	remotes, err := source.NewRemoteRegistry(webdav.NewFactory())
 	if err != nil {

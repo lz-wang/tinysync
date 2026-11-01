@@ -51,7 +51,7 @@ func newSFTPCheckRouter(t *testing.T) (testRouter, *fakeInspectFactory) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := storage.Migrate(context.Background(), db, dataDir); err != nil {
+	if err := storage.Ensure(context.Background(), db); err != nil {
 		t.Fatal(err)
 	}
 	factory := &fakeInspectFactory{remote: &fakeCheckRemote{}}

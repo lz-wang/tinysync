@@ -24,8 +24,8 @@ func openRepos(t *testing.T) (*sql.DB, *Repository, *ManagedRepository) {
 		t.Fatalf("storage.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := storage.Migrate(context.Background(), db, dataDir); err != nil {
-		t.Fatalf("storage.Migrate: %v", err)
+	if err := storage.Ensure(context.Background(), db); err != nil {
+		t.Fatalf("storage.Ensure: %v", err)
 	}
 	return db, NewRepository(db), NewManagedRepository(db)
 }
@@ -124,14 +124,9 @@ func TestJobCreateNameConflictNocase(t *testing.T) {
 	}
 }
 
-// 引用不存在的 Source 创建 Job 被外键拒绝并映射为 ErrInvalid。
-func TestJobCreateMissingSourceRejected(t *testing.T) {
-	_, repo, _ := openRepos(t)
-	err := repo.Create(context.Background(), newJob("job_a", "photos", "src_missing"))
-	if !errors.Is(err, syncjob.ErrInvalid) {
-		t.Fatalf("Create with missing source = %v, want ErrInvalid", err)
-	}
-}
+// 引用不存在的 Source 的存在性校验由应用服务承担（Service.Create 先
+// 读 Source 再落库）：统一 jobs 表的 source_id 位于 config_json 内，
+// 不再有数据库外键兜底（删除保护见 CountBySource + Service 层守卫）。
 
 // Update 整体替换可变字段；目标不存在报 ErrNotFound；改到冲突 name 报 ErrConflict。
 func TestJobUpdate(t *testing.T) {

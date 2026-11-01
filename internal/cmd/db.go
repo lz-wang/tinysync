@@ -95,9 +95,9 @@ func execDBBackup(ctx context.Context, in dbInput, stdout, stderr io.Writer) err
 // 二进制新（ErrNewerSchema）与 context / I/O 等运维失败一律在任何
 // 替换前中止，旧 binary 覆盖健康的更高版本库是 downgrade
 // data-loss 而非救灾）→ 同目录 staging 文件 + fsync → 替换数据库 →
-// 清理遗留 -wal / -shm → reopen + integrity check。schema 较旧的
-// 备份恢复成功，下次 serve 正常向前迁移；schema 较新的备份拒绝
-// 恢复（不做 downgrade migration）。
+// 清理遗留 -wal / -shm → reopen + integrity check。schema 与本二进制
+// 不一致的备份（较旧序列或较新）一律拒绝恢复：本轮为全新建库的破坏性
+// 变更，不存在向前迁移路径。
 func execDBRestore(ctx context.Context, in dbInput, stdout, stderr io.Writer) error {
 	if !in.Force {
 		return fmt.Errorf("restore replaces the live database; re-run with --force to confirm")
@@ -192,12 +192,7 @@ func execDBRestore(ctx context.Context, in dbInput, stdout, stderr io.Writer) er
 		return fmt.Errorf("integrity check after restore: %w", err)
 	}
 
-	if report.UserVersion < report.LatestVersion {
-		fmt.Fprintf(stdout, "database restored from %s (schema v%d, older than supported v%d); next serve migrates forward\n",
-			in.From, report.UserVersion, report.LatestVersion)
-	} else {
-		fmt.Fprintf(stdout, "database restored from %s (schema v%d)\n", in.From, report.UserVersion)
-	}
+	fmt.Fprintf(stdout, "database restored from %s (schema v%d)\n", in.From, report.UserVersion)
 	return nil
 }
 

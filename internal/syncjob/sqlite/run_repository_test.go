@@ -21,11 +21,11 @@ func seedRunSource(t *testing.T) (*RunRepository, []string) {
 	mustSeedSource(t, db, "src_a")
 	ids := []string{"job_a", "job_b"}
 	for i, id := range ids {
-		if _, err := db.Exec(`INSERT INTO sync_jobs
-			(id, name, source_id, remote_root, local_root, mode,
-			 include_patterns, exclude_patterns, enabled, created_at, updated_at)
-			VALUES (?, ?, 'src_a', '/', '/tmp/x', 'copy', '[]', '[]', 1, 1, 1)`,
-			id, "job-"+string(rune('a'+i))); err != nil {
+		if _, err := db.Exec(`INSERT INTO jobs
+			(id, name, kind, enabled, config_json, created_at, updated_at)
+			VALUES (?, ?, 'file', 1, ?, 1, 1)`,
+			id, "job-"+string(rune('a'+i)),
+			`{"source_id":"src_a","remote_root":"/","local_root":"/tmp/x","mode":"copy","include":[],"exclude":[]}`); err != nil {
 			t.Fatalf("seed job %s: %v", id, err)
 		}
 	}
@@ -36,6 +36,7 @@ func seedRunSource(t *testing.T) (*RunRepository, []string) {
 func runningRun(id, jobID string, trigger syncjob.RunTrigger, scheduledFor *time.Time, offset time.Duration) syncjob.RunRecord {
 	return syncjob.RunRecord{
 		ID:           id,
+		JobKind:      syncjob.KindFile,
 		JobID:        jobID,
 		Trigger:      trigger,
 		ScheduledFor: scheduledFor,

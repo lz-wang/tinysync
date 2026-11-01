@@ -157,7 +157,7 @@ func TestSchedulerOnceCatchUpEndToEnd(t *testing.T) {
 
 // once 消费状态独立于可裁剪的运行历史：once 执行后，即使该 run 连同
 // 整个历史被 retention 裁剪，调度器也不重放 once——「只执行一次」
-// 靠 sync_jobs.once_consumed_for 维持，不靠 sync_runs 行存活。
+// 靠 jobs.once_consumed_at 维持，不靠 job_runs 行存活。
 func TestOnceConsumedSurvivesRetentionEndToEnd(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
@@ -198,6 +198,7 @@ func TestOnceConsumedSurvivesRetentionEndToEnd(t *testing.T) {
 	for i := 0; i < syncjob.RetentionRunsPerJob+1; i++ {
 		if err := runRepo.Insert(ctx, syncjob.RunRecord{
 			ID:        fmt.Sprintf("run_fill_%04d", i),
+			JobKind:   syncjob.KindFile,
 			JobID:     job.ID,
 			Trigger:   syncjob.TriggerManual,
 			State:     syncjob.RunSucceeded,
@@ -281,6 +282,7 @@ func TestRunHistoryAcrossRestartEndToEnd(t *testing.T) {
 	staleAt := time.Now().UTC().Add(-time.Hour)
 	if err := runRepo.Insert(ctx, syncjob.RunRecord{
 		ID:        "run_stale_e2e",
+		JobKind:   syncjob.KindFile,
 		JobID:     job.ID,
 		Trigger:   syncjob.TriggerManual,
 		State:     syncjob.RunRunning,

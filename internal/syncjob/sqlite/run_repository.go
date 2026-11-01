@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -14,36 +15,45 @@ import (
 	"tinysync/internal/syncjob"
 )
 
-// runColumns 是 sync_runs 的读取列清单（与 scanRun 的扫描顺序一致）。
-const runColumns = "id, job_id, trigger_type, scheduled_for, status, " +
-	"started_at, finished_at, files_total, files_created, files_updated, " +
-	"files_deleted, files_skipped, bytes_transferred, error"
+// runColumns 是 job_runs 的读取列清单（与 scanRun 的扫描顺序一致）。
+const runColumns = "id, job_id, job_kind, trigger_type, scheduled_for, state, " +
+	"started_at, finished_at, result_json, error"
 
-// runItemColumns 是 sync_run_items 的读取列清单。
-const runItemColumns = "id, run_id, path, action, status, bytes, error"
+// runItemColumns 是 job_run_items 的读取列清单。
+const runItemColumns = "id, run_id, action, status, bytes, error, detail_json"
 
 // RunRepository 是 syncjob.RunRepository 的 SQLite 实现。
 type RunRepository struct {
 	db *sql.DB
 }
 
-// NewRunRepository 构造 RunRepository；db 需已完成 schema migration。
+// NewRunRepository 构造 RunRepository；db 需已完成 schema 初始化。
 func NewRunRepository(db *sql.DB) *RunRepository {
 	return &RunRepository{db: db}
 }
 
-// insertRunSQL 是 sync_runs 的插入语句，Insert 与 PersistScheduledRun 共用。
-const insertRunSQL = `INSERT INTO sync_runs
-	(id, job_id, trigger_type, scheduled_for, status, started_at, finished_at, error)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+// insertRunSQL 是 job_runs 的插入语句，Insert 与 PersistScheduledRun 共用。
+// 运行结果摘要（result_json）由 Finalize 写入，插入时留默认值。
+const insertRunSQL = `INSERT INTO job_runs
+	(id, job_id, job_kind, trigger_type, scheduled_for, state, started_at, finished_at, error)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 // insertRunArgs 按插入语句的参数顺序展开运行记录。
 func insertRunArgs(run syncjob.RunRecord) []any {
 	return []any{
-		run.ID, run.JobID, string(run.Trigger), nullMillis(run.ScheduledFor),
+		run.ID, run.JobID, run.JobKind, string(run.Trigger), nullMillis(run.ScheduledFor),
 		string(run.State), run.StartedAt.UnixMilli(),
 		nullMillis(run.FinishedAt), run.Error,
 	}
+}
+
+// marshalStats 把运行统计编码为 result_json。
+func marshalStats(stats syncjob.RunStats) (string, error) {
+	data, err := json.Marshal(stats)
+	if err != nil {
+		return "", fmt.Errorf("marshal run stats: %w", err)
+	}
+	return string(data), nil
 }
 
 // Insert 实现 syncjob.RunRepository：整体落库运行记录。正常运行带
@@ -55,10 +65,10 @@ func (r *RunRepository) Insert(ctx context.Context, run syncjob.RunRecord) error
 }
 
 // PersistScheduledRun 实现 syncjob.RunRepository：单个事务内落库运行
-// 记录；once 触发时同步写入 sync_jobs.once_consumed_for，使
-// 「run 存在 ⇔ occurrence 已消费」原子成立——两次独立写之间的失败
-// 不会再让调度器把未消费的 once 误判为已处理（或反之）。非 once
-// 触发只落历史。
+// 记录；once 触发时同步写入 jobs.once_consumed_at 并清空 next_run_at
+// （once 已消费，无下一次触发），使「run 存在 ⇔ occurrence 已消费」
+// 原子成立——两次独立写之间的失败不会再让调度器把未消费的 once
+// 误判为已处理（或反之）。非 once 触发只落历史。
 func (r *RunRepository) PersistScheduledRun(ctx context.Context, run syncjob.RunRecord) error {
 	return storage.WithTx(ctx, r.db, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, insertRunSQL, insertRunArgs(run)...); err != nil {
@@ -66,7 +76,7 @@ func (r *RunRepository) PersistScheduledRun(ctx context.Context, run syncjob.Run
 		}
 		if run.Trigger == syncjob.TriggerOnce && run.ScheduledFor != nil {
 			res, err := tx.ExecContext(ctx,
-				"UPDATE sync_jobs SET once_consumed_for = ? WHERE id = ?",
+				"UPDATE jobs SET once_consumed_at = ?, next_run_at = NULL WHERE id = ?",
 				run.ScheduledFor.UnixMilli(), run.JobID)
 			if err != nil {
 				return fmt.Errorf("mark once consumed %s: %w", run.JobID, err)
@@ -79,16 +89,16 @@ func (r *RunRepository) PersistScheduledRun(ctx context.Context, run syncjob.Run
 	})
 }
 
-// Finalize 实现 syncjob.RunRepository：整体覆盖终态与统计。
+// Finalize 实现 syncjob.RunRepository：整体覆盖终态与结果摘要。
 func (r *RunRepository) Finalize(ctx context.Context, run syncjob.RunRecord) error {
-	res, err := r.db.ExecContext(ctx, `UPDATE sync_runs SET
-		status = ?, finished_at = ?, files_total = ?, files_created = ?,
-		files_updated = ?, files_deleted = ?, files_skipped = ?,
-		bytes_transferred = ?, error = ?
+	result, err := marshalStats(run.Stats)
+	if err != nil {
+		return err
+	}
+	res, err := r.db.ExecContext(ctx, `UPDATE job_runs SET
+		state = ?, finished_at = ?, result_json = ?, error = ?
 		WHERE id = ?`,
-		string(run.State), nullMillis(run.FinishedAt),
-		run.Stats.FilesTotal, run.Stats.FilesCreated, run.Stats.FilesUpdated,
-		run.Stats.FilesDeleted, run.Stats.FilesSkipped, run.Stats.BytesTransferred,
+		string(run.State), nullMillis(run.FinishedAt), result,
 		run.Error, run.ID,
 	)
 	if err != nil {
@@ -103,7 +113,7 @@ func (r *RunRepository) Finalize(ctx context.Context, run syncjob.RunRecord) err
 // Get 实现 syncjob.RunRepository。
 func (r *RunRepository) Get(ctx context.Context, runID string) (syncjob.RunRecord, error) {
 	row := r.db.QueryRowContext(ctx,
-		"SELECT "+runColumns+" FROM sync_runs WHERE id = ?", runID)
+		"SELECT "+runColumns+" FROM job_runs WHERE id = ?", runID)
 	run, err := scanRun(row)
 	return run, mapRunGetError("get run", runID, err)
 }
@@ -112,7 +122,7 @@ func (r *RunRepository) Get(ctx context.Context, runID string) (syncjob.RunRecor
 // 同毫秒并列）。
 func (r *RunRepository) Latest(ctx context.Context, jobID string) (syncjob.RunRecord, error) {
 	row := r.db.QueryRowContext(ctx,
-		"SELECT "+runColumns+" FROM sync_runs WHERE job_id = ? "+
+		"SELECT "+runColumns+" FROM job_runs WHERE job_id = ? "+
 			"ORDER BY started_at DESC, rowid DESC LIMIT 1", jobID)
 	run, err := scanRun(row)
 	return run, mapRunGetError("latest run of job", jobID, err)
@@ -124,7 +134,7 @@ func (r *RunRepository) List(ctx context.Context, filter syncjob.RunFilter) ([]s
 	where, args := runFilterClause(filter)
 	var total int
 	if err := r.db.QueryRowContext(ctx,
-		"SELECT count(*) FROM sync_runs"+where, args...,
+		"SELECT count(*) FROM job_runs"+where, args...,
 	).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count runs: %w", err)
 	}
@@ -135,7 +145,7 @@ func (r *RunRepository) List(ctx context.Context, filter syncjob.RunFilter) ([]s
 	if limit <= 0 {
 		limit = -1
 	}
-	query := "SELECT " + runColumns + " FROM sync_runs" + where +
+	query := "SELECT " + runColumns + " FROM job_runs" + where +
 		" ORDER BY started_at DESC, rowid DESC LIMIT ? OFFSET ?"
 	rows, err := r.db.QueryContext(ctx, query,
 		append(args, limit, filter.Offset)...)
@@ -169,7 +179,7 @@ func runFilterClause(filter syncjob.RunFilter) (string, []any) {
 		args = append(args, filter.JobID)
 	}
 	if filter.Status != "" {
-		clauses = append(clauses, "status = ?")
+		clauses = append(clauses, "state = ?")
 		args = append(args, string(filter.Status))
 	}
 	if len(clauses) == 0 {
@@ -185,13 +195,23 @@ func runFilterClause(filter syncjob.RunFilter) (string, []any) {
 	return where, args
 }
 
-// AppendItem 实现 syncjob.RunRepository。
+// itemDetail 是 job_run_items.detail_json 的领域字段形态
+// （File 领域：相对 LocalRoot 的统一 / 分隔路径）。
+type itemDetail struct {
+	Path string `json:"path,omitempty"`
+}
+
+// AppendItem 实现 syncjob.RunRepository：文件路径写入 detail_json。
 func (r *RunRepository) AppendItem(ctx context.Context, item syncjob.RunItem) error {
-	_, err := r.db.ExecContext(ctx, `INSERT INTO sync_run_items
-		(run_id, path, action, status, bytes, error)
-		VALUES (?, ?, ?, ?, ?, ?)`,
-		item.RunID, item.Path, string(item.Action), string(item.Status),
-		item.Bytes, item.Error,
+	detail, err := json.Marshal(itemDetail{Path: item.Path})
+	if err != nil {
+		return fmt.Errorf("marshal run item detail: %w", err)
+	}
+	_, err = r.db.ExecContext(ctx, `INSERT INTO job_run_items
+		(run_id, action, status, bytes, error, detail_json, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		item.RunID, string(item.Action), string(item.Status),
+		item.Bytes, item.Error, string(detail), time.Now().UTC().UnixMilli(),
 	)
 	if err != nil {
 		return fmt.Errorf("append run item %s: %w", item.Path, err)
@@ -204,7 +224,7 @@ func (r *RunRepository) AppendItem(ctx context.Context, item syncjob.RunItem) er
 func (r *RunRepository) Items(ctx context.Context, runID string, limit, offset int) ([]syncjob.RunItem, int, error) {
 	var total int
 	if err := r.db.QueryRowContext(ctx,
-		"SELECT count(*) FROM sync_run_items WHERE run_id = ?", runID,
+		"SELECT count(*) FROM job_run_items WHERE run_id = ?", runID,
 	).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count items of run %s: %w", runID, err)
 	}
@@ -213,7 +233,7 @@ func (r *RunRepository) Items(ctx context.Context, runID string, limit, offset i
 		limit = -1
 	}
 	rows, err := r.db.QueryContext(ctx,
-		"SELECT "+runItemColumns+" FROM sync_run_items WHERE run_id = ? "+
+		"SELECT "+runItemColumns+" FROM job_run_items WHERE run_id = ? "+
 			"ORDER BY id ASC LIMIT ? OFFSET ?", runID, limit, offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list items of run %s: %w", runID, err)
@@ -223,14 +243,20 @@ func (r *RunRepository) Items(ctx context.Context, runID string, limit, offset i
 	var list []syncjob.RunItem
 	for rows.Next() {
 		var (
-			item   syncjob.RunItem
-			action string
-			status string
+			item       syncjob.RunItem
+			action     string
+			status     string
+			detailJSON string
 		)
-		if err := rows.Scan(&item.ID, &item.RunID, &item.Path, &action, &status,
-			&item.Bytes, &item.Error); err != nil {
+		if err := rows.Scan(&item.ID, &item.RunID, &action, &status,
+			&item.Bytes, &item.Error, &detailJSON); err != nil {
 			return nil, 0, fmt.Errorf("scan run item: %w", err)
 		}
+		var detail itemDetail
+		if err := json.Unmarshal([]byte(detailJSON), &detail); err != nil {
+			return nil, 0, fmt.Errorf("parse run item detail: %w", err)
+		}
+		item.Path = detail.Path
 		item.Action = syncjob.RunItemAction(action)
 		item.Status = syncjob.RunItemStatus(status)
 		list = append(list, item)
@@ -246,7 +272,7 @@ func (r *RunRepository) Items(ctx context.Context, runID string, limit, offset i
 func (r *RunRepository) HasRunFor(ctx context.Context, jobID string, trigger syncjob.RunTrigger, scheduledFor time.Time) (bool, error) {
 	var exists bool
 	if err := r.db.QueryRowContext(ctx,
-		"SELECT EXISTS(SELECT 1 FROM sync_runs WHERE job_id = ? AND trigger_type = ? AND scheduled_for = ?)",
+		"SELECT EXISTS(SELECT 1 FROM job_runs WHERE job_id = ? AND trigger_type = ? AND scheduled_for = ?)",
 		jobID, string(trigger), scheduledFor.UnixMilli(),
 	).Scan(&exists); err != nil {
 		return false, fmt.Errorf("check consumed occurrence %s %s: %w", jobID, trigger, err)
@@ -258,8 +284,8 @@ func (r *RunRepository) HasRunFor(ctx context.Context, jobID string, trigger syn
 // 收敛为 failed。
 func (r *RunRepository) FailStaleRunning(ctx context.Context, finishedAt time.Time, reason string) (int64, error) {
 	res, err := r.db.ExecContext(ctx,
-		"UPDATE sync_runs SET status = 'failed', finished_at = ?, error = ? "+
-			"WHERE status = 'running'",
+		"UPDATE job_runs SET state = 'failed', finished_at = ?, error = ? "+
+			"WHERE state = 'running'",
 		finishedAt.UnixMilli(), reason,
 	)
 	if err != nil {
@@ -278,12 +304,12 @@ func (r *RunRepository) PruneRetention(ctx context.Context, keepPerJob int) erro
 	if keepPerJob <= 0 {
 		return fmt.Errorf("prune retention: keepPerJob must be positive, got %d", keepPerJob)
 	}
-	_, err := r.db.ExecContext(ctx, `DELETE FROM sync_runs WHERE id IN (
+	_, err := r.db.ExecContext(ctx, `DELETE FROM job_runs WHERE id IN (
 		SELECT id FROM (
 			SELECT id, ROW_NUMBER() OVER (
 				PARTITION BY job_id ORDER BY started_at DESC, rowid DESC
 			) AS rn
-			FROM sync_runs
+			FROM job_runs
 		) WHERE rn > ?
 	)`, keepPerJob)
 	if err != nil {
@@ -298,22 +324,26 @@ func scanRun(row rowScanner) (syncjob.RunRecord, error) {
 		run              syncjob.RunRecord
 		trigger          string
 		scheduledFor     sql.NullInt64
-		status           string
+		state            string
 		startedAtMillis  int64
 		finishedAtMillis sql.NullInt64
+		resultJSON       string
 	)
-	if err := row.Scan(&run.ID, &run.JobID, &trigger, &scheduledFor, &status,
-		&startedAtMillis, &finishedAtMillis,
-		&run.Stats.FilesTotal, &run.Stats.FilesCreated, &run.Stats.FilesUpdated,
-		&run.Stats.FilesDeleted, &run.Stats.FilesSkipped, &run.Stats.BytesTransferred,
+	if err := row.Scan(&run.ID, &run.JobID, &run.JobKind, &trigger, &scheduledFor, &state,
+		&startedAtMillis, &finishedAtMillis, &resultJSON,
 		&run.Error); err != nil {
 		return syncjob.RunRecord{}, err
 	}
 	run.Trigger = syncjob.RunTrigger(trigger)
 	run.ScheduledFor = timeFromMillis(scheduledFor)
-	run.State = syncjob.RunState(status)
+	run.State = syncjob.RunState(state)
 	run.StartedAt = time.UnixMilli(startedAtMillis).UTC()
 	run.FinishedAt = timeFromMillis(finishedAtMillis)
+	if resultJSON != "" && resultJSON != "{}" {
+		if err := json.Unmarshal([]byte(resultJSON), &run.Stats); err != nil {
+			return syncjob.RunRecord{}, fmt.Errorf("parse run result of %s: %w", run.ID, err)
+		}
+	}
 	return run, nil
 }
 

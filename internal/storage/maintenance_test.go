@@ -9,47 +9,37 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"testing/fstest"
 )
 
-// openMigrated 在临时目录打开并迁移一个数据库，返回连接。
-func openMigrated(t *testing.T, dataDir string) *sql.DB {
+// openEnsured 在临时目录打开并初始化一个数据库，返回连接。
+func openEnsured(t *testing.T, dataDir string) *sql.DB {
 	t.Helper()
 	db, err := Open(dataDir)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := Migrate(context.Background(), db, dataDir); err != nil {
-		t.Fatalf("Migrate: %v", err)
+	if err := Ensure(context.Background(), db); err != nil {
+		t.Fatalf("Ensure: %v", err)
 	}
 	return db
 }
 
-// probeMigrations 是测试用的两步 migration：v1 建表，v2 加列。
-func probeMigrations() fstest.MapFS {
-	return fstest.MapFS{
-		"migrations/0001_base.sql": &fstest.MapFile{
-			Data: []byte("CREATE TABLE probe (id INTEGER PRIMARY KEY, val TEXT);"),
-		},
-		"migrations/0002_more.sql": &fstest.MapFile{
-			Data: []byte("ALTER TABLE probe ADD COLUMN extra TEXT;"),
-		},
+// assertVersion 断言数据库的 PRAGMA user_version。
+func assertVersion(t *testing.T, db *sql.DB, want int) {
+	t.Helper()
+	version, err := CurrentVersion(context.Background(), db)
+	if err != nil {
+		t.Fatalf("CurrentVersion: %v", err)
+	}
+	if version != want {
+		t.Fatalf("user_version = %d, want %d", version, want)
 	}
 }
 
-// probeMigrationsV1 只含 v1：把数据库停在旧版本，供升级路径测试。
-func probeMigrationsV1() fstest.MapFS {
-	return fstest.MapFS{
-		"migrations/0001_base.sql": &fstest.MapFile{
-			Data: []byte("CREATE TABLE probe (id INTEGER PRIMARY KEY, val TEXT);"),
-		},
-	}
-}
-
-// 健康数据库通过 Check：quick_check ok、无外键违规、版本与内嵌一致。
+// 健康数据库通过 Check：quick_check ok、无外键违规、版本与本二进制一致。
 func TestCheckHealthyDatabase(t *testing.T) {
-	db := openMigrated(t, t.TempDir())
+	db := openEnsured(t, t.TempDir())
 
 	report, err := Check(context.Background(), db)
 	if err != nil {
@@ -69,18 +59,18 @@ func TestCheckHealthyDatabase(t *testing.T) {
 // 存在外键违规时 Check 失败：不静默忽略参照完整性破坏。
 func TestCheckFailsOnForeignKeyViolation(t *testing.T) {
 	dataDir := t.TempDir()
-	db := openMigrated(t, dataDir)
+	db := openEnsured(t, dataDir)
 
 	// 用独立连接（不带 foreign_keys PRAGMA，SQLite 默认关闭）注入
-	// 孤儿 Job，模拟外部破坏或历史缺陷留下的违规数据。
+	// 孤儿 run，模拟外部破坏或历史缺陷留下的违规数据。
 	raw, err := sql.Open("sqlite", "file:"+filepath.Join(dataDir, DatabaseFileName))
 	if err != nil {
 		t.Fatalf("open raw: %v", err)
 	}
 	defer raw.Close()
-	if _, err := raw.Exec(`INSERT INTO sync_jobs (id, name, source_id, remote_root, local_root, mode, enabled, created_at, updated_at)
-		VALUES ('job_x', 'orphan', 'src_missing', '/', '/tmp/x', 'copy', 1, 1, 1)`); err != nil {
-		t.Fatalf("insert orphan job: %v", err)
+	if _, err := raw.Exec(`INSERT INTO job_runs (id, job_id, job_kind, trigger_type, state, started_at)
+		VALUES ('run_x', 'job_missing', 'file', 'manual', 'failed', 1)`); err != nil {
+		t.Fatalf("insert orphan run: %v", err)
 	}
 
 	_, err = Check(context.Background(), db)
@@ -98,7 +88,7 @@ func TestCheckFailsOnForeignKeyViolation(t *testing.T) {
 // schema 版本高于本二进制支持时 Check 失败：提示升级二进制，不做
 // downgrade 假设。
 func TestCheckFailsOnNewerSchema(t *testing.T) {
-	db := openMigrated(t, t.TempDir())
+	db := openEnsured(t, t.TempDir())
 
 	if _, err := db.Exec("PRAGMA user_version = 9999"); err != nil {
 		t.Fatalf("bump user_version: %v", err)
@@ -118,11 +108,31 @@ func TestCheckFailsOnNewerSchema(t *testing.T) {
 	}
 }
 
+// 旧序列 schema（破坏性变更前的数据库）Check 失败并归类为不兼容：
+// restore 不得把旧库恢复进本版本的数据目录。
+func TestCheckFailsOnLegacySchema(t *testing.T) {
+	db := openEnsured(t, t.TempDir())
+
+	if _, err := db.Exec("PRAGMA user_version = 13"); err != nil {
+		t.Fatalf("set legacy user_version: %v", err)
+	}
+	_, err := Check(context.Background(), db)
+	if err == nil {
+		t.Fatal("Check legacy schema = nil, want error")
+	}
+	if !errors.Is(err, ErrSchemaIncompatible) {
+		t.Errorf("error %v, want ErrSchemaIncompatible classification", err)
+	}
+	if errors.Is(err, ErrIntegrity) || errors.Is(err, ErrNewerSchema) {
+		t.Errorf("error %v must not be classified as integrity/newer-schema failure", err)
+	}
+}
+
 // 页级损坏（可打开但 quick_check 非 ok）归类为 ErrIntegrity：db
 // restore 的救灾分流据此与兼容性 / 运维失败区分。
 func TestCheckClassifiesPageCorruptionAsIntegrityFailure(t *testing.T) {
 	dataDir := t.TempDir()
-	db := openMigrated(t, dataDir)
+	db := openEnsured(t, dataDir)
 	if err := db.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
@@ -157,7 +167,7 @@ func TestCheckClassifiesPageCorruptionAsIntegrityFailure(t *testing.T) {
 // ErrIntegrity / ErrNewerSchema——db restore 对「不确定」的失败
 // 一律中止而非继续救灾。
 func TestCheckPropagatesContextCancellationUnclassified(t *testing.T) {
-	db := openMigrated(t, t.TempDir())
+	db := openEnsured(t, t.TempDir())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -178,7 +188,7 @@ func TestCheckPropagatesContextCancellationUnclassified(t *testing.T) {
 func TestInspect(t *testing.T) {
 	dataDir := t.TempDir()
 	dbPath := filepath.Join(dataDir, DatabaseFileName)
-	db := openMigrated(t, dataDir)
+	db := openEnsured(t, dataDir)
 
 	// 用 Backup 生成的单文件快照（无 WAL sidecar）做 Inspect 副本，
 	// 与 WAL 模式打开的主库 sidecar 隔离。
@@ -221,7 +231,7 @@ func TestInspect(t *testing.T) {
 // Backup 生成可打开、内容一致的一致性快照；POSIX 下权限 0600。
 func TestBackupRoundTrip(t *testing.T) {
 	dataDir := t.TempDir()
-	db := openMigrated(t, dataDir)
+	db := openEnsured(t, dataDir)
 	ctx := context.Background()
 	if _, err := db.Exec(`INSERT INTO sources
 		(id, name, type, endpoint, username, password, enabled, created_at, updated_at)
@@ -265,48 +275,12 @@ func TestBackupRoundTrip(t *testing.T) {
 	}
 }
 
-// corruption 守卫：migration 前检测到损坏的数据库必须失败，不得
-// 继续迁移（不在坏数据上继续写 schema 版本）。
-func TestMigrateRefusesCorruptedDatabase(t *testing.T) {
-	dataDir := t.TempDir()
-
-	db, err := Open(dataDir)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	if err := migrate(context.Background(), db, dataDir, probeMigrationsV1()); err != nil {
-		t.Fatalf("migrate to v1: %v", err)
-	}
-	assertVersion(t, db, 1)
-
-	// 关闭连接后破坏文件中部的数据页（保留 header，保证仍可打开）。
-	if err := db.Close(); err != nil {
-		t.Fatalf("close before corruption: %v", err)
-	}
-	dbPath := filepath.Join(dataDir, DatabaseFileName)
-	if err := corruptMiddlePage(dbPath); err != nil {
-		t.Fatalf("corrupt db: %v", err)
-	}
-
-	reopened, err := Open(dataDir)
-	if err != nil {
-		// 打开即失败同样满足「不继续迁移」。
-		return
-	}
-	defer reopened.Close()
-	if err := migrate(context.Background(), reopened, dataDir, probeMigrations()); err == nil {
-		t.Fatal("migrate corrupted db = nil, want integrity failure before migration")
-	}
-	// 版本必须保持 v1：损坏的库没有继续前进。
-	assertVersion(t, reopened, 1)
-}
-
 // CheckpointWal 在有 WAL 内容时把 WAL 截断为零；正确性不依赖
 // checkpoint——关闭与否都不丢已提交事务。
 func TestCheckpointWalTruncates(t *testing.T) {
 	dataDir := t.TempDir()
 	dbPath := filepath.Join(dataDir, DatabaseFileName)
-	db := openMigrated(t, dataDir)
+	db := openEnsured(t, dataDir)
 
 	if _, err := db.Exec(`INSERT INTO sources
 		(id, name, type, endpoint, username, password, enabled, created_at, updated_at)

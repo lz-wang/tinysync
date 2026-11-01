@@ -30,8 +30,8 @@ func newTestServiceWithFactory(t *testing.T, factory source.RemoteFactory) *sour
 		t.Fatalf("storage.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := storage.Migrate(context.Background(), db, dataDir); err != nil {
-		t.Fatalf("storage.Migrate: %v", err)
+	if err := storage.Ensure(context.Background(), db); err != nil {
+		t.Fatalf("storage.Ensure: %v", err)
 	}
 	return source.NewService(sqlite.New(db), factory)
 }

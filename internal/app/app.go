@@ -66,10 +66,10 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 			logging.Errorf("close database: %v", cerr)
 		}
 	}()
-	// migration 是启动关键路径：使用独立 context，不因启动即收到的
+	// schema 初始化是启动关键路径：使用独立 context，不因启动即收到的
 	// 取消信号中断，保证退出行为与数据库状态确定。
-	if err := storage.Migrate(context.Background(), db, cfg.DataDir); err != nil {
-		return fmt.Errorf("migrate database: %w", err)
+	if err := storage.Ensure(context.Background(), db); err != nil {
+		return fmt.Errorf("initialize database: %w", err)
 	}
 
 	// 首次启动自动 bootstrap：仅在本机当前终端打印一次高熵初始密码，

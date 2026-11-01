@@ -2,7 +2,9 @@ package storage
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -82,17 +84,15 @@ func asIntegrityFailure(err error) error {
 //   - quick_check != ok → ErrIntegrity；
 //   - 存在外键违规 → ErrIntegrity；
 //   - schema 版本高于本二进制支持 → ErrNewerSchema（提示升级二进制）；
+//   - schema 版本非零且不等于本二进制版本（含旧序列数据库）→
+//     ErrSchemaIncompatible（提示使用新数据目录）；
 //   - 检查语句以 SQLITE_CORRUPT / SQLITE_NOTADB 查询错误失败同样
 //     归类为 ErrIntegrity（损坏不总是表现为结果行）；
 //   - context 取消 / I/O 等其它错误原样传播，不做分类改写；
 //   - 不自动「修复」数据库，不静默忽略 corruption。
 func Check(ctx context.Context, db *sql.DB) (IntegrityReport, error) {
 	report := IntegrityReport{}
-	latest, err := latestEmbeddedVersion()
-	if err != nil {
-		return report, err
-	}
-	report.LatestVersion = latest
+	report.LatestVersion = SchemaVersion
 
 	quick, err := quickCheck(ctx, db)
 	if err != nil {
@@ -117,8 +117,12 @@ func Check(ctx context.Context, db *sql.DB) (IntegrityReport, error) {
 		return report, err
 	}
 	report.UserVersion = version
-	if version > latest {
-		return report, fmt.Errorf("%w: schema version %d is newer than supported %d; upgrade tinysync first", ErrNewerSchema, version, latest)
+	if version > SchemaVersion {
+		return report, fmt.Errorf("%w: schema version %d is newer than supported %d; upgrade tinysync first", ErrNewerSchema, version, SchemaVersion)
+	}
+	if version != 0 && version != SchemaVersion {
+		return report, fmt.Errorf("%w: schema version %d, want %d; start with a fresh data directory",
+			ErrSchemaIncompatible, version, SchemaVersion)
 	}
 	return report, nil
 }
@@ -155,26 +159,6 @@ func Backup(ctx context.Context, db *sql.DB, target string) error {
 		if err := os.Chmod(target, 0o600); err != nil {
 			return fmt.Errorf("chmod %s: %w", target, err)
 		}
-	}
-	return nil
-}
-
-// verifyIntegrity 是 migration 前的完整性守卫：已损坏的数据库不再
-// 继续 migration（版本边界由 migrate 自身的 current > latest 检查负责）。
-func verifyIntegrity(ctx context.Context, db *sql.DB) error {
-	quick, err := quickCheck(ctx, db)
-	if err != nil {
-		return err
-	}
-	if quick != "ok" {
-		return fmt.Errorf("integrity check failed before migration: quick_check reports %q", quick)
-	}
-	violations, err := foreignKeyViolations(ctx, db)
-	if err != nil {
-		return err
-	}
-	if violations > 0 {
-		return fmt.Errorf("integrity check failed before migration: %d foreign key violation(s)", violations)
 	}
 	return nil
 }
@@ -271,14 +255,15 @@ func foreignKeyViolations(ctx context.Context, db *sql.DB) (int, error) {
 	return count, nil
 }
 
-// latestEmbeddedVersion 返回内嵌 migration 的最新 schema 版本。
-func latestEmbeddedVersion() (int, error) {
-	migrations, err := loadMigrations(migrationFS)
-	if err != nil {
-		return 0, err
+// backupsDirName 是数据目录下存放手工 / 恢复前备份的子目录名。
+const backupsDirName = "backups"
+
+// randomHex 返回 n 字节 cryptographically 随机数据的 hex 编码，
+// 用于构造不冲突的备份文件名后缀。
+func randomHex(n int) (string, error) {
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
 	}
-	if len(migrations) == 0 {
-		return 0, errors.New("no migrations embedded")
-	}
-	return migrations[len(migrations)-1].version, nil
+	return hex.EncodeToString(buf), nil
 }

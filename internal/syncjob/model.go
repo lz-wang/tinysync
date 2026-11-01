@@ -12,6 +12,11 @@ import (
 	"time"
 )
 
+// KindFile 是文件同步任务在统一 jobs 表中的 kind 取值。
+// 领域配置（SourceID / RemoteRoot / LocalRoot / Mode / patterns）以
+// JSON 编码存于 jobs.config_json。
+const KindFile = "file"
+
 // Mode 是同步模式。
 type Mode string
 

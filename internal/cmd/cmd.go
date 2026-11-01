@@ -175,8 +175,8 @@ func execSetPassword(ctx context.Context, in setPasswordInput, stdin io.Reader, 
 		return fmt.Errorf("open database: %w", err)
 	}
 	defer func() { _ = db.Close() }()
-	if err := storage.Migrate(ctx, db, cfg.DataDir); err != nil {
-		return fmt.Errorf("migrate database: %w", err)
+	if err := storage.Ensure(ctx, db); err != nil {
+		return fmt.Errorf("initialize database: %w", err)
 	}
 
 	svc := auth.NewService(authsqlite.NewRepository(db))

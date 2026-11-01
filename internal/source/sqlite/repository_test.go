@@ -21,8 +21,8 @@ func openRepository(t *testing.T) (*sql.DB, *Repository) {
 		t.Fatalf("storage.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := storage.Migrate(context.Background(), db, dataDir); err != nil {
-		t.Fatalf("storage.Migrate: %v", err)
+	if err := storage.Ensure(context.Background(), db); err != nil {
+		t.Fatalf("storage.Ensure: %v", err)
 	}
 	return db, New(db)
 }
@@ -246,8 +246,8 @@ func TestDeleteAndPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("storage.Open: %v", err)
 	}
-	if err := storage.Migrate(ctx, db, dataDir); err != nil {
-		t.Fatalf("storage.Migrate: %v", err)
+	if err := storage.Ensure(ctx, db); err != nil {
+		t.Fatalf("storage.Ensure: %v", err)
 	}
 	repo := New(db)
 	s := newSource("src_a", "NAS")
@@ -265,8 +265,8 @@ func TestDeleteAndPersistence(t *testing.T) {
 		t.Fatalf("reopen: %v", err)
 	}
 	defer func() { _ = db2.Close() }()
-	if err := storage.Migrate(ctx, db2, dataDir); err != nil {
-		t.Fatalf("migrate after reopen: %v", err)
+	if err := storage.Ensure(ctx, db2); err != nil {
+		t.Fatalf("ensure after reopen: %v", err)
 	}
 	repo2 := New(db2)
 

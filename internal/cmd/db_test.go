@@ -28,8 +28,8 @@ func bootstrapDBDataDir(t *testing.T, dataDir string) *sql.DB {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := storage.Migrate(ctx, db, dataDir); err != nil {
-		t.Fatalf("Migrate: %v", err)
+	if err := storage.Ensure(ctx, db); err != nil {
+		t.Fatalf("Ensure: %v", err)
 	}
 	authSvc := auth.NewService(authsqlite.NewRepository(db))
 	if err := authSvc.SetAdminPassword(ctx, "restore-roundtrip-pass-123"); err != nil {
@@ -40,9 +40,10 @@ func bootstrapDBDataDir(t *testing.T, dataDir string) *sql.DB {
 		VALUES ('src_rt', 'roundtrip', 'webdav', 'https://example.com', 'user', 'S3cret-Roundtrip', 1, 1, 1)`); err != nil {
 		t.Fatalf("seed source: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO sync_jobs
-		(id, name, source_id, remote_root, local_root, mode, enabled, created_at, updated_at)
-		VALUES ('job_rt', 'roundtrip-job', 'src_rt', '/', '/tmp/rt', 'mirror', 1, 1, 1)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO jobs
+		(id, name, kind, enabled, config_json, created_at, updated_at)
+		VALUES ('job_rt', 'roundtrip-job', 'file', 1, ?, 1, 1)`,
+		`{"source_id":"src_rt","remote_root":"/","local_root":"/tmp/rt","mode":"mirror","include":[],"exclude":[]}`); err != nil {
 		t.Fatalf("seed job: %v", err)
 	}
 	return db
@@ -200,7 +201,7 @@ func TestDBRestoreProceedsWhenOpenableDBCorrupted(t *testing.T) {
 		t.Errorf("integrity check after restore: %v", err)
 	}
 	var count int
-	if err := restored.QueryRow("SELECT count(*) FROM sync_jobs WHERE id = 'job_rt'").Scan(&count); err != nil || count != 1 {
+	if err := restored.QueryRow("SELECT count(*) FROM jobs WHERE id = 'job_rt'").Scan(&count); err != nil || count != 1 {
 		t.Errorf("job after corrupted-db restore = (%d, %v), want restored", count, err)
 	}
 }
@@ -252,7 +253,7 @@ func TestDBRestoreAbortsWhenLiveDBSchemaNewerThanBinary(t *testing.T) {
 		t.Errorf("live db after aborted restore: Check = %v, want still newer-than-supported (db must be untouched)", cerr)
 	}
 	var count int
-	if err := alive.QueryRow("SELECT count(*) FROM sync_jobs WHERE id = 'job_rt'").Scan(&count); err != nil || count != 1 {
+	if err := alive.QueryRow("SELECT count(*) FROM jobs WHERE id = 'job_rt'").Scan(&count); err != nil || count != 1 {
 		t.Errorf("job after aborted restore = (%d, %v), want live db data intact", count, err)
 	}
 	matches, err := filepath.Glob(filepath.Join(dataDir, "backups", "tinysync-prerestore-*.db"))
@@ -287,7 +288,7 @@ func TestDBRestoreAbortsWhenContextCanceled(t *testing.T) {
 		t.Errorf("live db after aborted restore: Check = %v, want healthy untouched db", cerr)
 	}
 	var count int
-	if err := alive.QueryRow("SELECT count(*) FROM sync_jobs WHERE id = 'job_rt'").Scan(&count); err != nil || count != 1 {
+	if err := alive.QueryRow("SELECT count(*) FROM jobs WHERE id = 'job_rt'").Scan(&count); err != nil || count != 1 {
 		t.Errorf("job after aborted restore = (%d, %v), want live db data intact", count, err)
 	}
 }
@@ -325,7 +326,7 @@ func TestDBRestoreProceedsWhenCurrentDBDamaged(t *testing.T) {
 	}
 	defer restored.Close()
 	var count int
-	if err := restored.QueryRow("SELECT count(*) FROM sync_jobs WHERE id = 'job_rt'").Scan(&count); err != nil || count != 1 {
+	if err := restored.QueryRow("SELECT count(*) FROM jobs WHERE id = 'job_rt'").Scan(&count); err != nil || count != 1 {
 		t.Errorf("job after damaged-db restore = (%d, %v), want restored", count, err)
 	}
 }
@@ -364,7 +365,7 @@ func TestDBBackupRestoreRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open for mutation: %v", err)
 	}
-	if _, err := raw.Exec("DELETE FROM sync_jobs"); err != nil {
+	if _, err := raw.Exec("DELETE FROM jobs"); err != nil {
 		t.Fatalf("delete jobs: %v", err)
 	}
 	if _, err := raw.Exec("DELETE FROM sources"); err != nil {
@@ -395,7 +396,7 @@ func TestDBBackupRestoreRoundTrip(t *testing.T) {
 		t.Errorf("restored source password = %q, want secret intact", password)
 	}
 	var count int
-	if err := restored.QueryRow("SELECT count(*) FROM sync_jobs WHERE id = 'job_rt'").Scan(&count); err != nil || count != 1 {
+	if err := restored.QueryRow("SELECT count(*) FROM jobs WHERE id = 'job_rt'").Scan(&count); err != nil || count != 1 {
 		t.Fatalf("job not restored (count=%d err=%v)", count, err)
 	}
 	authSvc := auth.NewService(authsqlite.NewRepository(restored))
@@ -486,43 +487,45 @@ func TestDBRestoreRejectsNewerSchema(t *testing.T) {
 	}
 }
 
-// schema 较旧的备份恢复成功：恢复后的库保持旧版本内容，消息说明
-// 下次 serve 向前迁移（真实向前迁移由 storage 的升级测试链覆盖）。
-func TestDBRestoreAcceptsOlderSchema(t *testing.T) {
+// 旧序列 schema（破坏性变更前的数据库）备份拒绝恢复：本版本不存在
+// 向前迁移路径，恢复旧库会让数据目录处于无法启动的状态。
+func TestDBRestoreRejectsLegacySchema(t *testing.T) {
 	dataDir := t.TempDir()
 	db := bootstrapDBDataDir(t, dataDir)
 	ctx := context.Background()
 
-	latest, err := storage.Check(ctx, db)
-	if err != nil {
-		t.Fatalf("Check: %v", err)
+	legacy := filepath.Join(t.TempDir(), "legacy.db")
+	if err := storage.Backup(ctx, db, legacy); err != nil {
+		t.Fatalf("backup for legacy candidate: %v", err)
 	}
-	older := filepath.Join(t.TempDir(), "older.db")
-	if _, err := db.Exec("PRAGMA user_version = 1"); err != nil {
-		t.Fatalf("downgrade version marker: %v", err)
+	// 只把备份副本的版本标记降为旧序列，live 库保持本二进制版本。
+	legacyDB, lerr := sql.Open("sqlite", "file:"+legacy)
+	if lerr != nil {
+		t.Fatalf("open legacy candidate: %v", lerr)
 	}
-	if err := storage.Backup(ctx, db, older); err != nil {
-		t.Fatalf("backup older: %v", err)
+	if _, err := legacyDB.Exec("PRAGMA user_version = 13"); err != nil {
+		t.Fatalf("set legacy version marker: %v", err)
+	}
+	if err := legacyDB.Close(); err != nil {
+		t.Fatalf("close legacy candidate: %v", err)
 	}
 
-	out, _, err := runDB(t, dbInput{DataDir: dataDir, From: older, Force: true})
-	if err != nil {
-		t.Fatalf("restore older schema: %v", err)
+	_, _, err := runDB(t, dbInput{DataDir: dataDir, From: legacy, Force: true})
+	if err == nil {
+		t.Fatal("restore legacy schema = nil, want error")
 	}
-	if !strings.Contains(out, "older than supported") || !strings.Contains(out, "migrates forward") {
-		t.Errorf("restore output %q missing forward-migration notice", out)
+	if !errors.Is(err, storage.ErrSchemaIncompatible) {
+		t.Errorf("error %v, want ErrSchemaIncompatible classification", err)
 	}
-	// 数据仍然恢复。
-	restored, err := storage.Open(dataDir)
+	// live database 原样保留：被拒绝的恢复不产生任何替换。
+	alive, err := storage.Open(dataDir)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	defer restored.Close()
-	var count int
-	if err := restored.QueryRow("SELECT count(*) FROM sources WHERE id = 'src_rt'").Scan(&count); err != nil || count != 1 {
-		t.Errorf("source not restored (count=%d err=%v)", count, err)
+	defer alive.Close()
+	if _, cerr := storage.Check(ctx, alive); cerr != nil {
+		t.Errorf("live db after rejected restore: Check = %v, want healthy untouched", cerr)
 	}
-	_ = latest
 }
 
 // 缺少 --force 时拒绝执行：破坏性操作必须显式确认。

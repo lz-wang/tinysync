@@ -25,8 +25,8 @@ func newHTTPTestService(t *testing.T) (*source.Service, source.Repository) {
 		t.Fatalf("storage.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := storage.Migrate(context.Background(), db, dataDir); err != nil {
-		t.Fatalf("storage.Migrate: %v", err)
+	if err := storage.Ensure(context.Background(), db); err != nil {
+		t.Fatalf("storage.Ensure: %v", err)
 	}
 	repo := sqlite.New(db)
 	svc := source.NewService(repo, &stubFactory{remote: &stubRemote{}})

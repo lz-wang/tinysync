@@ -26,7 +26,7 @@ func newLocalSourceRouter(t *testing.T) testRouter {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := storage.Migrate(ctx, db, dataDir); err != nil {
+	if err := storage.Ensure(ctx, db); err != nil {
 		t.Fatal(err)
 	}
 	svc := source.NewService(sourcesqlite.New(db), localadapter.NewFactory())

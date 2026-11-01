@@ -294,6 +294,7 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 	// Shutdown 只能靠超时返回）。
 	record := RunRecord{
 		ID:           runID,
+		JobKind:      KindFile,
 		JobID:        jobID,
 		Trigger:      trigger,
 		ScheduledFor: scheduledFor,
@@ -485,6 +486,7 @@ func (r *Runner) recordSkipped(ctx context.Context, job Job, trigger RunTrigger,
 	now := r.Now()
 	run := RunRecord{
 		ID:           id,
+		JobKind:      KindFile,
 		JobID:        job.ID,
 		Trigger:      trigger,
 		ScheduledFor: &scheduledFor,

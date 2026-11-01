@@ -112,8 +112,8 @@ func openDB(t *testing.T, dataDir string) *sql.DB {
 	if err != nil {
 		t.Fatalf("storage.Open: %v", err)
 	}
-	if err := storage.Migrate(context.Background(), db, dataDir); err != nil {
-		t.Fatalf("storage.Migrate: %v", err)
+	if err := storage.Ensure(context.Background(), db); err != nil {
+		t.Fatalf("storage.Ensure: %v", err)
 	}
 	return db
 }
