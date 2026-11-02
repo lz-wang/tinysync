@@ -123,20 +123,22 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 	sources.Credentials = credentials
 
 	// 装配统一任务领域：仓库共享同一 DB（FK CASCADE 生效），应用服务
-	// 经执行器注册表做领域校验；File 执行器承载 LocalRoot 归属保护与
-	// 变更善后；Runner 提供手动运行并以持久化历史为运行状态事实来源，
+	// 与 Runner 共用同一执行器注册表（按 kind 静态分发）；File 执行器
+	// 承载 LocalRoot 归属保护、变更善后与一轮同步；Runner 只做启用 /
+	// 冲突 / 并发协调与终态落库，以持久化历史为运行状态事实来源，
 	// 并发上限来自运行配置。
 	jobRepo := jobsqlite.NewRepository(db)
 	managedRepo := managedsqlite.NewManagedRepository(db)
-	fileExec := syncjob.NewFileExecutor(sources, jobRepo, cfg.DataDir)
-	jobs := job.NewService(jobRepo, map[job.JobKind]job.Executor{
+	fileExec := syncjob.NewFileExecutor(sources, jobRepo, managedRepo, cfg.DataDir)
+	executors := map[job.JobKind]job.Executor{
 		job.KindFile: fileExec,
-	})
-	runner := syncjob.NewRunner(jobRepo, managedRepo, sources, runs)
+	}
+	jobs := job.NewService(jobRepo, executors)
+	runner := job.NewRunner(jobRepo, runs, executors)
 	runner.MaxConcurrentJobs = cfg.MaxConcurrentJobs
 	runner.MaxConcurrentTransfers = cfg.MaxConcurrentTransfers
 	runner.TransferTimeout = cfg.TransferTimeout
-	scheduler := syncjob.NewScheduler(jobRepo, runner, runs)
+	scheduler := job.NewScheduler(jobRepo, runner, runs)
 
 	// crash 遗留的传输中间文件清理：此刻 Runner / Scheduler 尚未
 	// 启动、没有任何 active transfer，清理是安全的。legacy 随机

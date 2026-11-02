@@ -17,19 +17,25 @@ import (
 	"tinysync/internal/source"
 )
 
-// SourceService 是 File 执行器依赖的 Source 查询能力，解耦具体实现。
-type SourceService interface {
+// SourceGateway 是 File 执行器访问 Source 领域的能力边界：读取 Source
+// 配置与打开远端客户端。凭据查询与协议 dispatch 集中在 source.Service
+// 内，执行器不接触凭据明文与 RemoteFactory。
+type SourceGateway interface {
 	// Get 按 ID 读取 Source；不存在时返回 source.ErrNotFound。
 	Get(ctx context.Context, id string) (source.Source, error)
+	// OpenRemote 打开 Source 的远端客户端并返回其配置；调用方负责 Close。
+	OpenRemote(ctx context.Context, id string) (source.Source, source.Remote, error)
 }
 
 // FileExecutor 是 file 任务的领域执行器（job.ChangeAwareExecutor）：
 // 校验 File 配置（Source 存在、pattern、LocalRoot 归属保护与映射
-// 合法性），并在 mapping 变更时重置 managed metadata、回收孤儿
-// partial。运行执行（Run）由统一 Runner 经引擎调用，见 runner.go。
+// 合法性），在 mapping 变更时重置 managed metadata、回收孤儿 partial，
+// 并执行一轮文件同步（Run：扫描 → 计划 → 传输 → Mirror 删除）。
 type FileExecutor struct {
-	sources SourceService
+	sources SourceGateway
 	repo    job.Repository
+	// managed 是 managed_files 持久化（同步引擎的删除授权来源）。
+	managed ManagedRepository
 	// dataDir 是 TinySync 数据目录，同步 LocalRoot 不得与其重叠。
 	dataDir string
 	// Now 返回当前时间；默认 UTC time.Now，测试可注入固定时钟。
@@ -37,10 +43,11 @@ type FileExecutor struct {
 }
 
 // NewFileExecutor 构造 File 执行器；dataDir 用于归属保护检查。
-func NewFileExecutor(sources SourceService, repo job.Repository, dataDir string) *FileExecutor {
+func NewFileExecutor(sources SourceGateway, repo job.Repository, managed ManagedRepository, dataDir string) *FileExecutor {
 	return &FileExecutor{
 		sources: sources,
 		repo:    repo,
+		managed: managed,
 		dataDir: dataDir,
 		Now:     func() time.Time { return time.Now().UTC() },
 	}
@@ -282,6 +289,51 @@ func (e *FileExecutor) canonicalDataDir() (string, error) {
 		return "", fmt.Errorf("resolve data dir %s: %w", e.dataDir, err)
 	}
 	return candidate, nil
+}
+
+// Run 实现 job.Executor：建立远端连接并运行文件同步引擎。Source
+// 禁用检查、Remote 创建属于运行期——失败与运行失败同为一次 failed
+// run（认证、host key、网络不通等在历史中可查，而不是只在启动接口
+// 同步报错），创建阶段与传输阶段共用 ctx 一条取消链，Shutdown 取消
+// 运行即可打断拨号与阻塞中的读取。结果摘要为文件统计（RunStats）。
+func (e *FileExecutor) Run(ctx context.Context, req job.RunRequest) (job.RunResult, error) {
+	config, err := ParseFileConfig(req.Job.Config)
+	if err != nil {
+		return job.RunResult{}, fmt.Errorf("parse file config: %w", err)
+	}
+	spec := config.Spec(req.Job.ID)
+	src, err := e.sources.Get(ctx, spec.SourceID)
+	if err != nil {
+		return job.RunResult{}, fmt.Errorf("read source: %w", err)
+	}
+	if !src.Enabled {
+		return job.RunResult{}, fmt.Errorf("%w: %s", ErrSourceDisabled, spec.SourceID)
+	}
+	if err := source.ValidateJobMapping(src, spec.RemoteRoot, spec.LocalRoot); err != nil {
+		return job.RunResult{}, fmt.Errorf("validate job mapping: %w", err)
+	}
+	_, remote, err := e.sources.OpenRemote(ctx, spec.SourceID)
+	if err != nil {
+		return job.RunResult{}, fmt.Errorf("create remote for source %s: %w", spec.SourceID, err)
+	}
+	// 运行结束释放 Remote 连接（有连接生命周期的协议如 SFTP 不遗留
+	// 会话）；关闭失败不影响本轮终态。
+	defer func() { _ = remote.Close() }()
+	stats, runErr := Run(ctx, RunOptions{
+		Remote:          remote,
+		Job:             spec,
+		Managed:         e.managed,
+		Items:           req.Items,
+		RunID:           req.RunID,
+		Transfers:       req.Transfers,
+		TransferTimeout: req.TransferTimeout,
+		Progress:        req.Progress,
+	})
+	result, merr := job.MarshalResult(stats)
+	if merr != nil {
+		logging.Errorf("marshal file run result %s: %v", req.RunID, merr)
+	}
+	return job.RunResult{Result: result}, runErr
 }
 
 // 编译期接口断言。

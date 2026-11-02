@@ -93,9 +93,10 @@ func newJobRouter(t *testing.T, remote source.Remote) testRouter {
 	sourceSvc := source.NewService(sourcesqlite.New(db), fakeFactory{remote: remote})
 	jobRepo := jobsqlite.NewRepository(db)
 	managedRepo := managedsqlite.NewManagedRepository(db)
-	fileExec := syncjob.NewFileExecutor(sourceSvc, jobRepo, dataDir)
-	jobSvc := job.NewService(jobRepo, map[job.JobKind]job.Executor{job.KindFile: fileExec})
-	runner := syncjob.NewRunner(jobRepo, managedRepo, sourceSvc, jobsqlite.NewRunRepository(db))
+	fileExec := syncjob.NewFileExecutor(sourceSvc, jobRepo, managedRepo, dataDir)
+	executors := map[job.JobKind]job.Executor{job.KindFile: fileExec}
+	jobSvc := job.NewService(jobRepo, executors)
+	runner := job.NewRunner(jobRepo, jobsqlite.NewRunRepository(db), executors)
 	return newTestAuth(t, db, Dependencies{Sources: sourceSvc, Jobs: jobSvc, Runner: runner})
 }
 
@@ -871,23 +872,31 @@ func TestJobRunConcurrencyLimitAPI(t *testing.T) {
 	router := newJobRouter(t, &gateRemote{gate: gate})
 	sourceID := createSourceViaAPI(t, router, "NAS", true)
 
+	// 默认全局并发为 2（已决 R12）：前两个任务同时受理，第三个撞上限。
 	first, _ := jobPayload(t, "First", sourceID, "copy", true)
 	firstID, _ := decodeJSON(t, doJSON(t, router, "POST", "/api/v1/jobs", first))["id"].(string)
 	second, _ := jobPayload(t, "Second", sourceID, "copy", true)
 	secondID, _ := decodeJSON(t, doJSON(t, router, "POST", "/api/v1/jobs", second))["id"].(string)
+	third, _ := jobPayload(t, "Third", sourceID, "copy", true)
+	thirdID, _ := decodeJSON(t, doJSON(t, router, "POST", "/api/v1/jobs", third))["id"].(string)
 
 	if rec := doJSON(t, router, "POST", "/api/v1/jobs/"+firstID+"/run", ""); rec.Code != http.StatusAccepted {
 		t.Fatalf("first run = %d, want 202", rec.Code)
 	}
 	waitForRunState(t, router, firstID, syncjob.RunRunning)
+	if rec := doJSON(t, router, "POST", "/api/v1/jobs/"+secondID+"/run", ""); rec.Code != http.StatusAccepted {
+		t.Fatalf("second run = %d, want 202 at default capacity 2", rec.Code)
+	}
+	waitForRunState(t, router, secondID, syncjob.RunRunning)
 
-	rec := doJSON(t, router, "POST", "/api/v1/jobs/"+secondID+"/run", "")
+	rec := doJSON(t, router, "POST", "/api/v1/jobs/"+thirdID+"/run", "")
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "concurrency") {
 		t.Errorf("run at capacity = %d %s, want 409 concurrency", rec.Code, rec.Body.String())
 	}
 
 	close(gate)
 	waitForRunState(t, router, firstID, syncjob.RunSucceeded, syncjob.RunFailed)
+	waitForRunState(t, router, secondID, syncjob.RunSucceeded, syncjob.RunFailed)
 }
 
 // 被 Job 引用的 Source 删除返回 409；Job 删除后可正常删除 Source。

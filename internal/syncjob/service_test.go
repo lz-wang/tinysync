@@ -47,13 +47,14 @@ func newTestEnv(t *testing.T) *testEnv {
 
 	sourceSvc := source.NewService(sqliterepo.New(db), webdav.NewFactory())
 	jobRepo := jobsqlite.NewRepository(db)
-	fileExec := syncjob.NewFileExecutor(sourceSvc, jobRepo, dataDir)
+	managedRepo := sqlite.NewManagedRepository(db)
+	fileExec := syncjob.NewFileExecutor(sourceSvc, jobRepo, managedRepo, dataDir)
 	service := job.NewService(jobRepo, map[job.JobKind]job.Executor{
 		job.KindFile: fileExec,
 	})
 	env := &testEnv{
 		db:        db,
-		managed:   sqlite.NewManagedRepository(db),
+		managed:   managedRepo,
 		jobRepo:   jobRepo,
 		service:   service,
 		fileExec:  fileExec,

@@ -74,11 +74,15 @@ func newBrowserEnv(t *testing.T, fixture matrixRemote) *browserEnv {
 
 	sources := source.NewService(srcRepo, bridgedFactory{fixture: fixture})
 	stack := newFileJobStack(db, sources, dataDir)
-	stack.Runner = syncjob.NewRunner(stack.Repo, stack.Managed, matrixGateway{
-		src:        src,
-		openRemote: fixture.openRemote,
-	}, stack.Runs)
-	stack.Scheduler = syncjob.NewScheduler(stack.Repo, stack.Runner, stack.Runs)
+	// 浏览 / 共享链路复用栈的远端直连 gateway：换绑 File 执行器的
+	// SourceGateway 后重建 Runner 与调度器。
+	stack.Runner = job.NewRunner(stack.Repo, stack.Runs, map[job.JobKind]job.Executor{
+		job.KindFile: syncjob.NewFileExecutor(matrixGateway{
+			src:        src,
+			openRemote: fixture.openRemote,
+		}, stack.Repo, stack.Managed, dataDir),
+	})
+	stack.Scheduler = job.NewScheduler(stack.Repo, stack.Runner, stack.Runs)
 
 	files := browser.NewRemoteService(sources)
 	localFiles := browser.NewLocalService(stack.Exec, stack.Managed)

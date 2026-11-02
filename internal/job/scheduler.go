@@ -1,4 +1,4 @@
-package syncjob
+package job
 
 import (
 	"context"
@@ -6,7 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"tinysync/internal/job"
 	"tinysync/internal/logging"
 )
 
@@ -18,9 +17,9 @@ const schedulerTickInterval = time.Second
 // Scheduler 周期检查启用任务的 schedule 并触发到期运行。不引入通用
 // scheduler framework：Runner、历史与并发策略仍由 TinySync 自己协调。
 type Scheduler struct {
-	repo    job.Repository
+	repo    Repository
 	runner  *Runner
-	history job.RunRepository
+	history RunRepository
 	// Now 返回当前时间；默认 UTC time.Now，测试可注入固定时钟。
 	Now func() time.Time
 
@@ -33,7 +32,7 @@ type Scheduler struct {
 }
 
 // NewScheduler 构造 Scheduler。
-func NewScheduler(repo job.Repository, runner *Runner, history job.RunRepository) *Scheduler {
+func NewScheduler(repo Repository, runner *Runner, history RunRepository) *Scheduler {
 	return &Scheduler{
 		repo:    repo,
 		runner:  runner,
@@ -74,8 +73,9 @@ func (s *Scheduler) Stop() {
 }
 
 // tick 处理内存游标窗口 (from, now] 内到期的 occurrence：命中即经
-// Runner.StartScheduled 触发（overlap / 容量不足时由 Runner 记 skipped），
-// 窗口外不回看。抽出为独立方法以便固定时钟直接测试。
+// Runner.StartScheduled 触发（同任务重叠由 Runner 记 skipped；全局
+// 并发已满返回瞬时错误，游标不推进、后续周期重试），窗口外不回看。
+// 抽出为独立方法以便固定时钟直接测试。
 //
 // 游标只在成功读取并处理完全部任务后推进：List 失败、处理中断或任一
 // occurrence 的检查 / 持久化失败时保持不动，下一个 tick 重扫同一窗口，
@@ -119,7 +119,7 @@ func (s *Scheduler) tick(ctx context.Context) {
 			// once 的消费状态在任务行上（jobs.once_consumed_at，
 			// 持久化 correctness state）：错过仍补执行一次，且不依赖
 			// 可被 retention 裁剪的运行历史存活。
-			if job.OnceConsumed(j) {
+			if OnceConsumed(j) {
 				continue
 			}
 		} else {
@@ -138,10 +138,13 @@ func (s *Scheduler) tick(ctx context.Context) {
 		if _, err := s.runner.StartScheduled(ctx, j.ID, trigger, occurrence); err != nil {
 			logging.Errorf("scheduled run for job %s: %v", j.ID, err)
 			// 禁用等确定性校验失败重试无意义，occurrence 随本轮丢弃；
-			// 其余（配置变更占用、配置读取、run 落库等）视为瞬时故障，
-			// 游标不推进，下一 tick 重试整个窗口。
+			// 并发已满（ErrConcurrencyLimit）与配置变更占用
+			//（ErrJobMutating）是瞬时状态——游标不推进，下一 tick
+			// 重试整个窗口（并发已满时计划约定「保留到期任务后续
+			// 周期重试」）；其余（配置读取、run 落库等）同样视为
+			// 瞬时故障。
 			if !errors.Is(err, ErrJobDisabled) &&
-				!errors.Is(err, job.ErrNotFound) {
+				!errors.Is(err, ErrNotFound) {
 				tickComplete = false
 			}
 		}

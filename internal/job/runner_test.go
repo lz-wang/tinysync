@@ -1,98 +1,164 @@
-package syncjob
+package job
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"os"
-	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"tinysync/internal/job"
-	"tinysync/internal/source"
 )
 
-// blockingRemote 的 List 阻塞直到 ctx 取消或测试放行，模拟长运行同步。
-type blockingRemote struct {
+// fixedNow 是 Runner 测试的固定时钟基准。
+var fixedNow = time.Unix(1757879400, 0).UTC()
+
+// stubExecutor 是统一 Runner / Scheduler 测试的可编程执行器：不依赖
+// 任何领域实现，模拟阻塞、立即失败与结果摘要，并记录收到的 RunRequest
+// （验证 Runner 注入的共享 limiter / 超时等协调输入）。
+type stubExecutor struct {
+	mu sync.Mutex
+	// err 非 nil 时下一轮 Run 立即返回该错误（一次性生效，模拟领域
+	// 执行失败；之后恢复成功）。
+	err error
+	// result 非 nil 时下一轮 Run 成功返回该结果摘要（一次性生效）。
+	result json.RawMessage
+	// blockNext 使下一轮 Run 阻塞到放行或 ctx 取消（一次性生效，
+	// 模拟长运行同步）。
+	blockNext bool
+	// release 是阻塞轮次的放行闸门。
 	release chan struct{}
+
+	// entered 为每轮 Run 进入时缓存一条信号，测试用它等待「已在
+	// 执行器内」；cancelled 在 Run 因 ctx 取消返回时关闭（断言取消
+	// 真正传播到执行器）。
+	entered   chan struct{}
+	cancelled chan struct{}
+	closeOnce sync.Once
+
+	reqs []RunRequest
 }
 
-func (b *blockingRemote) Stat(ctx context.Context, path string) (source.FileInfo, error) {
-	return source.FileInfo{}, nil
+func newStubExecutor() *stubExecutor {
+	return &stubExecutor{
+		entered:   make(chan struct{}, 64),
+		cancelled: make(chan struct{}),
+	}
 }
 
-func (b *blockingRemote) List(ctx context.Context, path string, opts source.ListOptions) (source.FilePage, error) {
+// Validate 实现 Executor：桩不做领域校验，配置原样返回。
+func (e *stubExecutor) Validate(ctx context.Context, jobID string, cfg json.RawMessage) (json.RawMessage, error) {
+	return cfg, nil
+}
+
+// Run 实现 Executor：按可编程配置阻塞 / 失败 / 返回摘要。
+func (e *stubExecutor) Run(ctx context.Context, req RunRequest) (RunResult, error) {
+	e.mu.Lock()
+	e.reqs = append(e.reqs, req)
+	err := e.err
+	e.err = nil
+	result := e.result
+	e.result = nil
+	block := e.blockNext
+	e.blockNext = false
+	release := e.release
+	e.mu.Unlock()
+
 	select {
-	case <-b.release:
-		return source.FilePage{}, nil
-	case <-ctx.Done():
-		return source.FilePage{}, ctx.Err()
+	case e.entered <- struct{}{}:
+	default:
+	}
+	if block {
+		select {
+		case <-release:
+		case <-ctx.Done():
+			e.closeOnce.Do(func() { close(e.cancelled) })
+			return RunResult{}, ctx.Err()
+		}
+	}
+	if err != nil {
+		return RunResult{}, err
+	}
+	return RunResult{Result: result}, nil
+}
+
+// blockRun 让下一轮 Run 阻塞，返回放行闸门；需要多个并行阻塞轮时
+// 在每轮 Start 前各调用一次。
+func (e *stubExecutor) blockRun() chan struct{} {
+	release := make(chan struct{})
+	e.mu.Lock()
+	e.blockNext = true
+	e.release = release
+	e.mu.Unlock()
+	return release
+}
+
+// failNext 让下一轮 Run 立即返回错误。
+func (e *stubExecutor) failNext(err error) {
+	e.mu.Lock()
+	e.err = err
+	e.mu.Unlock()
+}
+
+// succeedWith 让下一轮 Run 成功返回指定结果摘要。
+func (e *stubExecutor) succeedWith(result json.RawMessage) {
+	e.mu.Lock()
+	e.result = result
+	e.mu.Unlock()
+}
+
+// waitEntered 等待一轮 Run 真正进入执行器（活动窗口已建立）。
+func (e *stubExecutor) waitEntered(t *testing.T) {
+	t.Helper()
+	select {
+	case <-e.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("executor was never entered")
 	}
 }
 
-func (b *blockingRemote) Open(ctx context.Context, path string) (io.ReadCloser, error) {
-	return nil, nil
-}
-
-func (b *blockingRemote) Close() error {
-	return nil
-}
-
-// memCreds 是 SourceGateway 的内存实现。
-type memCreds struct {
-	source source.Source
-	remote source.Remote
-	// openErr 非 nil 时 OpenRemote 失败（模拟拨号 / 认证故障）。
-	openErr error
-}
-
-func (m *memCreds) Get(ctx context.Context, id string) (source.Source, error) {
-	if m.source.ID != id {
-		return source.Source{}, source.ErrNotFound
+// cancelledRun 报告是否有 Run 因 ctx 取消返回。
+func (e *stubExecutor) cancelledRun() bool {
+	select {
+	case <-e.cancelled:
+		return true
+	default:
+		return false
 	}
-	return m.source, nil
 }
 
-func (m *memCreds) OpenRemote(ctx context.Context, id string) (source.Source, source.Remote, error) {
-	if m.source.ID != id {
-		return source.Source{}, nil, source.ErrNotFound
-	}
-	if m.openErr != nil {
-		return source.Source{}, nil, m.openErr
-	}
-	return m.source, m.remote, nil
+// requests 返回历轮 RunRequest 快照。
+func (e *stubExecutor) requests() []RunRequest {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]RunRequest(nil), e.reqs...)
 }
 
-// memJobRepo 是 job.Repository 的内存实现（Runner 测试专用）。
+// memJobRepo 是 Repository 的内存实现（Runner / Scheduler 测试专用）。
 type memJobRepo struct {
-	jobs map[string]job.Job
+	jobs map[string]Job
 }
 
 func newMemJobRepo() *memJobRepo {
-	return &memJobRepo{jobs: map[string]job.Job{}}
+	return &memJobRepo{jobs: map[string]Job{}}
 }
 
-func (r *memJobRepo) Create(ctx context.Context, j job.Job) error {
+func (r *memJobRepo) Create(ctx context.Context, j Job) error {
 	r.jobs[j.ID] = j
 	return nil
 }
 
-func (r *memJobRepo) Get(ctx context.Context, id string) (job.Job, error) {
+func (r *memJobRepo) Get(ctx context.Context, id string) (Job, error) {
 	j, ok := r.jobs[id]
 	if !ok {
-		return job.Job{}, fmt.Errorf("%w: %s", ErrNotFound, id)
+		return Job{}, fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
 	return j, nil
 }
 
-func (r *memJobRepo) List(ctx context.Context) ([]job.Job, error) {
-	list := make([]job.Job, 0, len(r.jobs))
+func (r *memJobRepo) List(ctx context.Context) ([]Job, error) {
+	list := make([]Job, 0, len(r.jobs))
 	for _, j := range r.jobs {
 		list = append(list, j)
 	}
@@ -100,12 +166,12 @@ func (r *memJobRepo) List(ctx context.Context) ([]job.Job, error) {
 	return list, nil
 }
 
-func (r *memJobRepo) ListByKind(ctx context.Context, kind job.JobKind) ([]job.Job, error) {
+func (r *memJobRepo) ListByKind(ctx context.Context, kind JobKind) ([]Job, error) {
 	list, err := r.List(ctx)
 	if err != nil {
 		return nil, err
 	}
-	filtered := make([]job.Job, 0, len(list))
+	filtered := make([]Job, 0, len(list))
 	for _, j := range list {
 		if j.Kind == kind {
 			filtered = append(filtered, j)
@@ -114,7 +180,7 @@ func (r *memJobRepo) ListByKind(ctx context.Context, kind job.JobKind) ([]job.Jo
 	return filtered, nil
 }
 
-func (r *memJobRepo) Update(ctx context.Context, j job.Job, hooks ...job.TxHook) error {
+func (r *memJobRepo) Update(ctx context.Context, j Job, hooks ...TxHook) error {
 	if _, ok := r.jobs[j.ID]; !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, j.ID)
 	}
@@ -131,7 +197,7 @@ func (r *memJobRepo) CountBySource(ctx context.Context, sourceID string) (int, e
 	return 0, nil
 }
 
-// memRunRepo 是 RunRepository 的内存实现（Runner 测试专用）。
+// memRunRepo 是 RunRepository 的内存实现（Runner / Scheduler 测试专用）。
 type memRunRepo struct {
 	mu     sync.Mutex
 	runs   map[string]RunRecord
@@ -311,33 +377,20 @@ func (m *memRunRepo) PruneRetention(ctx context.Context, keepPerJob int) error {
 	return nil
 }
 
-// runnerEnv 聚合 Runner 测试环境。
+// runnerEnv 聚合 Runner 测试环境：内存仓库 + 按注册表分发的桩执行器。
 type runnerEnv struct {
 	repo    *memJobRepo
-	managed *inMemoryManaged
-	creds   *memCreds
 	history *memRunRepo
+	exec    *stubExecutor
 	runner  *Runner
-	root    string
 }
 
-func newRunnerEnv(t *testing.T, remote source.Remote) *runnerEnv {
+func newRunnerEnv(t *testing.T) *runnerEnv {
 	t.Helper()
 	env := &runnerEnv{
 		repo:    newMemJobRepo(),
-		managed: newInMemoryManaged(),
-		creds: &memCreds{
-			source: source.Source{
-				ID: "src_a", Name: "nas", Type: source.TypeWebDAV,
-				Config: source.Config{WebDAV: &source.WebDAVConfig{
-					Endpoint: "https://dav.example.com/",
-				}},
-				Enabled: true,
-			},
-			remote: remote,
-		},
 		history: newMemRunRepo(),
-		root:    t.TempDir(),
+		exec:    newStubExecutor(),
 	}
 	// 桥接 PersistScheduledRun 的事务性 once 消费写入（生产路径在
 	// SQLite 事务内写 jobs.once_consumed_at）。
@@ -350,37 +403,26 @@ func newRunnerEnv(t *testing.T, remote source.Remote) *runnerEnv {
 		j.OnceConsumedAt = &consumed
 		env.repo.jobs[jobID] = j
 	}
-	env.runner = NewRunner(env.repo, env.managed, env.creds, env.history)
-	env.runner.Now = func() time.Time { return time.Unix(1757879400, 0).UTC() }
+	env.runner = NewRunner(env.repo, env.history, map[JobKind]Executor{KindFile: env.exec})
+	env.runner.Now = func() time.Time { return fixedNow }
 	return env
 }
 
-// mustJob 创建启用的测试任务（默认 LocalRoot）。
-func (e *runnerEnv) mustJob(t *testing.T, name string) job.Job {
-	t.Helper()
-	return e.mustJobIn(t, name, e.root)
-}
-
-// mustJobIn 创建启用且指定 LocalRoot 的测试任务。
-func (e *runnerEnv) mustJobIn(t *testing.T, name, localRoot string) job.Job {
+// mustJob 创建启用的测试任务（配置为空对象，公共层不解释领域字段）。
+func (e *runnerEnv) mustJob(t *testing.T, name string) Job {
 	t.Helper()
 	id, err := NewID()
 	if err != nil {
 		t.Fatalf("NewID: %v", err)
 	}
-	now := time.Unix(1757879400, 0).UTC()
-	cfg, err := MarshalFileConfig("src_a", "/", localRoot, ModeCopy, nil, nil)
-	if err != nil {
-		t.Fatalf("marshal file config: %v", err)
-	}
-	j := job.Job{
+	j := Job{
 		ID:        id,
 		Name:      name + "-" + id,
-		Kind:      job.KindFile,
+		Kind:      KindFile,
 		Enabled:   true,
-		Config:    cfg,
-		CreatedAt: now,
-		UpdatedAt: now,
+		Config:    json.RawMessage("{}"),
+		CreatedAt: fixedNow,
+		UpdatedAt: fixedNow,
 	}
 	if err := e.repo.Create(context.Background(), j); err != nil {
 		t.Fatalf("create job: %v", err)
@@ -388,55 +430,28 @@ func (e *runnerEnv) mustJobIn(t *testing.T, name, localRoot string) job.Job {
 	return j
 }
 
-// closeTrackingRemote 包装 engineRemote 并记录 Close 调用次数。
-type closeTrackingRemote struct {
-	*engineRemote
-	mu    sync.Mutex
-	times int
-}
-
-func (c *closeTrackingRemote) Close() error {
-	c.mu.Lock()
-	c.times++
-	c.mu.Unlock()
-	return nil
-}
-
-func (c *closeTrackingRemote) closeCount() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.times
-}
-
-// 运行结束后 Remote 必须被释放：有连接生命周期的协议（如 SFTP）
-// 不遗留会话。
-func TestRunnerClosesRemoteAfterRun(t *testing.T) {
-	remote := &closeTrackingRemote{
-		engineRemote: buildRemote(map[string]string{"/a.txt": "v1"}, nil),
-	}
-	env := newRunnerEnv(t, remote)
-	job := env.mustJob(t, "sync")
-
-	runID, err := env.runner.Start(context.Background(), job.ID)
+// runCountGuard 统计 Job 的持久化 run 数（runnerEnv 的 history）。
+func (e *runnerEnv) runCountGuard(t *testing.T, jobID string) int {
+	t.Helper()
+	_, total, err := e.history.List(context.Background(), RunFilter{JobID: jobID})
 	if err != nil {
-		t.Fatalf("Start: %v", err)
+		t.Fatalf("list runs: %v", err)
 	}
-	status, err := env.runner.Wait(context.Background(), runID)
-	if err != nil {
-		t.Fatalf("Wait: %v", err)
-	}
-	if status.State != RunSucceeded {
-		t.Fatalf("run state = %s, want succeeded", status.State)
-	}
-	if n := remote.closeCount(); n != 1 {
-		t.Fatalf("remote close count = %d, want 1", n)
+	return total
+}
+
+// NewRunner 默认全局并发为 2（已决 R12）：应用未显式配置时多任务可并行。
+func TestRunnerDefaultConcurrency(t *testing.T) {
+	r := NewRunner(newMemJobRepo(), newMemRunRepo(), map[JobKind]Executor{KindFile: newStubExecutor()})
+	if r.MaxConcurrentJobs != 2 {
+		t.Errorf("default MaxConcurrentJobs = %d, want 2", r.MaxConcurrentJobs)
 	}
 }
 
-// 手动运行完成：状态推进到 succeeded，统计与本地文件正确。
+// 手动运行完成：状态推进到 succeeded，执行器返回的结果摘要原样落库。
 func TestRunnerCompletesSynchronously(t *testing.T) {
-	remote := buildRemote(map[string]string{"/a.txt": "v1"}, nil)
-	env := newRunnerEnv(t, remote)
+	env := newRunnerEnv(t)
+	env.exec.succeedWith(json.RawMessage(`{"files_created":1}`))
 	job := env.mustJob(t, "sync")
 
 	handle, err := env.runner.Start(context.Background(), job.ID)
@@ -453,16 +468,8 @@ func TestRunnerCompletesSynchronously(t *testing.T) {
 	if final.State != RunSucceeded {
 		t.Errorf("state = %q, want succeeded (error %q)", final.State, final.Error)
 	}
-	var finalStats RunStats
-	if err := json.Unmarshal(final.Result, &finalStats); err != nil {
-		t.Fatalf("parse final result: %v", err)
-	}
-	if finalStats.FilesCreated != 1 {
-		t.Errorf("stats = %+v, want 1 created", finalStats)
-	}
-	data, err := os.ReadFile(filepath.Join(env.root, "a.txt"))
-	if err != nil || string(data) != "v1" {
-		t.Errorf("downloaded content = %q (%v), want v1", data, err)
+	if string(final.Result) != `{"files_created":1}` {
+		t.Errorf("result = %s, want executor summary", final.Result)
 	}
 
 	// 完成后查询状态保持 succeeded（读持久化历史）。
@@ -479,34 +486,39 @@ func TestRunnerCompletesSynchronously(t *testing.T) {
 // MaxConcurrentJobs 限制（手动触发 ErrConcurrencyLimit）；提高上限后
 // 可并行。
 func TestRunnerConcurrency(t *testing.T) {
-	release := make(chan struct{})
-	env := newRunnerEnv(t, &blockingRemote{release: release})
+	env := newRunnerEnv(t)
+	env.runner.MaxConcurrentJobs = 1
 	jobA := env.mustJob(t, "a")
 	jobB := env.mustJob(t, "b")
 	ctx := context.Background()
 
+	releaseA := env.exec.blockRun()
 	if _, err := env.runner.Start(ctx, jobA.ID); err != nil {
 		t.Fatalf("Start A: %v", err)
 	}
+	env.exec.waitEntered(t)
 	// 同 Job 再触发。
 	if _, err := env.runner.Start(ctx, jobA.ID); !errors.Is(err, ErrRunActive) {
 		t.Errorf("Start same job during run = %v, want ErrRunActive", err)
 	}
-	// 默认容量 1：其他 Job 触发受全局限制。
+	// 容量 1：其他 Job 触发受全局限制。
 	if _, err := env.runner.Start(ctx, jobB.ID); !errors.Is(err, ErrConcurrencyLimit) {
 		t.Errorf("Start B at capacity = %v, want ErrConcurrencyLimit", err)
 	}
 
 	// 容量 2：两个 Job 并行。
+	releaseB := env.exec.blockRun()
 	env.runner.MaxConcurrentJobs = 2
 	if _, err := env.runner.Start(ctx, jobB.ID); err != nil {
 		t.Fatalf("Start B with capacity 2: %v", err)
 	}
+	env.exec.waitEntered(t)
 	if !env.runner.IsRunning(jobA.ID) || !env.runner.IsRunning(jobB.ID) {
 		t.Errorf("IsRunning = (%t, %t), want both running",
 			env.runner.IsRunning(jobA.ID), env.runner.IsRunning(jobB.ID))
 	}
-	close(release)
+	close(releaseA)
+	close(releaseB)
 	if err := env.runner.Shutdown(ctx); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
@@ -515,24 +527,16 @@ func TestRunnerConcurrency(t *testing.T) {
 	}
 }
 
-// MaxConcurrentTransfers 是全进程上限：多个 Job 并行时，全部下载的
-// 并发峰值不超过共享 TransferLimiter 容量——每个 Job 各持一份限额的
-// 叠加（MaxConcurrentJobs × 上限）必须被排除。
-func TestRunnerTransferLimitIsProcessWide(t *testing.T) {
-	files := map[string]string{}
-	for _, name := range []string{"/a1", "/a2", "/a3", "/a4", "/a5", "/b1", "/b2", "/b3", "/b4", "/b5"} {
-		files[name] = "content-of" + name
-	}
-	probe := &probeRemote{
-		engineRemote: buildRemote(files, nil),
-		delay:        40 * time.Millisecond,
-	}
-	env := newRunnerEnv(t, probe)
+// MaxConcurrentTransfers 的进程级共享：全部运行经 Runner 的同一
+// TransferLimiter 单例协调（各领一份独立限额的叠加必须被排除），
+// 运行配置的传输超时原样透传给执行器。
+func TestRunnerSharesTransferLimiterAcrossRuns(t *testing.T) {
+	env := newRunnerEnv(t)
 	env.runner.MaxConcurrentJobs = 2
 	env.runner.MaxConcurrentTransfers = 3
-
-	jobA := env.mustJobIn(t, "a", t.TempDir())
-	jobB := env.mustJobIn(t, "b", t.TempDir())
+	env.runner.TransferTimeout = 5 * time.Second
+	jobA := env.mustJob(t, "a")
+	jobB := env.mustJob(t, "b")
 	ctx := context.Background()
 
 	runA, err := env.runner.Start(ctx, jobA.ID)
@@ -543,25 +547,25 @@ func TestRunnerTransferLimitIsProcessWide(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start B: %v", err)
 	}
-	finalA, err := env.runner.Wait(ctx, runA)
-	if err != nil {
-		t.Fatalf("Wait A: %v", err)
+	for _, run := range []string{runA, runB} {
+		if final, err := env.runner.Wait(ctx, run); err != nil || final.State != RunSucceeded {
+			t.Fatalf("run %s = %+v (%v), want succeeded", run, final, err)
+		}
 	}
-	if finalA.State != RunSucceeded {
-		t.Errorf("run A state = %q (%s), want succeeded", finalA.State, finalA.Error)
+	reqs := env.exec.requests()
+	if len(reqs) != 2 {
+		t.Fatalf("executor requests = %d, want 2", len(reqs))
 	}
-	finalB, err := env.runner.Wait(ctx, runB)
-	if err != nil {
-		t.Fatalf("Wait B: %v", err)
+	if reqs[0].Transfers == nil || reqs[0].Transfers != reqs[1].Transfers {
+		t.Errorf("runs received distinct transfer limiters (%v vs %v), want one shared instance",
+			reqs[0].Transfers, reqs[1].Transfers)
 	}
-	if finalB.State != RunSucceeded {
-		t.Errorf("run B state = %q (%s), want succeeded", finalB.State, finalB.Error)
+	if got := reqs[0].Transfers.Capacity(); got != 3 {
+		t.Errorf("limiter capacity = %d, want MaxConcurrentTransfers 3", got)
 	}
-	if probe.maxSeen > 3 {
-		t.Errorf("process-wide concurrent Open peak = %d, want <= 3", probe.maxSeen)
-	}
-	if probe.maxSeen < 2 {
-		t.Errorf("concurrent Open peak = %d, want cross-job overlap observed (>= 2)", probe.maxSeen)
+	if reqs[0].TransferTimeout != 5*time.Second || reqs[1].TransferTimeout != 5*time.Second {
+		t.Errorf("transfer timeout = (%s, %s), want 5s propagated to both runs",
+			reqs[0].TransferTimeout, reqs[1].TransferTimeout)
 	}
 }
 
@@ -570,8 +574,8 @@ func TestRunnerTransferLimitIsProcessWide(t *testing.T) {
 // 不属于 overlap 策略，不该吞掉一次调度）；运行占用期间
 // BeginMutation 报 ErrRunActive；各自释放后恢复。
 func TestRunnerMutationGuard(t *testing.T) {
-	release := make(chan struct{})
-	env := newRunnerEnv(t, &blockingRemote{release: release})
+	env := newRunnerEnv(t)
+	release := env.exec.blockRun()
 	job := env.mustJob(t, "guarded")
 	ctx := context.Background()
 
@@ -581,7 +585,7 @@ func TestRunnerMutationGuard(t *testing.T) {
 	if _, err := env.runner.Start(ctx, job.ID); !errors.Is(err, ErrJobMutating) {
 		t.Errorf("Start during mutation = %v, want ErrJobMutating", err)
 	}
-	occ := time.Unix(1757879400, 0).UTC()
+	occ := fixedNow
 	runID, err := env.runner.StartScheduled(ctx, job.ID, TriggerInterval, occ)
 	if !errors.Is(err, ErrJobMutating) || runID != "" {
 		t.Fatalf("StartScheduled during mutation = (%q, %v), want ErrJobMutating", runID, err)
@@ -611,15 +615,15 @@ func TestRunnerMutationGuard(t *testing.T) {
 // skipped run 与正常执行走同一条容量回收路径：长时间 overlap 的 Job
 // 频繁产生 skipped 记录时，历史同样被 prune，不会无限堆积。
 func TestRunnerSkippedRunPrunesRetention(t *testing.T) {
-	release := make(chan struct{})
-	env := newRunnerEnv(t, &blockingRemote{release: release})
+	env := newRunnerEnv(t)
+	release := env.exec.blockRun()
 	job := env.mustJob(t, "prune")
 	ctx := context.Background()
 
 	if _, err := env.runner.Start(ctx, job.ID); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	occ := time.Unix(1757879400, 0).UTC()
+	occ := fixedNow
 	if _, err := env.runner.StartScheduled(ctx, job.ID, TriggerInterval, occ); err != nil {
 		t.Fatalf("StartScheduled: %v", err)
 	}
@@ -638,16 +642,16 @@ func TestRunnerSkippedRunPrunesRetention(t *testing.T) {
 // StartScheduled 的持久化失败如实返回错误：occurrence 未被消费，
 // 调度器据此重试窗口而不是当作已处理。
 func TestRunnerStartScheduledPersistenceError(t *testing.T) {
-	release := make(chan struct{})
-	env := newRunnerEnv(t, &blockingRemote{release: release})
+	env := newRunnerEnv(t)
+	release := env.exec.blockRun()
 	job := env.mustJob(t, "persist-fail")
 	ctx := context.Background()
 
 	if _, err := env.runner.Start(ctx, job.ID); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	occ := time.Unix(1757879400, 0).UTC()
-	env.history.insertErr = errorsNew("disk I/O error")
+	occ := fixedNow
+	env.history.insertErr = errors.New("disk I/O error")
 	runID, err := env.runner.StartScheduled(ctx, job.ID, TriggerInterval, occ)
 	if err == nil || runID != "" {
 		t.Fatalf("StartScheduled with insert failure = (%q, %v), want error", runID, err)
@@ -663,20 +667,10 @@ func TestRunnerStartScheduledPersistenceError(t *testing.T) {
 	}
 }
 
-// runCountGuard 统计 Job 的持久化 run 数（runnerEnv 的 history）。
-func (e *runnerEnv) runCountGuard(t *testing.T, jobID string) int {
-	t.Helper()
-	_, total, err := e.history.List(context.Background(), RunFilter{JobID: jobID})
-	if err != nil {
-		t.Fatalf("list runs: %v", err)
-	}
-	return total
-}
-
 // Shutdown 后拒绝启动新运行：手动与调度触发都返回 ErrShuttingDown，
 // 且 Shutdown 幂等。
 func TestRunnerRejectsStartAfterShutdown(t *testing.T) {
-	env := newRunnerEnv(t, buildRemote(map[string]string{"/a.txt": "v1"}, nil))
+	env := newRunnerEnv(t)
 	job := env.mustJob(t, "late")
 	ctx := context.Background()
 
@@ -686,7 +680,7 @@ func TestRunnerRejectsStartAfterShutdown(t *testing.T) {
 	if _, err := env.runner.Start(ctx, job.ID); !errors.Is(err, ErrShuttingDown) {
 		t.Errorf("Start after shutdown = %v, want ErrShuttingDown", err)
 	}
-	occ := time.Unix(1757879400, 0).UTC()
+	occ := fixedNow
 	if _, err := env.runner.StartScheduled(ctx, job.ID, TriggerOnce, occ); !errors.Is(err, ErrShuttingDown) {
 		t.Errorf("StartScheduled after shutdown = %v, want ErrShuttingDown", err)
 	}
@@ -698,11 +692,11 @@ func TestRunnerRejectsStartAfterShutdown(t *testing.T) {
 // run row 落库失败时，发布时预留的 WaitGroup 名额被正确释放：
 // 否则 wg 永不归零，后续任何 Shutdown 都只能靠超时返回。
 func TestRunnerStartInsertFailureReleasesWaitGroup(t *testing.T) {
-	env := newRunnerEnv(t, buildRemote(map[string]string{"/a.txt": "v1"}, nil))
+	env := newRunnerEnv(t)
 	job := env.mustJob(t, "insert-fail")
 	ctx := context.Background()
 
-	env.history.insertErr = errorsNew("disk I/O error")
+	env.history.insertErr = errors.New("disk I/O error")
 	if _, err := env.runner.Start(ctx, job.ID); err == nil {
 		t.Fatal("Start with insert failure = nil error, want error")
 	}
@@ -729,9 +723,9 @@ func TestRunnerStartInsertFailureReleasesWaitGroup(t *testing.T) {
 // once occurrence 产生 run 即消费（succeeded 与 skipped 都算）：消费
 // 状态写入 Job 本身，与可裁剪的运行历史解耦。
 func TestRunnerOnceConsumptionMarkedOnJob(t *testing.T) {
-	env := newRunnerEnv(t, buildRemote(map[string]string{"/a.txt": "v1"}, nil))
+	env := newRunnerEnv(t)
 	ctx := context.Background()
-	occ := time.Unix(1757879400, 0).UTC().Add(-time.Hour)
+	occ := fixedNow.Add(-time.Hour)
 
 	job := env.mustJob(t, "once")
 	job.Schedule = Schedule{Type: ScheduleOnce, Value: occ.Format(time.RFC3339)}
@@ -785,11 +779,14 @@ func TestRunnerOnceConsumptionMarkedOnJob(t *testing.T) {
 	}
 }
 
-// 调度触发的 overlap 与容量不足不排队：记录 skipped run（occurrence
-// 已消费、error 记原因），返回空 run ID 与 nil 错误。
+// 调度触发的 overlap 不排队：记录 skipped run（occurrence 已消费、
+// error 记原因），返回空 run ID 与 nil 错误；全局并发已满则是瞬时
+// 错误（已决 R4）——不记 skipped、occurrence 不消费，交由调度器
+// 保持游标在后续周期重试。
 func TestRunnerScheduledSkipped(t *testing.T) {
-	release := make(chan struct{})
-	env := newRunnerEnv(t, &blockingRemote{release: release})
+	env := newRunnerEnv(t)
+	release := env.exec.blockRun()
+	env.runner.MaxConcurrentJobs = 1
 	jobA := env.mustJob(t, "a")
 	jobB := env.mustJob(t, "b")
 	ctx := context.Background()
@@ -798,7 +795,7 @@ func TestRunnerScheduledSkipped(t *testing.T) {
 		t.Fatalf("Start A: %v", err)
 	}
 
-	occ := time.Unix(1757879400, 0).UTC()
+	occ := fixedNow
 	runID, err := env.runner.StartScheduled(ctx, jobA.ID, TriggerInterval, occ)
 	if err != nil || runID != "" {
 		t.Fatalf("StartScheduled during run = (%q, %v), want empty success", runID, err)
@@ -816,17 +813,15 @@ func TestRunnerScheduledSkipped(t *testing.T) {
 		t.Errorf("skipped record = %+v, want skipped with overlap reason", rec)
 	}
 
-	// 全局容量不足（默认 1，Job A 占用）：其他 Job 的 occurrence 同样 skipped。
-	runID, err = env.runner.StartScheduled(ctx, jobB.ID, TriggerCron, occ)
-	if err != nil || runID != "" {
-		t.Fatalf("StartScheduled at capacity = (%q, %v), want empty success", runID, err)
+	// 全局容量不足（容量 1，Job A 占用）：瞬时错误，occurrence 保留。
+	if _, err := env.runner.StartScheduled(ctx, jobB.ID, TriggerCron, occ); !errors.Is(err, ErrConcurrencyLimit) {
+		t.Fatalf("StartScheduled at capacity = %v, want ErrConcurrencyLimit", err)
 	}
-	rec, err = env.history.Latest(ctx, jobB.ID)
-	if err != nil {
-		t.Fatalf("Latest B: %v", err)
+	if consumed, err := env.history.HasRunFor(ctx, jobB.ID, TriggerCron, occ); err != nil || consumed {
+		t.Errorf("capacity occurrence consumed = (%t, %v), want false (retained)", consumed, err)
 	}
-	if rec.State != RunSkipped || rec.Error != "concurrency limit reached" {
-		t.Errorf("capacity skipped record = %+v, want skipped with concurrency reason", rec)
+	if got := env.runCountGuard(t, jobB.ID); got != 0 {
+		t.Errorf("runs for throttled job = %d, want 0 (no skipped record at capacity)", got)
 	}
 
 	close(release)
@@ -838,12 +833,12 @@ func TestRunnerScheduledSkipped(t *testing.T) {
 // run row 在 goroutine 启动前同步落库：Start 返回即可查到 running 记录，
 // trigger 与 scheduled_for 正确；结束后的终态落库可查询。
 func TestRunnerPersistsRun(t *testing.T) {
-	release := make(chan struct{})
-	env := newRunnerEnv(t, &blockingRemote{release: release})
+	env := newRunnerEnv(t)
+	release := env.exec.blockRun()
 	job := env.mustJob(t, "persist")
 	ctx := context.Background()
 
-	occ := time.Unix(1757879400, 0).UTC()
+	occ := fixedNow
 	runID, err := env.runner.StartScheduled(ctx, job.ID, TriggerOnce, occ)
 	if err != nil {
 		t.Fatalf("StartScheduled: %v", err)
@@ -855,6 +850,9 @@ func TestRunnerPersistsRun(t *testing.T) {
 	if rec.State != RunRunning || rec.Trigger != TriggerOnce ||
 		rec.ScheduledFor == nil || !rec.ScheduledFor.Equal(occ) {
 		t.Errorf("persisted running record = %+v, want running once with occurrence", rec)
+	}
+	if rec.JobKind != KindFile {
+		t.Errorf("persisted job_kind = %q, want %q", rec.JobKind, KindFile)
 	}
 
 	close(release)
@@ -871,10 +869,9 @@ func TestRunnerPersistsRun(t *testing.T) {
 	}
 }
 
-// 禁用的 Job 或 Source 拒绝运行。
+// 禁用的 Job 拒绝运行。
 func TestRunnerRejectsDisabled(t *testing.T) {
-	remote := buildRemote(nil, nil)
-	env := newRunnerEnv(t, remote)
+	env := newRunnerEnv(t)
 	j := env.mustJob(t, "disabled")
 	ctx := context.Background()
 
@@ -886,31 +883,11 @@ func TestRunnerRejectsDisabled(t *testing.T) {
 	if _, err := env.runner.Start(ctx, j.ID); !errors.Is(err, ErrJobDisabled) {
 		t.Errorf("disabled job = %v, want ErrJobDisabled", err)
 	}
-
-	updates.Enabled = true
-	if err := env.repo.Update(ctx, updates); err != nil {
-		t.Fatalf("enable job: %v", err)
-	}
-	// 禁用的 Source 属于 File 领域运行期检查：Start 照常受理（统一
-	// Runner 不理解 Source），run 收敛为 failed 并携带 ErrSourceDisabled。
-	env.creds.source.Enabled = false
-	runID, err := env.runner.Start(ctx, j.ID)
-	if err != nil {
-		t.Fatalf("Start with disabled source: %v", err)
-	}
-	status, err := env.runner.Wait(ctx, runID)
-	if err != nil {
-		t.Fatalf("Wait: %v", err)
-	}
-	if status.State != RunFailed || !strings.Contains(status.Error, ErrSourceDisabled.Error()) {
-		t.Errorf("run with disabled source = %s (%q), want failed with source disabled", status.State, status.Error)
-	}
 }
 
 // 不存在的 Job 报 ErrNotFound；无运行历史的 Job 状态为 idle。
 func TestRunnerNotFoundAndIdleStatus(t *testing.T) {
-	remote := buildRemote(nil, nil)
-	env := newRunnerEnv(t, remote)
+	env := newRunnerEnv(t)
 	job := env.mustJob(t, "idle")
 	ctx := context.Background()
 
@@ -930,10 +907,10 @@ func TestRunnerNotFoundAndIdleStatus(t *testing.T) {
 	}
 }
 
-// Shutdown 取消运行中的同步并等待退出，运行记录为 failed（终态落库）。
+// Shutdown 取消运行中的执行并等待退出，运行记录为 failed（终态落库）。
 func TestRunnerShutdownCancels(t *testing.T) {
-	release := make(chan struct{})
-	env := newRunnerEnv(t, &blockingRemote{release: release})
+	env := newRunnerEnv(t)
+	release := env.exec.blockRun()
 	job := env.mustJob(t, "long")
 
 	handle, err := env.runner.Start(context.Background(), job.ID)
@@ -955,10 +932,8 @@ func TestRunnerShutdownCancels(t *testing.T) {
 
 // 运行失败的状态与错误被记录。
 func TestRunnerRecordsFailure(t *testing.T) {
-	// 远端 List 失败 → 扫描中止 → 本轮 failed。
-	remote := buildRemote(nil, nil)
-	remote.listErr = errors.New("connection reset")
-	env := newRunnerEnv(t, remote)
+	env := newRunnerEnv(t)
+	env.exec.failNext(errors.New("connection reset"))
 	job := env.mustJob(t, "failing")
 
 	handle, err := env.runner.Start(context.Background(), job.ID)
@@ -974,177 +949,18 @@ func TestRunnerRecordsFailure(t *testing.T) {
 	}
 }
 
-// hangReader 的 Read 阻塞到连接关闭：不感知 ctx——模拟 *sftp.File.Read
-// 这类不接受 context 的底层 I/O，只有连接被关闭才能让读取返回。
-type hangReader struct {
-	closed <-chan struct{}
-}
-
-func (r *hangReader) Read([]byte) (int, error) {
-	<-r.closed
-	return 0, errors.New("connection closed during read")
-}
-
-func (r *hangReader) Close() error { return nil }
-
-// hangRemote 模拟有连接生命周期协议（SFTP）的传输模型：Open 返回阻塞
-// reader，Close 关闭连接使阻塞中的读取返回。
-type hangRemote struct {
-	opened chan struct{} // Open 已被调用（读取已进入阻塞）
-	closed chan struct{} // 连接已关闭
-}
-
-func (h *hangRemote) Stat(ctx context.Context, path string) (source.FileInfo, error) {
-	return source.FileInfo{}, nil
-}
-
-func (h *hangRemote) List(ctx context.Context, path string, opts source.ListOptions) (source.FilePage, error) {
-	return source.FilePage{Entries: []source.FileInfo{{
-		Path:        "/big.bin",
-		Fingerprint: source.Fingerprint{Size: 1 << 20},
-	}}}, nil
-}
-
-func (h *hangRemote) Open(ctx context.Context, path string) (io.ReadCloser, error) {
-	select {
-	case <-h.opened:
-	default:
-		close(h.opened)
-	}
-	return &hangReader{closed: h.closed}, nil
-}
-
-func (h *hangRemote) Close() error {
-	select {
-	case <-h.closed:
-	default:
-		close(h.closed)
-	}
-	return nil
-}
-
-// closingGateway 是感知 run 生命周期的 SourceGateway：OpenRemote 记录
-// 收到的 ctx，并可阻塞模拟拨号；ctx 取消时触发连接关闭——与 SFTP
-// Factory 内「ctx 取消关闭连接」的守护行为一致。
-type closingGateway struct {
-	src    source.Source
-	remote *hangRemote
-	// dial 非 nil 时 OpenRemote 阻塞直到放行或 ctx 取消（模拟拨号）。
-	dial    <-chan struct{}
-	mu      sync.Mutex
-	openCtx context.Context
-}
-
-func (g *closingGateway) Get(ctx context.Context, id string) (source.Source, error) {
-	return g.src, nil
-}
-
-func (g *closingGateway) OpenRemote(ctx context.Context, id string) (source.Source, source.Remote, error) {
-	g.mu.Lock()
-	g.openCtx = ctx
-	g.mu.Unlock()
-	if g.dial != nil {
-		select {
-		case <-g.dial:
-		case <-ctx.Done():
-			return source.Source{}, nil, ctx.Err()
-		}
-	}
-	// 模拟 Factory 的关闭守护：创建用的 ctx 取消即关闭连接。
-	go func() {
-		<-ctx.Done()
-		_ = g.remote.Close()
-	}()
-	return g.src, g.remote, nil
-}
-
-// hangRunnerEnv 在标准环境上用感知生命周期的 gateway 重建 Runner
-// （固定时钟与 newRunnerEnv 保持一致）。
-func hangRunnerEnv(t *testing.T, gw *closingGateway) *runnerEnv {
-	t.Helper()
-	env := newRunnerEnv(t, nil)
-	env.runner = NewRunner(env.repo, env.managed, gw, env.history)
-	env.runner.Now = func() time.Time { return time.Unix(1757879400, 0).UTC() }
-	return env
-}
-
-// 回归：Shutdown 必须能打断阻塞中的远端读取。runCtx 是 Remote 创建、
-// 关闭守护与引擎传输的唯一取消根——context 取消只能自父向子传播，
-// 若 Remote 创建挂在 run 之外的独立（父）context 上，取消 runCtx 传
-// 播不到连接，Shutdown 只能等传输自然结束（本测试超时失败）。
-func TestRunnerShutdownInterruptsBlockingTransfer(t *testing.T) {
-	remote := &hangRemote{opened: make(chan struct{}), closed: make(chan struct{})}
-	gw := &closingGateway{src: source.Source{
-		ID: "src_a", Name: "nas", Type: source.TypeWebDAV, Enabled: true,
-	}, remote: remote}
-	env := hangRunnerEnv(t, gw)
-	job := env.mustJob(t, "hang")
-
-	runID, err := env.runner.Start(context.Background(), job.ID)
+// 未注册执行器的 kind 不可运行：Start 返回 ErrKindUnsupported。
+func TestRunnerRejectsUnregisteredKind(t *testing.T) {
+	env := newRunnerEnv(t)
+	id, err := NewID()
 	if err != nil {
-		t.Fatalf("Start: %v", err)
+		t.Fatalf("NewID: %v", err)
 	}
-	// 确认引擎已进入阻塞读取，Shutdown 面对的是真实的传输中连接。
-	select {
-	case <-remote.opened:
-	case <-time.After(5 * time.Second):
-		t.Fatal("engine never started reading the remote file")
+	j := Job{ID: id, Name: "oci-" + id, Kind: KindOCI, Enabled: true, Config: json.RawMessage("{}")}
+	if err := env.repo.Create(context.Background(), j); err != nil {
+		t.Fatalf("create oci job: %v", err)
 	}
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := env.runner.Shutdown(shutdownCtx); err != nil {
-		t.Fatalf("Shutdown did not interrupt the blocking transfer: %v", err)
-	}
-
-	// 取消传播到 Remote 创建（关闭守护）用的 context 本身。
-	gw.mu.Lock()
-	openCtx := gw.openCtx
-	gw.mu.Unlock()
-	if openCtx == nil || openCtx.Err() == nil {
-		t.Error("OpenRemote ctx was not cancelled by Shutdown")
-	}
-
-	status, err := env.runner.Wait(context.Background(), runID)
-	if err != nil {
-		t.Fatalf("Wait: %v", err)
-	}
-	if status.State != RunFailed {
-		t.Errorf("run state after shutdown = %s (error %q), want failed", status.State, status.Error)
-	}
-}
-
-// 回归：拨号中的启动阶段也必须可被 Shutdown 终止。Remote 创建在 run
-// 发布（active / WaitGroup / running 记录）之后进行，启动窗口不再游离
-// 于 shutdown 生命周期之外；创建失败记为 failed run 而不是启动接口的
-// 同步错误。
-func TestRunnerShutdownInterruptsPendingOpenRemote(t *testing.T) {
-	remote := &hangRemote{closed: make(chan struct{})}
-	gw := &closingGateway{
-		src: source.Source{
-			ID: "src_a", Name: "nas", Type: source.TypeWebDAV, Enabled: true,
-		},
-		remote: remote,
-		dial:   make(chan struct{}),
-	}
-	env := hangRunnerEnv(t, gw)
-	job := env.mustJob(t, "dial")
-
-	runID, err := env.runner.Start(context.Background(), job.ID)
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := env.runner.Shutdown(shutdownCtx); err != nil {
-		t.Fatalf("Shutdown did not interrupt pending OpenRemote: %v", err)
-	}
-	status, err := env.runner.Wait(context.Background(), runID)
-	if err != nil {
-		t.Fatalf("Wait: %v", err)
-	}
-	if status.State != RunFailed || !strings.Contains(status.Error, "create remote") {
-		t.Errorf("run after shutdown = %s/%q, want failed with create remote error", status.State, status.Error)
+	if _, err := env.runner.Start(context.Background(), j.ID); !errors.Is(err, ErrKindUnsupported) {
+		t.Errorf("unregistered kind = %v, want ErrKindUnsupported", err)
 	}
 }

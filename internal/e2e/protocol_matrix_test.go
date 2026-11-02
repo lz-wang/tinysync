@@ -26,6 +26,7 @@ import (
 	xnetdav "golang.org/x/net/webdav"
 
 	"tinysync/internal/filesafe"
+	"tinysync/internal/job"
 	jobsqlite "tinysync/internal/job/sqlite"
 	"tinysync/internal/source"
 	httpadapter "tinysync/internal/source/http"
@@ -542,7 +543,11 @@ func newMatrixEnv(t *testing.T, fixture matrixRemote) *matrixEnv {
 	}
 	gw := matrixGateway{src: src, openRemote: fixture.openRemote}
 	stack := newFileJobStack(db, source.NewService(srcRepo, bridgedFactory{fixture: fixture}), dataDir)
-	stack.Runner = syncjob.NewRunner(stack.Repo, stack.Managed, gw, stack.Runs)
+	// 矩阵的远端直连 gateway：Runner 经同一执行器注册表分发，仅换绑
+	// File 执行器的 SourceGateway。
+	stack.Runner = job.NewRunner(stack.Repo, stack.Runs, map[job.JobKind]job.Executor{
+		job.KindFile: syncjob.NewFileExecutor(gw, stack.Repo, stack.Managed, dataDir),
+	})
 	return &matrixEnv{
 		dataDir: dataDir,
 		stack:   stack,

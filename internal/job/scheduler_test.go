@@ -1,13 +1,10 @@
-package syncjob
+package job
 
 import (
 	"context"
 	"errors"
 	"testing"
 	"time"
-
-	"tinysync/internal/job"
-	"tinysync/internal/source"
 )
 
 // failingListRepo 注入 List 失败，测试调度器对读取故障的处理。
@@ -16,7 +13,7 @@ type failingListRepo struct {
 	err error
 }
 
-func (r *failingListRepo) List(ctx context.Context) ([]job.Job, error) {
+func (r *failingListRepo) List(ctx context.Context) ([]Job, error) {
 	if r.err != nil {
 		return nil, r.err
 	}
@@ -24,7 +21,7 @@ func (r *failingListRepo) List(ctx context.Context) ([]job.Job, error) {
 }
 
 // schedulerBase 是调度测试的固定基准时间。
-var schedulerBase = time.Unix(1757879400, 0).UTC()
+var schedulerBase = fixedNow
 
 // schedulerEnv 在 runnerEnv 之上构造被测调度器：固定时钟、手动 tick。
 type schedulerEnv struct {
@@ -33,10 +30,10 @@ type schedulerEnv struct {
 	now       time.Time
 }
 
-func newSchedulerEnv(t *testing.T, remote source.Remote) *schedulerEnv {
+func newSchedulerEnv(t *testing.T) *schedulerEnv {
 	t.Helper()
 	env := &schedulerEnv{
-		runnerEnv: newRunnerEnv(t, remote),
+		runnerEnv: newRunnerEnv(t),
 		now:       schedulerBase,
 	}
 	env.scheduler = NewScheduler(env.repo, env.runner, env.history)
@@ -67,7 +64,7 @@ func (e *schedulerEnv) restartAt(at time.Time) {
 }
 
 // mustScheduledJob 为测试任务设置 schedule。
-func (e *schedulerEnv) mustScheduledJob(t *testing.T, name string, schedule Schedule) job.Job {
+func (e *schedulerEnv) mustScheduledJob(t *testing.T, name string, schedule Schedule) Job {
 	t.Helper()
 	j := e.mustJob(t, name)
 	j.Schedule = schedule
@@ -93,8 +90,7 @@ func (e *schedulerEnv) runCount(t *testing.T, jobID string) int {
 // interval 按持久化 anchor 相位调度：边界到达才触发，occurrence 为
 // 边界本身；重启后相位不变、错过的周期不补跑。
 func TestSchedulerIntervalPhase(t *testing.T) {
-	release := make(chan struct{})
-	env := newSchedulerEnv(t, &blockingRemote{release: release})
+	env := newSchedulerEnv(t)
 	anchor := schedulerBase
 	job := env.mustScheduledJob(t, "interval", Schedule{
 		Type:     ScheduleInterval,
@@ -110,6 +106,7 @@ func TestSchedulerIntervalPhase(t *testing.T) {
 	}
 
 	// 边界后首个 tick：触发，occurrence 为边界本身。
+	release := env.exec.blockRun()
 	env.tickTo(t, anchor.Add(30*time.Minute+time.Second))
 	runs, _, err := env.history.List(ctx, RunFilter{JobID: job.ID})
 	if err != nil || len(runs) != 1 {
@@ -161,7 +158,7 @@ func TestSchedulerIntervalPhase(t *testing.T) {
 
 // once 到期触发且只触发一次；离线期间错过的 once 恢复后补执行。
 func TestSchedulerOnceFiresOnceAndCatchesUp(t *testing.T) {
-	env := newSchedulerEnv(t, buildRemote(map[string]string{"/a.txt": "v1"}, nil))
+	env := newSchedulerEnv(t)
 	at := schedulerBase.Add(time.Hour)
 	job := env.mustScheduledJob(t, "once", Schedule{
 		Type:  ScheduleOnce,
@@ -214,7 +211,7 @@ func TestSchedulerOnceFiresOnceAndCatchesUp(t *testing.T) {
 
 // cron 按 IANA timezone 触发：03:30 Asia/Singapore 即 19:30 UTC。
 func TestSchedulerCronTimezone(t *testing.T) {
-	env := newSchedulerEnv(t, buildRemote(nil, nil))
+	env := newSchedulerEnv(t)
 	job := env.mustScheduledJob(t, "cron", Schedule{
 		Type:     ScheduleCron,
 		Value:    "30 3 * * *",
@@ -246,8 +243,7 @@ func TestSchedulerCronTimezone(t *testing.T) {
 
 // 调度触发的 overlap：运行中到期记 skipped（occurrence 已消费，不排队）。
 func TestSchedulerOverlapRecordsSkipped(t *testing.T) {
-	release := make(chan struct{})
-	env := newSchedulerEnv(t, &blockingRemote{release: release})
+	env := newSchedulerEnv(t)
 	anchor := schedulerBase
 	job := env.mustScheduledJob(t, "busy", Schedule{
 		Type:     ScheduleInterval,
@@ -257,9 +253,11 @@ func TestSchedulerOverlapRecordsSkipped(t *testing.T) {
 	ctx := context.Background()
 
 	// 手动运行占用 Job。
+	release := env.exec.blockRun()
 	if _, err := env.runner.Start(ctx, job.ID); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	env.exec.waitEntered(t)
 	env.tickTo(t, anchor.Add(30*time.Minute+time.Second))
 	runs, _, err := env.history.List(ctx, RunFilter{JobID: job.ID})
 	if err != nil || len(runs) != 2 {
@@ -277,7 +275,7 @@ func TestSchedulerOverlapRecordsSkipped(t *testing.T) {
 
 // manual 与禁用 Job 不被调度。
 func TestSchedulerIgnoresManualAndDisabled(t *testing.T) {
-	env := newSchedulerEnv(t, buildRemote(nil, nil))
+	env := newSchedulerEnv(t)
 	manual := env.mustJob(t, "manual")
 	disabled := env.mustScheduledJob(t, "disabled", Schedule{
 		Type:  ScheduleInterval,
@@ -298,7 +296,7 @@ func TestSchedulerIgnoresManualAndDisabled(t *testing.T) {
 // 恢复后重扫同一窗口补上触发。游标回退重扫时，持久化的 occurrence
 // 消费记录保证同一 occurrence 不重复触发。
 func TestSchedulerListFailureKeepsCursor(t *testing.T) {
-	env := newSchedulerEnv(t, buildRemote(map[string]string{"/a.txt": "v1"}, nil))
+	env := newSchedulerEnv(t)
 	anchor := schedulerBase
 	job := env.mustScheduledJob(t, "keep", Schedule{
 		Type:     ScheduleInterval,
@@ -338,7 +336,7 @@ func TestSchedulerListFailureKeepsCursor(t *testing.T) {
 // once 消费状态与运行历史解耦：runs 表里没有该 occurrence 的记录
 // （如历史已被 retention 裁剪）时，已消费的 once 依然不重放。
 func TestSchedulerOnceConsumptionSurvivesPrunedHistory(t *testing.T) {
-	env := newSchedulerEnv(t, buildRemote(map[string]string{"/a.txt": "v1"}, nil))
+	env := newSchedulerEnv(t)
 	ctx := context.Background()
 	at := schedulerBase.Add(-time.Hour)
 	job := env.mustScheduledJob(t, "once-pruned", Schedule{
@@ -381,7 +379,7 @@ func TestSchedulerOnceConsumptionSurvivesPrunedHistory(t *testing.T) {
 // 本 tick 保持游标不动，恢复后重扫同一窗口补上触发；已成功持久化的
 // occurrence 由消费记录挡住，重扫不重复执行。
 func TestSchedulerTransientOccurrenceFailureKeepsCursor(t *testing.T) {
-	env := newSchedulerEnv(t, buildRemote(map[string]string{"/a.txt": "v1"}, nil))
+	env := newSchedulerEnv(t)
 	anchor := schedulerBase
 	job := env.mustScheduledJob(t, "retry", Schedule{
 		Type:     ScheduleInterval,
@@ -426,7 +424,7 @@ func TestSchedulerTransientOccurrenceFailureKeepsCursor(t *testing.T) {
 // mutation 占用是瞬时的：occurrence 不被消费、游标不推进；变更
 // 释放后下一 tick 重新触发（once 尤其不该被几毫秒的配置互斥吞掉）。
 func TestSchedulerMutationOccupancyIsTransient(t *testing.T) {
-	env := newSchedulerEnv(t, buildRemote(map[string]string{"/a.txt": "v1"}, nil))
+	env := newSchedulerEnv(t)
 	anchor := schedulerBase
 	job := env.mustScheduledJob(t, "mutating", Schedule{
 		Type:     ScheduleInterval,
@@ -457,7 +455,7 @@ func TestSchedulerMutationOccupancyIsTransient(t *testing.T) {
 
 // Start / Stop 生命周期：Stop 后调度循环退出，不泄漏 goroutine。
 func TestSchedulerStartStop(t *testing.T) {
-	env := newSchedulerEnv(t, buildRemote(nil, nil))
+	env := newSchedulerEnv(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	env.scheduler.Start(ctx)
 	env.scheduler.Stop()

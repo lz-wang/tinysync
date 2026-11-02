@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"tinysync/internal/job"
 	"tinysync/internal/logging"
 	"tinysync/internal/source"
 )
@@ -41,9 +42,7 @@ type RunOptions struct {
 
 // ItemRecorder 接收文件级变更明细。返回错误视为本轮失败：历史明细缺失
 // 与 metadata 缺失同等对待，不做静默降级。
-type ItemRecorder interface {
-	RecordItem(ctx context.Context, item RunItem) error
-}
+type ItemRecorder = job.ItemRecorder
 
 // RunStats 是一轮同步的统计摘要。
 type RunStats struct {
@@ -373,7 +372,7 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 				defer limiter.Release()
 				// 在途文件登记：bytes_total 取下载前快照的指纹 size，
 				// 字节计数由 Downloader 拷贝路径经 listener 累加。
-				fp := progress.BeginFile(j.entry.relPath, j.action, j.entry.remote.Fingerprint.Size)
+				fp := progress.BeginUnit(j.entry.relPath, j.action, j.entry.remote.Fingerprint.Size)
 				err := downloader.download(transferCtx, TransferSpec{
 					RunID:       opts.RunID,
 					JobID:       job.ID,
@@ -383,7 +382,7 @@ func Run(ctx context.Context, opts RunOptions) (RunStats, error) {
 					RelPath:     j.entry.relPath,
 					Expected:    j.entry.remote.Fingerprint,
 				}, fileProgressListener{fp: fp})
-				progress.EndFile(j.entry.relPath)
+				progress.EndUnit(j.entry.relPath)
 				results <- transferOutcome{job: j, err: err}
 			}(j)
 		}

@@ -40,6 +40,10 @@ var (
 	ErrSourceInUse = errors.New("source is referenced by sync jobs")
 	// ErrRootOverlap 表示 LocalRoot 与其他任务或数据目录重叠。
 	ErrRootOverlap = errors.New("local root overlaps another local root")
+	// ErrSourceDisabled 表示任务引用的 Source 已禁用：File 执行器的
+	// 运行期准入检查（统一 Runner 不理解 Source，见已决 R7），失败
+	// 收敛为一次 failed run。
+	ErrSourceDisabled = errors.New("source is disabled")
 )
 
 // 领域错误别名：引擎与 API 层沿用本包名判定统一任务 / 运行错误。
@@ -176,6 +180,41 @@ type (
 	RunItem       = job.RunItem
 	RunRecord     = job.RunRecord
 	RunFilter     = job.RunFilter
+
+	// 运行协调类型别名（Runner / Scheduler 已迁移至 internal/job）。
+	Runner              = job.Runner
+	Scheduler           = job.Scheduler
+	RunStatus           = job.RunStatus
+	RunPhase            = job.RunPhase
+	RunProgressSnapshot = job.RunProgressSnapshot
+	ProgressReporter    = job.ProgressReporter
+	TransferLimiter     = job.TransferLimiter
+)
+
+// NewRunProgress / NewTransferLimiter / NullProgress 是统一 Runner 侧
+// 构造函数的转发。
+var (
+	NewRunProgress     = job.NewRunProgress
+	NewTransferLimiter = job.NewTransferLimiter
+	NullProgress       = job.NullProgress
+)
+
+// 运行协调哨兵错误的别名（API 层与测试沿用本包名判定）。
+var (
+	ErrRunActive        = job.ErrRunActive
+	ErrConcurrencyLimit = job.ErrConcurrencyLimit
+	ErrJobDisabled      = job.ErrJobDisabled
+	ErrShuttingDown     = job.ErrShuttingDown
+	ErrJobMutating      = job.ErrJobMutating
+)
+
+// 运行阶段常量别名。
+const (
+	RunPhaseConnecting   = job.RunPhaseConnecting
+	RunPhaseScanning     = job.RunPhaseScanning
+	RunPhasePlanning     = job.RunPhasePlanning
+	RunPhaseTransferring = job.RunPhaseTransferring
+	RunPhaseFinalizing   = job.RunPhaseFinalizing
 )
 
 // 触发方式与状态枚举别名。

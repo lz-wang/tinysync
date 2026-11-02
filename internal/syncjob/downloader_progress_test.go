@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"tinysync/internal/job"
 	"tinysync/internal/source"
 )
 
@@ -128,7 +129,7 @@ func TestDownloadReportsLiveByteProgress(t *testing.T) {
 	d := newProgressDownloader(t, func() io.Reader {
 		return &gatedReader{head: 4, data: content, release: release}
 	})
-	fp := &FileProgress{Path: "live.bin", BytesTotal: int64(len(content))}
+	fp := &job.UnitProgress{Target: "live.bin", BytesTotal: int64(len(content))}
 	listener := fileProgressListener{fp: fp}
 
 	done := make(chan error, 1)
@@ -197,8 +198,8 @@ func TestConcurrentTransfersKeepSeparateProgress(t *testing.T) {
 	// 全部收敛后在途清单为空、计数收敛（文件级终值由 downloader 测试
 	// 断言；此处验证并发登记 / 注销无串扰）。
 	snap := progress.Snapshot()
-	if len(snap.ActiveFiles) != 0 {
-		t.Errorf("active files after run = %v, want empty", snap.ActiveFiles)
+	if len(snap.ActiveUnits) != 0 {
+		t.Errorf("active units after run = %v, want empty", snap.ActiveUnits)
 	}
 	if snap.WorkDone != snap.WorkTotal || snap.WorkTotal != 3 {
 		t.Errorf("work = %d/%d, want 3/3", snap.WorkDone, snap.WorkTotal)
@@ -207,12 +208,12 @@ func TestConcurrentTransfersKeepSeparateProgress(t *testing.T) {
 
 // bytes_done 的并发读写守卫（-race）：下载路径累加与查询方并发。
 func TestFileProgressConcurrentReadWrite(t *testing.T) {
-	fp := &FileProgress{Path: "race.bin", BytesTotal: 1 << 20}
+	fp := &job.UnitProgress{Target: "race.bin", BytesTotal: 1 << 20}
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
 	wg.Go(func() {
 		for range 1000 {
-			fp.add(1)
+			fp.Add(1)
 		}
 		close(stop)
 	})
@@ -279,7 +280,7 @@ func TestCopyCountingShortWriteCountsWrittenBytesOnly(t *testing.T) {
 // 写入报错（ENOSPC）时同理：进度只反映真实落地的部分写入。
 func TestCopyCountingWriteErrorCountsWrittenBytesOnly(t *testing.T) {
 	data := strings.Repeat("b", 64*1024)
-	fp := &FileProgress{Path: "enospc.bin", BytesTotal: int64(len(data))}
+	fp := &job.UnitProgress{Target: "enospc.bin", BytesTotal: int64(len(data))}
 	listener := fileProgressListener{fp: fp}
 	_, err := copyCounting(&partialFailWriter{err: errors.New("no space left on device")}, strings.NewReader(data), listener)
 	if err == nil {
@@ -315,21 +316,24 @@ func TestDownloadProgressStartsAtResumeOffset(t *testing.T) {
 	}
 }
 
-// FileProgress 的 setDone / ResumeFrom：断点对齐后快照输出
+// UnitProgress 的 SetDone / ResumeFrom：断点对齐后快照输出
 // resume_from，bytes_done 从断点起累加。
 func TestFileProgressResumeFrom(t *testing.T) {
-	fp := &FileProgress{Path: "a.bin", BytesTotal: 100}
-	fp.setDone(40)
+	fp := &job.UnitProgress{Target: "a.bin", BytesTotal: 100}
+	fp.SetDone(40)
 	if fp.BytesDone() != 40 || fp.ResumeFrom() != 40 {
-		t.Fatalf("after setDone(40): done=%d resumeFrom=%d, want 40/40", fp.BytesDone(), fp.ResumeFrom())
+		t.Fatalf("after SetDone(40): done=%d resumeFrom=%d, want 40/40", fp.BytesDone(), fp.ResumeFrom())
 	}
-	fp.add(10)
+	fp.Add(10)
 	if fp.BytesDone() != 50 {
-		t.Fatalf("after add(10): done=%d, want 50", fp.BytesDone())
+		t.Fatalf("after Add(10): done=%d, want 50", fp.BytesDone())
 	}
-	rp := &RunProgress{activeFiles: map[string]*FileProgress{"a.bin": fp}}
+	rp := job.NewRunProgress()
+	rp.BeginUnit("a.bin", ItemCreate, 100).SetDone(40)
+	rp.EndUnit("a.bin")
+	rp.BeginUnit("a.bin", ItemCreate, 100).SetDone(40)
 	snap := rp.Snapshot()
-	if len(snap.ActiveFiles) != 1 || snap.ActiveFiles[0].ResumeFrom != 40 {
-		t.Fatalf("snapshot resume_from = %+v, want 40", snap.ActiveFiles)
+	if len(snap.ActiveUnits) != 1 || snap.ActiveUnits[0].ResumeFrom != 40 {
+		t.Fatalf("snapshot resume_from = %+v, want 40", snap.ActiveUnits)
 	}
 }

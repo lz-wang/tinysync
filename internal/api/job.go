@@ -525,15 +525,15 @@ func toRunProgressDTO(snap syncjob.RunProgressSnapshot) *runProgressDTO {
 		WorkDone:  snap.WorkDone,
 		WorkTotal: snap.WorkTotal,
 	}
-	if len(snap.ActiveFiles) > 0 {
-		dto.ActiveFiles = make([]runProgressFileDTO, 0, len(snap.ActiveFiles))
-		for _, f := range snap.ActiveFiles {
+	if len(snap.ActiveUnits) > 0 {
+		dto.ActiveFiles = make([]runProgressFileDTO, 0, len(snap.ActiveUnits))
+		for _, u := range snap.ActiveUnits {
 			dto.ActiveFiles = append(dto.ActiveFiles, runProgressFileDTO{
-				Target:     f.Path,
-				Action:     f.Action,
-				BytesDone:  f.BytesDone,
-				BytesTotal: f.BytesTotal,
-				ResumeFrom: f.ResumeFrom,
+				Target:     u.Target,
+				Action:     u.Action,
+				BytesDone:  u.BytesDone,
+				BytesTotal: u.BytesTotal,
+				ResumeFrom: u.ResumeFrom,
 			})
 		}
 	}

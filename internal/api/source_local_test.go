@@ -16,6 +16,7 @@ import (
 	sourcesqlite "tinysync/internal/source/sqlite"
 	"tinysync/internal/storage"
 	"tinysync/internal/syncjob"
+	managedsqlite "tinysync/internal/syncjob/sqlite"
 )
 
 func newLocalSourceRouter(t *testing.T) testRouter {
@@ -32,7 +33,7 @@ func newLocalSourceRouter(t *testing.T) testRouter {
 	}
 	svc := source.NewService(sourcesqlite.New(db), localadapter.NewFactory())
 	jobRepo := jobsqlite.NewRepository(db)
-	fileExec := syncjob.NewFileExecutor(svc, jobRepo, dataDir)
+	fileExec := syncjob.NewFileExecutor(svc, jobRepo, managedsqlite.NewManagedRepository(db), dataDir)
 	jobs := job.NewService(jobRepo, map[job.JobKind]job.Executor{job.KindFile: fileExec})
 	return newTestAuth(t, db, Dependencies{Sources: svc, Jobs: jobs, Browser: browser.NewRemoteService(svc)})
 }

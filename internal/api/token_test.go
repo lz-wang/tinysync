@@ -56,9 +56,10 @@ func newScopeTestEnv(t *testing.T) *scopeTestEnv {
 	sourceSvc := source.NewService(sourcesqlite.New(db), fakeFactory{remote: fakeRemote{}})
 	jobRepo := jobsqlite.NewRepository(db)
 	managedRepo := managedsqlite.NewManagedRepository(db)
-	fileExec := syncjob.NewFileExecutor(sourceSvc, jobRepo, dataDir)
-	jobSvc := job.NewService(jobRepo, map[job.JobKind]job.Executor{job.KindFile: fileExec})
-	runner := syncjob.NewRunner(jobRepo, managedRepo, sourceSvc, jobsqlite.NewRunRepository(db))
+	fileExec := syncjob.NewFileExecutor(sourceSvc, jobRepo, managedRepo, dataDir)
+	executors := map[job.JobKind]job.Executor{job.KindFile: fileExec}
+	jobSvc := job.NewService(jobRepo, executors)
+	runner := job.NewRunner(jobRepo, jobsqlite.NewRunRepository(db), executors)
 	router := newTestAuth(t, db, Dependencies{Sources: sourceSvc, Jobs: jobSvc, Runner: runner})
 	return &scopeTestEnv{router: router, db: db}
 }

@@ -1,38 +1,36 @@
-package syncjob
+package job
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
 	"time"
-
-	"tinysync/internal/job"
 )
 
 // captureHook 记录收到的完成事件，供断言「恰好一次」与负载内容。
 type captureHook struct {
 	mu     sync.Mutex
-	events []job.RunCompletion
+	events []RunCompletion
 }
 
-func (h *captureHook) OnRunCompleted(run job.RunCompletion) {
+func (h *captureHook) OnRunCompleted(run RunCompletion) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.events = append(h.events, run)
 }
 
-func (h *captureHook) snapshot() []job.RunCompletion {
+func (h *captureHook) snapshot() []RunCompletion {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return append([]job.RunCompletion(nil), h.events...)
+	return append([]RunCompletion(nil), h.events...)
 }
 
-// 成功的 run 在终态落库后恰好发布一次完成事件，负载自带 JobName /
-// SourceID 快照。
+// 成功的 run 在终态落库后恰好发布一次完成事件，负载自带 JobName 与
+// 执行器返回的结果摘要快照。
 func TestRunnerPublishesCompletionOnSuccess(t *testing.T) {
-	env := newRunnerEnv(t, buildRemote(map[string]string{"/a.txt": "v1"}, nil))
+	env := newRunnerEnv(t)
+	env.exec.succeedWith([]byte(`{"files_created":1}`))
 	hook := &captureHook{}
 	env.runner.CompletionHook = hook
 	j := env.mustJob(t, "photos")
@@ -54,25 +52,24 @@ func TestRunnerPublishesCompletionOnSuccess(t *testing.T) {
 	if event.JobName != j.Name {
 		t.Fatalf("event job name = %s, want %s", event.JobName, j.Name)
 	}
+	if event.JobKind != KindFile {
+		t.Fatalf("event job kind = %s, want %s", event.JobKind, KindFile)
+	}
 	if event.State != RunSucceeded || event.Error != "" {
 		t.Fatalf("event state = %s error = %q, want succeeded/empty", event.State, event.Error)
 	}
-	var stats RunStats
-	if err := json.Unmarshal(event.Result, &stats); err != nil {
-		t.Fatalf("parse event result: %v", err)
-	}
-	if stats.FilesCreated != 1 {
-		t.Fatalf("event result files_created = %d, want 1", stats.FilesCreated)
+	if string(event.Result) != `{"files_created":1}` {
+		t.Fatalf("event result = %s, want executor summary", event.Result)
 	}
 	if event.FinishedAt.Before(event.StartedAt) {
 		t.Fatalf("event finished_at %s before started_at %s", event.FinishedAt, event.StartedAt)
 	}
 }
 
-// OpenRemote 失败也是一次真实执行过的 failed run：同样发布完成事件。
-func TestRunnerPublishesCompletionOnOpenRemoteFailure(t *testing.T) {
-	env := newRunnerEnv(t, buildRemote(map[string]string{}, nil))
-	env.creds.openErr = errors.New("dial timeout")
+// 执行器失败也是一次真实执行过的 failed run：同样发布完成事件。
+func TestRunnerPublishesCompletionOnExecutorFailure(t *testing.T) {
+	env := newRunnerEnv(t)
+	env.exec.failNext(errors.New("dial timeout"))
 	hook := &captureHook{}
 	env.runner.CompletionHook = hook
 	j := env.mustJob(t, "photos")
@@ -98,7 +95,7 @@ func TestRunnerPublishesCompletionOnOpenRemoteFailure(t *testing.T) {
 // 终态落库失败不发布完成事件：数据库仍显示 running 时发出完成通知
 // 会造成两边事实不一致（ADR 0006）。
 func TestRunnerDoesNotPublishWhenFinalizeFails(t *testing.T) {
-	env := newRunnerEnv(t, buildRemote(map[string]string{"/a.txt": "v1"}, nil))
+	env := newRunnerEnv(t)
 	hook := &captureHook{}
 	env.runner.CompletionHook = hook
 	j := env.mustJob(t, "photos")
@@ -119,8 +116,8 @@ func TestRunnerDoesNotPublishWhenFinalizeFails(t *testing.T) {
 
 // skipped（调度未执行）不产生完成事件：它不是「任务完成」。
 func TestRunnerSkippedRunDoesNotPublishCompletion(t *testing.T) {
-	release := make(chan struct{})
-	env := newRunnerEnv(t, &blockingRemote{release: release})
+	env := newRunnerEnv(t)
+	release := env.exec.blockRun()
 	hook := &captureHook{}
 	env.runner.CompletionHook = hook
 	j := env.mustJob(t, "photos")
@@ -129,8 +126,8 @@ func TestRunnerSkippedRunDoesNotPublishCompletion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	// 等第一轮真正占用 active 后再触发调度，确保记 skipped。
-	waitForRunState(t, env, first, RunRunning)
+	// 等第一轮真正进入执行器后再触发调度，确保记 skipped。
+	env.exec.waitEntered(t)
 	occurrence := time.Now().UTC()
 	if _, err := env.runner.StartScheduled(context.Background(), j.ID, TriggerCron, occurrence); err != nil {
 		t.Fatalf("StartScheduled: %v", err)

@@ -206,7 +206,7 @@ func TestLocalJobCreateRevalidatesAfterMkdir(t *testing.T) {
 		return os.Symlink(destination, canonical)
 	}
 	svc := job.NewService(repo, map[job.JobKind]job.Executor{
-		job.KindFile: syncjob.NewFileExecutor(env.sourceSvc, repo, env.dataDir),
+		job.KindFile: syncjob.NewFileExecutor(env.sourceSvc, repo, env.managed, env.dataDir),
 	})
 	cfg, err := syncjob.MarshalFileConfig(src.ID, "/", destination, syncjob.ModeMirror, nil, nil)
 	if err != nil {

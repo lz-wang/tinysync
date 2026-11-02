@@ -85,7 +85,7 @@ func TestSchedulerAutoSyncEndToEnd(t *testing.T) {
 	e.setInterval(t, job.ID, 30*time.Minute, 3*time.Second)
 
 	runRepo := e.newRunRepo()
-	scheduler := syncjob.NewScheduler(e.jobRepo, e.runner, runRepo)
+	scheduler := job2.NewScheduler(e.jobRepo, e.runner, runRepo)
 	scheduler.Start(ctx)
 	defer scheduler.Stop()
 
@@ -128,7 +128,7 @@ func TestSchedulerOnceCatchUpEndToEnd(t *testing.T) {
 	e.setOnce(t, job.ID, time.Now().UTC().Add(-time.Hour))
 
 	runRepo := e.newRunRepo()
-	scheduler := syncjob.NewScheduler(e.jobRepo, e.runner, runRepo)
+	scheduler := job2.NewScheduler(e.jobRepo, e.runner, runRepo)
 	scheduler.Start(ctx)
 
 	local := filepath.Join(job.LocalRoot, "a.txt")
@@ -147,7 +147,7 @@ func TestSchedulerOnceCatchUpEndToEnd(t *testing.T) {
 	scheduler.Stop()
 
 	// 调度器重启（新游标）：once 已消费，不再重复执行。
-	scheduler2 := syncjob.NewScheduler(e.jobRepo, e.runner, runRepo)
+	scheduler2 := job2.NewScheduler(e.jobRepo, e.runner, runRepo)
 	scheduler2.Start(ctx)
 	time.Sleep(2 * time.Second)
 	scheduler2.Stop()
@@ -168,7 +168,7 @@ func TestOnceConsumedSurvivesRetentionEndToEnd(t *testing.T) {
 	e.setOnce(t, job.ID, time.Now().UTC().Add(-time.Hour))
 
 	runRepo := e.newRunRepo()
-	scheduler := syncjob.NewScheduler(e.jobRepo, e.runner, runRepo)
+	scheduler := job2.NewScheduler(e.jobRepo, e.runner, runRepo)
 	scheduler.Start(ctx)
 
 	local := filepath.Join(job.LocalRoot, "a.txt")
@@ -216,7 +216,7 @@ func TestOnceConsumedSurvivesRetentionEndToEnd(t *testing.T) {
 	}
 
 	// 调度器继续运行：once 不重放（若重放会出现第 501 条之外的 run）。
-	scheduler2 := syncjob.NewScheduler(e.jobRepo, e.runner, runRepo)
+	scheduler2 := job2.NewScheduler(e.jobRepo, e.runner, runRepo)
 	scheduler2.Start(ctx)
 	time.Sleep(3 * time.Second)
 	scheduler2.Stop()
@@ -226,35 +226,25 @@ func TestOnceConsumedSurvivesRetentionEndToEnd(t *testing.T) {
 	}
 }
 
-// 全局容量：两个 Job 的 once 同时到期，容量 1 时后到者记 skipped
-// （occurrence 已消费），先到者正常完成。
-func TestSchedulerCapacitySkipsEndToEnd(t *testing.T) {
+// 全局容量（已决 R4）：两个 Job 的 once 同时到期，容量 1 时后到者被
+// 瞬时拒绝——occurrence 不消费、不记 skipped，调度器保持游标在后续
+// 周期重试；先到者完成后，后到者重试并正常完成。
+func TestSchedulerCapacityThrottleRetriesEndToEnd(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
 	e.dav.writeFile(t, "/a.txt", "v1")
 	sourceID := e.createSource(t)
 	jobA := e.createJob(t, "Capacity A", sourceID, string(syncjob.ModeCopy))
 	jobB := e.createJob(t, "Capacity B", sourceID, string(syncjob.ModeCopy))
+	e.runner.MaxConcurrentJobs = 1
 	at := time.Now().UTC().Add(2 * time.Second)
 	e.setOnce(t, jobA.ID, at)
 	e.setOnce(t, jobB.ID, at)
 
 	runRepo := e.newRunRepo()
-	scheduler := syncjob.NewScheduler(e.jobRepo, e.runner, runRepo)
+	scheduler := job2.NewScheduler(e.jobRepo, e.runner, runRepo)
 	scheduler.Start(ctx)
 	defer scheduler.Stop()
-
-	waitFor(t, 15*time.Second, "capacity skip record", func() bool {
-		rec, err := runRepo.Latest(ctx, jobB.ID)
-		return err == nil && rec.State == syncjob.RunSkipped
-	})
-	recB, _ := runRepo.Latest(ctx, jobB.ID)
-	if recB.Trigger != syncjob.TriggerOnce || recB.Error != "concurrency limit reached" {
-		t.Errorf("skipped run = %+v, want once skipped by concurrency limit", recB)
-	}
-	if recB.ScheduledFor == nil || !recB.ScheduledFor.Equal(at.Truncate(time.Second)) && !recB.ScheduledFor.Equal(at) {
-		t.Errorf("skipped occurrence = %v, want %v", recB.ScheduledFor, at)
-	}
 
 	localA := filepath.Join(jobA.LocalRoot, "a.txt")
 	waitFor(t, 15*time.Second, "job A download", func() bool {
@@ -265,6 +255,24 @@ func TestSchedulerCapacitySkipsEndToEnd(t *testing.T) {
 		rec, err := runRepo.Latest(ctx, jobA.ID)
 		return err == nil && rec.State == syncjob.RunSucceeded
 	})
+
+	// A 收敛释放容量后，B 的被拒 occurrence 在后续 tick 重试成功。
+	localB := filepath.Join(jobB.LocalRoot, "a.txt")
+	waitFor(t, 15*time.Second, "job B retry after capacity released", func() bool {
+		rec, err := runRepo.Latest(ctx, jobB.ID)
+		return err == nil && rec.State == syncjob.RunSucceeded
+	})
+	if _, err := os.Stat(localB); err != nil {
+		t.Errorf("job B download after retry: %v", err)
+	}
+	// 容量满只拒绝不消费：B 的历史里没有 skipped 记录。
+	runs, total, err := runRepo.List(ctx, job2.RunFilter{JobID: jobB.ID})
+	if err != nil {
+		t.Fatalf("list job B runs: %v", err)
+	}
+	if total != 1 || runs[0].State != syncjob.RunSucceeded || runs[0].Trigger != syncjob.TriggerOnce {
+		t.Errorf("job B runs = %+v (total %d), want exactly one succeeded once", runs, total)
+	}
 }
 
 // 跨重启：completed run 与文件明细仍可查询；遗留 running 收敛为 failed

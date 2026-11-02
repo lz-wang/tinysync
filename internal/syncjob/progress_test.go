@@ -3,53 +3,55 @@ package syncjob
 import (
 	"sync"
 	"testing"
+
+	"tinysync/internal/job"
 )
 
-// RunProgress 单元：阶段推进、工作量计数、在途文件登记与快照排序。
+// RunProgress 单元：阶段推进、工作量计数、在途单元登记与快照排序。
 func TestRunProgressSnapshot(t *testing.T) {
 	p := NewRunProgress()
-	if snap := p.Snapshot(); snap.Phase != RunPhaseConnecting || snap.WorkTotal != 0 || len(snap.ActiveFiles) != 0 {
-		t.Fatalf("initial snapshot = %+v, want connecting/0/0 files", snap)
+	if snap := p.Snapshot(); snap.Phase != RunPhaseConnecting || snap.WorkTotal != 0 || len(snap.ActiveUnits) != 0 {
+		t.Fatalf("initial snapshot = %+v, want connecting/0/0 units", snap)
 	}
 
 	p.SetPhase(RunPhaseTransferring)
 	p.SetWorkTotal(75)
 	p.AddWorkDone(25)
-	a := p.BeginFile("b.tar", ItemUpdate, 100)
-	b := p.BeginFile("a.zip", ItemCreate, 200)
+	a := p.BeginUnit("b.tar", ItemUpdate, 100)
+	b := p.BeginUnit("a.zip", ItemCreate, 200)
 	// 并发字节累加（模拟下载回调）。
-	a.add(50)
-	a.add(30)
-	b.add(1)
+	a.Add(50)
+	a.Add(30)
+	b.Add(1)
 
 	snap := p.Snapshot()
 	if snap.Phase != RunPhaseTransferring || snap.WorkDone != 25 || snap.WorkTotal != 75 {
 		t.Fatalf("snapshot = %+v, want transferring 25/75", snap)
 	}
-	if len(snap.ActiveFiles) != 2 {
-		t.Fatalf("active files = %d, want 2", len(snap.ActiveFiles))
+	if len(snap.ActiveUnits) != 2 {
+		t.Fatalf("active units = %d, want 2", len(snap.ActiveUnits))
 	}
-	// 快照按 path 稳定排序。
-	if snap.ActiveFiles[0].Path != "a.zip" || snap.ActiveFiles[1].Path != "b.tar" {
-		t.Errorf("active files order = [%s, %s], want [a.zip, b.tar]",
-			snap.ActiveFiles[0].Path, snap.ActiveFiles[1].Path)
+	// 快照按 target 稳定排序。
+	if snap.ActiveUnits[0].Target != "a.zip" || snap.ActiveUnits[1].Target != "b.tar" {
+		t.Errorf("active units order = [%s, %s], want [a.zip, b.tar]",
+			snap.ActiveUnits[0].Target, snap.ActiveUnits[1].Target)
 	}
-	if got := snap.ActiveFiles[0]; got.BytesDone != 1 || got.BytesTotal != 200 || got.Action != string(ItemCreate) {
+	if got := snap.ActiveUnits[0]; got.BytesDone != 1 || got.BytesTotal != 200 || got.Action != string(ItemCreate) {
 		t.Errorf("a.zip snapshot = %+v, want done 1 / total 200 / create", got)
 	}
-	if got := snap.ActiveFiles[1]; got.BytesDone != 80 || got.BytesTotal != 100 {
+	if got := snap.ActiveUnits[1]; got.BytesDone != 80 || got.BytesTotal != 100 {
 		t.Errorf("b.tar snapshot = %+v, want done 80 / total 100", got)
 	}
 
-	// 注销后快照消失；EndFile 对未知路径安全。
-	p.EndFile("a.zip")
-	p.EndFile("not-registered")
-	if snap = p.Snapshot(); len(snap.ActiveFiles) != 1 || snap.ActiveFiles[0].Path != "b.tar" {
-		t.Fatalf("active files after end = %+v, want only b.tar", snap.ActiveFiles)
+	// 注销后快照消失；EndUnit 对未知 target 安全。
+	p.EndUnit("a.zip")
+	p.EndUnit("not-registered")
+	if snap = p.Snapshot(); len(snap.ActiveUnits) != 1 || snap.ActiveUnits[0].Target != "b.tar" {
+		t.Fatalf("active units after end = %+v, want only b.tar", snap.ActiveUnits)
 	}
-	p.EndFile("b.tar")
-	if snap = p.Snapshot(); len(snap.ActiveFiles) != 0 {
-		t.Fatalf("active files after all end = %d, want 0", len(snap.ActiveFiles))
+	p.EndUnit("b.tar")
+	if snap = p.Snapshot(); len(snap.ActiveUnits) != 0 {
+		t.Fatalf("active units after all end = %d, want 0", len(snap.ActiveUnits))
 	}
 }
 
@@ -62,10 +64,10 @@ func TestRunProgressConcurrent(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			fp := p.BeginFile(string(rune('a'+i%26))+"-"+string(rune('a'+i)), ItemCreate, 10)
-			fp.add(int64(i))
+			up := p.BeginUnit(string(rune('a'+i%26))+"-"+string(rune('a'+i)), ItemCreate, 10)
+			up.Add(int64(i))
 			p.AddWorkDone(1)
-			p.EndFile(fp.Path)
+			p.EndUnit(up.Target)
 			_ = p.Snapshot()
 		}(i)
 	}
@@ -74,8 +76,8 @@ func TestRunProgressConcurrent(t *testing.T) {
 	if snap.WorkDone != 50 {
 		t.Errorf("work done = %d, want 50", snap.WorkDone)
 	}
-	if len(snap.ActiveFiles) != 0 {
-		t.Errorf("active files = %d, want 0 after all end", len(snap.ActiveFiles))
+	if len(snap.ActiveUnits) != 0 {
+		t.Errorf("active units = %d, want 0 after all end", len(snap.ActiveUnits))
 	}
 }
 
@@ -85,8 +87,8 @@ type recordingProgress struct {
 	phases     []RunPhase
 	workTotal  int64
 	workDone   int64
-	beginFiles []string
-	endFiles   []string
+	beginUnits []string
+	endUnits   []string
 }
 
 func (r *recordingProgress) SetPhase(phase RunPhase) {
@@ -107,21 +109,21 @@ func (r *recordingProgress) AddWorkDone(n int64) {
 	r.workDone += n
 }
 
-func (r *recordingProgress) BeginFile(path string, _ RunItemAction, _ int64) *FileProgress {
+func (r *recordingProgress) BeginUnit(target string, _ RunItemAction, _ int64) *job.UnitProgress {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.beginFiles = append(r.beginFiles, path)
-	return &FileProgress{Path: path}
+	r.beginUnits = append(r.beginUnits, target)
+	return &job.UnitProgress{Target: target}
 }
 
-func (r *recordingProgress) EndFile(path string) {
+func (r *recordingProgress) EndUnit(target string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.endFiles = append(r.endFiles, path)
+	r.endUnits = append(r.endUnits, target)
 }
 
 // 引擎进度事件：阶段序列完整、分母等于计划工作项（跳过 + 待传）、
-// 成功一轮后收敛 work_done == work_total、在途文件成对登记注销。
+// 成功一轮后收敛 work_done == work_total、在途单元成对登记注销。
 func TestRunProgressEvents(t *testing.T) {
 	f := newEngineFixture(t, ModeMirror)
 	// 首轮建立 managed：a.txt / c.txt synced。
@@ -155,8 +157,8 @@ func TestRunProgressEvents(t *testing.T) {
 	if rec.workDone != 3 {
 		t.Errorf("work done = %d, want 3 (run succeeded)", rec.workDone)
 	}
-	if len(rec.beginFiles) != 2 || len(rec.endFiles) != 2 {
-		t.Errorf("begin/end files = %v / %v, want 2/2", rec.beginFiles, rec.endFiles)
+	if len(rec.beginUnits) != 2 || len(rec.endUnits) != 2 {
+		t.Errorf("begin/end units = %v / %v, want 2/2", rec.beginUnits, rec.endUnits)
 	}
 }
 
@@ -175,12 +177,12 @@ func TestRunProgressAbortsBeforeTransferring(t *testing.T) {
 	if rec.workTotal != 0 || rec.workDone != 0 {
 		t.Errorf("counters = %d/%d, want 0/0", rec.workDone, rec.workTotal)
 	}
-	if len(rec.beginFiles) != 0 {
-		t.Errorf("begin files = %v, want none", rec.beginFiles)
+	if len(rec.beginUnits) != 0 {
+		t.Errorf("begin units = %v, want none", rec.beginUnits)
 	}
 }
 
-// 独立调用不注入 Progress：nullProgress 路径行为与注入时一致。
+// 独立调用不注入 Progress：NullProgress 路径行为与注入时一致。
 func TestRunWithoutProgressReporter(t *testing.T) {
 	f := newEngineFixture(t, ModeCopy)
 	remote := buildRemote(map[string]string{"/a.txt": "v1"}, nil)

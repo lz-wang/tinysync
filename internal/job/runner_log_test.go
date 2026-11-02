@@ -1,7 +1,8 @@
-package syncjob
+package job
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -9,9 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"tinysync/internal/job"
 	"tinysync/internal/logging"
-	"tinysync/internal/source"
 )
 
 // initLogFileLogging 把全局 logger 指向临时目录的日志文件，返回
@@ -32,8 +31,13 @@ func initLogFileLogging(t *testing.T) func() string {
 }
 
 // logJob 构造 finalize 直调所需的统一任务快照。
-func logJob(id, name string) job.Job {
-	return job.Job{ID: id, Name: name, Kind: job.KindFile}
+func logJob(id, name string) Job {
+	return Job{ID: id, Name: name, Kind: KindFile}
+}
+
+// newLogRunner 构造带桩执行器的 Runner（日志测试不关心领域结果）。
+func newLogRunner(repo *memJobRepo, history *memRunRepo) *Runner {
+	return NewRunner(repo, history, map[JobKind]Executor{KindFile: newStubExecutor()})
 }
 
 // run 终态输出 event=sync_run 结构化事件：job_id / run_id /
@@ -41,10 +45,11 @@ func logJob(id, name string) job.Job {
 func TestFinalizeEmitsSyncRunEvent(t *testing.T) {
 	readLog := initLogFileLogging(t)
 
-	r := NewRunner(newMemJobRepo(), newInMemoryManaged(), &memCreds{}, newMemRunRepo())
+	r := newLogRunner(newMemJobRepo(), newMemRunRepo())
 	run := &activeRun{
 		runID:     "run_abc123",
 		jobID:     "job_a",
+		jobKind:   KindFile,
 		startedAt: time.Now().Add(-1500 * time.Millisecond),
 	}
 	r.finalize(context.Background(), run, logJob("job_a", "photos"),
@@ -69,10 +74,11 @@ func TestFinalizeEmitsSyncRunEvent(t *testing.T) {
 func TestFinalizeEmitsSuccessEvent(t *testing.T) {
 	readLog := initLogFileLogging(t)
 
-	r := NewRunner(newMemJobRepo(), newInMemoryManaged(), &memCreds{}, newMemRunRepo())
+	r := newLogRunner(newMemJobRepo(), newMemRunRepo())
 	run := &activeRun{
 		runID:     "run_ok42",
 		jobID:     "job_ok",
+		jobKind:   KindFile,
 		startedAt: time.Now().Add(-100 * time.Millisecond),
 	}
 	r.finalize(context.Background(), run, logJob("job_ok", "docs"), []byte(`{"files_updated":2,"bytes_transferred":7}`), nil)
@@ -92,19 +98,11 @@ func TestStartEmitsRunningEvent(t *testing.T) {
 	readLog := initLogFileLogging(t)
 
 	repo := newMemJobRepo()
-	cfg, err := MarshalFileConfig("src_start", "/", t.TempDir(), ModeCopy, nil, nil)
-	if err != nil {
-		t.Fatalf("marshal config: %v", err)
-	}
-	j := job.Job{ID: "job_start", Name: "j", Kind: job.KindFile, Enabled: true, Config: cfg}
+	j := Job{ID: "job_start", Name: "j", Kind: KindFile, Enabled: true, Config: json.RawMessage("{}")}
 	if err := repo.Create(context.Background(), j); err != nil {
 		t.Fatalf("create job: %v", err)
 	}
-	creds := &memCreds{
-		source: source.Source{ID: "src_start", Type: source.TypeWebDAV, Enabled: true},
-		remote: buildRemote(map[string]string{}, nil),
-	}
-	r := NewRunner(repo, newInMemoryManaged(), creds, newMemRunRepo())
+	r := newLogRunner(repo, newMemRunRepo())
 
 	runID, err := r.start(context.Background(), "job_start", TriggerManual, nil)
 	if err != nil {

@@ -1,10 +1,10 @@
-package syncjob
+package job
 
 import "context"
 
-// TransferLimiter 是全进程远端文件传输的并发上限：由 Runner 持有单例并
-// 在所有 Job 的同步引擎之间共享，保证 MaxConcurrentTransfers 约束的是
-// 整个进程同时进行的下载总和，而不是每个 Job 各自的独立额度。
+// TransferLimiter 是全进程并发传输的上限：由 Runner 持有单例并注入
+// 每轮运行的执行器，保证 MaxConcurrentTransfers 约束的是整个进程
+// 同时进行的传输总和，而不是每个任务各自的独立额度。
 type TransferLimiter struct {
 	sem chan struct{}
 }

@@ -34,9 +34,10 @@ func newFileJobStack(db *sql.DB, sources *source.Service, dataDir string) *fileJ
 	repo := jobsqlite.NewRepository(db)
 	runs := jobsqlite.NewRunRepository(db)
 	managed := managedsqlite.NewManagedRepository(db)
-	exec := syncjob.NewFileExecutor(sources, repo, dataDir)
-	jobs := job.NewService(repo, map[job.JobKind]job.Executor{job.KindFile: exec})
-	runner := syncjob.NewRunner(repo, managed, sources, runs)
+	exec := syncjob.NewFileExecutor(sources, repo, managed, dataDir)
+	executors := map[job.JobKind]job.Executor{job.KindFile: exec}
+	jobs := job.NewService(repo, executors)
+	runner := job.NewRunner(repo, runs, executors)
 	return &fileJobStack{
 		Repo:      repo,
 		Runs:      runs,
@@ -44,7 +45,7 @@ func newFileJobStack(db *sql.DB, sources *source.Service, dataDir string) *fileJ
 		Exec:      exec,
 		Jobs:      jobs,
 		Runner:    runner,
-		Scheduler: syncjob.NewScheduler(repo, runner, runs),
+		Scheduler: job.NewScheduler(repo, runner, runs),
 	}
 }
 

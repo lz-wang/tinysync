@@ -16,10 +16,11 @@ const DefaultPort = 9466
 // DefaultDataDir 是默认运行时数据根目录。
 const DefaultDataDir = "./data"
 
-// 并发默认值：Job 数保持 v0.3 的全局单运行行为，远端下载并发给到
-// 适度吞吐（SQLite 状态推进始终串行，不受此值影响）。
+// 并发默认值：统一 Runner 的全局任务并发为 2（多任务并行不互相饿死，
+// 单任务重叠仍被严格串行挡住），远端下载并发给到适度吞吐（SQLite
+// 状态推进始终串行，不受此值影响）。
 const (
-	DefaultMaxConcurrentJobs      = 1
+	DefaultMaxConcurrentJobs      = 2
 	DefaultMaxConcurrentTransfers = 4
 )
 
