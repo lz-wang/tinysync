@@ -16,9 +16,10 @@ import (
 var schemaFS embed.FS
 
 // SchemaVersion 是本二进制创建 / 接受的数据库 schema 版本
-// （PRAGMA user_version）。版本取 14：紧接旧迁移序列的终点（13），
-// 使「旧库（≤13）」与「未来二进制创建的库（>14）」可按大小判方向。
-const SchemaVersion = 14
+// （PRAGMA user_version）。版本取 15：registries 表新增 mirrors_json 列
+// （OCI 引擎落地）；「旧库（≤13）」与「未来二进制创建的库（>15）」
+// 仍可按大小判方向。
+const SchemaVersion = 15
 
 // ErrSchemaIncompatible 表示数据库与本二进制的 schema 不兼容：
 // 可能是旧版 TinySync 数据库、未来版本创建的库或外来 SQLite 文件。

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -106,7 +107,7 @@ func TestEnsureRejectsLegacyDatabase(t *testing.T) {
 // 更高版本（未来二进制创建）同样拒绝，方向语义留给 ErrNewerSchema。
 func TestEnsureRejectsNewerDatabase(t *testing.T) {
 	db := openFresh(t, t.TempDir())
-	if _, err := db.Exec("PRAGMA user_version = 15"); err != nil {
+	if _, err := db.Exec(fmt.Sprintf("PRAGMA user_version = %d", SchemaVersion+1)); err != nil {
 		t.Fatalf("set newer version: %v", err)
 	}
 	err := Ensure(context.Background(), db)

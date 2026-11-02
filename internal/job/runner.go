@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -130,7 +131,25 @@ func NewRunner(repo Repository, history RunRepository, executors map[JobKind]Exe
 // 调用方的 HTTP request context；同一任务已在运行或全局并发已满、任务
 // 禁用时拒绝启动。
 func (r *Runner) Start(ctx context.Context, jobID string) (string, error) {
-	return r.start(ctx, jobID, TriggerManual, nil)
+	return r.StartWith(ctx, jobID, StartOptions{})
+}
+
+// StartOptions 是手动运行的附加输入。ConfigOverride 是领域专用的
+// 「本次运行配置快照改写」（如 oci 的 src_images 子集触发）：在协调位
+// 占用后的配置读取路径内应用，仍走统一快照语义——不落库、运行期间
+// 不受并发配置变更影响；返回错误视为启动失败（400 语义由调用方映射）。
+type StartOptions struct {
+	// ConfigOverride 为 nil 表示以落库配置运行；非 nil 时以返回值替换
+	// 本轮配置快照（不得返回 nil）。
+	ConfigOverride func(Job) (json.RawMessage, error)
+}
+
+// StartWith 按 StartOptions 启动一轮手动运行（Start 的扩展形态）。
+func (r *Runner) StartWith(ctx context.Context, jobID string, opts StartOptions) (string, error) {
+	if opts.ConfigOverride == nil {
+		return r.start(ctx, jobID, TriggerManual, nil, nil)
+	}
+	return r.start(ctx, jobID, TriggerManual, nil, opts.ConfigOverride)
 }
 
 // StartScheduled 以调度触发启动一轮运行。occurrence 到期但同任务运行中
@@ -140,13 +159,13 @@ func (r *Runner) Start(ctx context.Context, jobID string) (string, error) {
 // 该到期任务。读取配置或落库失败返回错误——occurrence 未被消费，
 // 调度器应重试窗口而不是视为已处理。
 func (r *Runner) StartScheduled(ctx context.Context, jobID string, trigger RunTrigger, scheduledFor time.Time) (string, error) {
-	return r.start(ctx, jobID, trigger, &scheduledFor)
+	return r.start(ctx, jobID, trigger, &scheduledFor, nil)
 }
 
 // start 是手动与调度触发的共同路径：原子占用任务协调位 → 读取并校验
-// 配置 → 检查全局容量 → 同步落库 running 记录 → 启动 goroutine 分发
-// 到领域执行器。
-func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, scheduledFor *time.Time) (string, error) {
+// 配置（含可选的本次运行配置快照改写）→ 检查全局容量 → 同步落库
+// running 记录 → 启动 goroutine 分发到领域执行器。
+func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, scheduledFor *time.Time, override func(Job) (json.RawMessage, error)) (string, error) {
 	// 先原子占用协调位再读取任何配置：API 的修改 / 删除同样必须拿到
 	// 协调位才能执行，占用成功后读到的配置在其运行期间不会被变更。
 	r.mu.Lock()
@@ -193,6 +212,17 @@ func (r *Runner) start(ctx context.Context, jobID string, trigger RunTrigger, sc
 	}
 	if !j.Enabled {
 		return "", fmt.Errorf("%w: %s", ErrJobDisabled, jobID)
+	}
+	// 本次运行的配置快照改写（如 oci 的 src_images 子集触发）：在协调位
+	// 占用后的读取路径内应用，快照语义与普通运行一致——不落库。
+	if override != nil {
+		overridden, oerr := override(j)
+		if oerr != nil {
+			return "", oerr
+		}
+		if overridden != nil {
+			j.Config = overridden
+		}
 	}
 	exec, err := r.executor(j.Kind)
 	if err != nil {

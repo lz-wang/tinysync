@@ -1,5 +1,5 @@
 -- TinySync 统一任务管理 schema（全新建库，破坏性变更起点）。
--- 版本策略：无迁移序列；user_version 固定为 storage.SchemaVersion（14），
+-- 版本策略：无迁移序列；user_version 固定为 storage.SchemaVersion（15），
 -- 与旧迁移序列（1..13）断开兼容——旧库启动明确报错，要求使用新数据目录。
 -- 表清单：sources / credentials / jobs / job_runs / job_run_items /
 -- managed_files / registries / admin_credentials / web_sessions /
@@ -141,9 +141,14 @@ CREATE TABLE registries (
                          CHECK (plain_http IN (0, 1)),
     strip_registries_json  TEXT NOT NULL DEFAULT '[]',
     path_transform_json    TEXT NOT NULL DEFAULT '{}',
+    mirrors_json           TEXT NOT NULL DEFAULT '[]',
     created_at           INTEGER NOT NULL,
     updated_at           INTEGER NOT NULL
 );
+
+-- mirror 行（kind='mirror'）的 host 是上游主机（如 docker.io），
+-- mirrors_json 是该上游的匿名加速器列表（upstream → []mirror 映射，
+-- 扁平化行不丢失上游关联）。
 
 -- ---------------------------------------------------------------------------
 -- 认证域

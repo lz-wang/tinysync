@@ -1,10 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,18 +18,19 @@ import (
 
 	"tinysync/internal/auth"
 	"tinysync/internal/job"
+	"tinysync/internal/oci"
 	"tinysync/internal/source"
 	"tinysync/internal/syncjob"
 )
 
 // registerJobRoutes 注册统一任务管理、手动运行与运行历史端点。svc 为
 // nil 时跳过注册（依赖缺失时由未知路径 404 兜底）；runner 为 nil 时只
-// 注册 CRUD。
-func registerJobRoutes(group *gin.RouterGroup, svc *job.Service, runner *job.Runner) {
+// 注册 CRUD；oci 提供 run 端点的 src_images 子集触发（仅 kind=oci）。
+func registerJobRoutes(group *gin.RouterGroup, svc *job.Service, runner *job.Runner, ociSvc *oci.Service) {
 	if svc == nil {
 		return
 	}
-	h := &jobHandlers{svc: svc, runner: runner}
+	h := &jobHandlers{svc: svc, runner: runner, oci: ociSvc}
 	// 权限矩阵：查询 read；创建 / 更新 / 删除 admin；手动触发 run
 	//（run 不含 read）。
 	group.GET("/jobs", requireScope(auth.ScopeRead), h.list)
@@ -51,6 +54,9 @@ func registerJobRoutes(group *gin.RouterGroup, svc *job.Service, runner *job.Run
 type jobHandlers struct {
 	svc    *job.Service
 	runner *job.Runner
+	// oci 提供 run 端点的 src_images 子集触发；nil 时携带 src_images
+	// 的请求体被拒绝（OCI 领域不可用）。
+	oci *oci.Service
 }
 
 type localDirectoryDTO struct {
@@ -448,6 +454,13 @@ func (h *jobHandlers) delete(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+// runJobRequest 是手动触发的可选请求体：{src_images:[...]} 提供时本次
+// 运行以子集覆盖 config 的 src_images（仅 kind=oci，R9 trigger 语义；
+// 只改本轮配置快照，不落库）。空请求体保持原触发行为。
+type runJobRequest struct {
+	SrcImages []string `json:"src_images"`
+}
+
 // run POST /api/v1/jobs/:id/run。异步启动，立即返回 202 与 run ID；
 // 运行 context 独立于本请求。
 func (h *jobHandlers) run(c *gin.Context) {
@@ -455,12 +468,67 @@ func (h *jobHandlers) run(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
-	runID, err := h.runner.Start(c.Request.Context(), c.Param("id"))
+	id := c.Param("id")
+	opts, ok := h.runOptions(c, id)
+	if !ok {
+		return
+	}
+	runID, err := h.runner.StartWith(c.Request.Context(), id, opts)
 	if err != nil {
 		handleRunError(c, err)
 		return
 	}
 	c.JSON(http.StatusAccepted, gin.H{"run_id": runID, "state": string(job.RunRunning)})
+}
+
+// runOptions 解析可选请求体并构造 StartOptions：src_images 提供时先做
+// 快速校验（kind=oci、子集合法）返回 400，再以闭包在统一 Runner 的配置
+// 快照路径内应用覆盖（覆盖基于 Runner 占用后读取的最新配置构建）。
+func (h *jobHandlers) runOptions(c *gin.Context, id string) (job.StartOptions, bool) {
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 1<<20))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return job.StartOptions{}, false
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return job.StartOptions{}, true
+	}
+	var req runJobRequest
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return job.StartOptions{}, false
+	}
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return job.StartOptions{}, false
+	}
+	if req.SrcImages == nil {
+		return job.StartOptions{}, true
+	}
+	if h.oci == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "src_images override is not available"})
+		return job.StartOptions{}, false
+	}
+	j, err := h.svc.Get(c.Request.Context(), id)
+	if err != nil {
+		handleJobError(c, err)
+		return job.StartOptions{}, false
+	}
+	if j.Kind != job.KindOCI {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "src_images override is only valid for oci jobs"})
+		return job.StartOptions{}, false
+	}
+	// 快速失败：子集校验与展开在请求路径完成（oci 与 Validate 同一规则）。
+	if _, err := h.oci.OverrideSrcImages(c.Request.Context(), j.Config, req.SrcImages); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return job.StartOptions{}, false
+	}
+	images := req.SrcImages
+	return job.StartOptions{ConfigOverride: func(snapshot job.Job) (json.RawMessage, error) {
+		return h.oci.OverrideSrcImages(c.Request.Context(), snapshot.Config, images)
+	}}, true
 }
 
 // status GET /api/v1/jobs/:id/status。数据源为持久化运行历史
@@ -816,6 +884,9 @@ func handleRunError(c *gin.Context, err error) {
 		c.JSON(http.StatusConflict, gin.H{"error": "concurrency limit reached"})
 	case errors.Is(err, job.ErrShuttingDown):
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "sync runner is shutting down"})
+	case errors.Is(err, job.ErrInvalid):
+		// run 期配置覆盖（如 oci src_images 子集）校验失败。
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 	case errors.Is(err, job.ErrKindUnsupported):
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 	case errors.Is(err, source.ErrNotFound):

@@ -24,6 +24,8 @@ import (
 	"tinysync/internal/logging"
 	"tinysync/internal/notification"
 	notificationsqlite "tinysync/internal/notification/sqlite"
+	"tinysync/internal/oci"
+	ocisqlite "tinysync/internal/oci/sqlite"
 	"tinysync/internal/share"
 	sharesqlite "tinysync/internal/share/sqlite"
 	"tinysync/internal/source"
@@ -130,10 +132,18 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 	jobRepo := jobsqlite.NewRepository(db)
 	managedRepo := managedsqlite.NewManagedRepository(db)
 	fileExec := syncjob.NewFileExecutor(sources, jobRepo, managedRepo, cfg.DataDir)
+
+	// 装配 OCI 领域：registries 表（primary 目标仓库 + mirror 加速器）+
+	// 镜像管理查询服务 + kind=oci 执行器（引擎日志接入统一 logging）。
+	// JobLister 在 job.Service 构造后回填（Registry 删除守卫与镜像列表）。
+	ociService := oci.NewService(ocisqlite.New(db), ociLogger{})
+	ociExec := oci.NewOCIExecutor(ociService, ociLogger{})
 	executors := map[job.JobKind]job.Executor{
 		job.KindFile: fileExec,
+		job.KindOCI:  ociExec,
 	}
 	jobs := job.NewService(jobRepo, executors)
+	ociService.Jobs = jobs
 	runner := job.NewRunner(jobRepo, runs, executors)
 	runner.MaxConcurrentJobs = cfg.MaxConcurrentJobs
 	runner.MaxConcurrentTransfers = cfg.MaxConcurrentTransfers
@@ -181,6 +191,7 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 		CredentialRefs:       sourceRepo,
 		Jobs:                 jobs,
 		Runner:               runner,
+		OCI:                  ociService,
 		Notifications:        notifications,
 		NotificationDispatch: notificationDispatch,
 		Browser:              files,
@@ -234,3 +245,15 @@ func Run(ctx context.Context, cfg *config.Config, webFS fs.FS) error {
 	logging.Infof("bye")
 	return nil
 }
+
+// ociLogger 把 OCI 引擎的最小日志接口适配到统一 logging 包
+// （zap 结构化字段在引擎侧已改为 format 参数）。
+type ociLogger struct{}
+
+func (ociLogger) Debugf(format string, args ...any) { logging.Debugf(format, args...) }
+
+func (ociLogger) Infof(format string, args ...any) { logging.Infof(format, args...) }
+
+func (ociLogger) Warnf(format string, args ...any) { logging.Warnf(format, args...) }
+
+func (ociLogger) Errorf(format string, args ...any) { logging.Errorf(format, args...) }

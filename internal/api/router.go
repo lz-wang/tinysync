@@ -16,6 +16,7 @@ import (
 	"tinysync/internal/credential"
 	"tinysync/internal/job"
 	"tinysync/internal/notification"
+	"tinysync/internal/oci"
 	"tinysync/internal/share"
 	"tinysync/internal/source"
 )
@@ -56,7 +57,8 @@ func NewRouter(webFS fs.FS, deps Dependencies) *gin.Engine {
 		registerSessionRoutes(protected, deps.Auth)
 		registerSourceRoutes(protected, deps.Sources, deps.Jobs, deps.Credentials)
 		registerCredentialRoutes(protected, deps.Credentials, deps.CredentialRefs)
-		registerJobRoutes(protected, deps.Jobs, deps.Runner)
+		registerJobRoutes(protected, deps.Jobs, deps.Runner, deps.OCI)
+		registerOciRoutes(protected, deps.OCI)
 		registerNotificationRoutes(protected, deps.Notifications, deps.NotificationDispatch)
 		registerRemoteFileRoutes(protected, deps.Browser)
 		registerLocalFileRoutes(protected, deps.LocalFiles)
@@ -87,6 +89,9 @@ type Dependencies struct {
 	Jobs *job.Service
 	// Runner 是手动运行的运行时状态；为 nil 时 run / status 端点不注册。
 	Runner *job.Runner
+	// OCI 是 OCI 领域应用服务（Registry 配置 + 镜像管理查询 + src_images
+	// 子集触发）；为 nil 时不注册 OCI 端点，run 的 src_images 覆盖不可用。
+	OCI *oci.Service
 	// Notifications 是通知配置应用服务；为 nil 时不注册通知端点。
 	Notifications *notification.Service
 	// NotificationDispatch 是通知发送器（完成事件队列 + 测试发送）；

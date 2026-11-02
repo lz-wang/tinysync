@@ -104,7 +104,7 @@ func TestStartEmitsRunningEvent(t *testing.T) {
 	}
 	r := newLogRunner(repo, newMemRunRepo())
 
-	runID, err := r.start(context.Background(), "job_start", TriggerManual, nil)
+	runID, err := r.start(context.Background(), "job_start", TriggerManual, nil, nil)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}

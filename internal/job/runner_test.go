@@ -964,3 +964,53 @@ func TestRunnerRejectsUnregisteredKind(t *testing.T) {
 		t.Errorf("unregistered kind = %v, want ErrKindUnsupported", err)
 	}
 }
+
+// StartWith 的 ConfigOverride 在配置快照路径内改写本轮配置（如 oci 的
+// src_images 子集触发）：执行器收到改写后的快照，落库配置不受影响，
+// override 返回错误时启动失败且不留 run 记录。
+func TestStartWithConfigOverride(t *testing.T) {
+	env := newRunnerEnv(t)
+	job := env.mustJob(t, "override")
+
+	handle, err := env.runner.StartWith(context.Background(), job.ID, StartOptions{
+		ConfigOverride: func(j Job) (json.RawMessage, error) {
+			return json.RawMessage(`{"src_images":["nginx:1.27"]}`), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("StartWith: %v", err)
+	}
+	env.exec.waitEntered(t)
+	if _, err := env.runner.Wait(context.Background(), handle); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+
+	env.exec.mu.Lock()
+	reqs := append([]RunRequest(nil), env.exec.reqs...)
+	env.exec.mu.Unlock()
+	if len(reqs) != 1 {
+		t.Fatalf("executor runs = %d, want 1", len(reqs))
+	}
+	if got := string(reqs[0].Job.Config); got != `{"src_images":["nginx:1.27"]}` {
+		t.Errorf("overridden config = %s, want src_images subset", got)
+	}
+	stored, err := env.repo.Get(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if got := string(stored.Config); got != "{}" {
+		t.Errorf("stored config = %s, want unchanged {}", got)
+	}
+
+	// override 校验失败：启动被拒（400 语义），无 run 记录。
+	if _, err := env.runner.StartWith(context.Background(), job.ID, StartOptions{
+		ConfigOverride: func(j Job) (json.RawMessage, error) {
+			return nil, fmt.Errorf("%w: bad subset", ErrInvalid)
+		},
+	}); !errors.Is(err, ErrInvalid) {
+		t.Errorf("override error = %v, want ErrInvalid", err)
+	}
+	if got := env.runCountGuard(t, job.ID); got != 1 {
+		t.Errorf("run count after failed override = %d, want 1", got)
+	}
+}
