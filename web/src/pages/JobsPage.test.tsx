@@ -23,12 +23,15 @@ import { ToastProvider } from '../app/toast'
 import JobsPage from './JobsPage'
 
 // mock 整个 API 模块：页面树内 JobDialog / DeleteJobDialog 也引用它。
+// 类型判别守卫是纯函数，直接给真实实现。
 vi.mock('../api', () => ({
     cancelRun: vi.fn(),
     createJob: vi.fn(),
     deleteJob: vi.fn(),
     fetchJobStatus: vi.fn(),
     getRun: vi.fn(),
+    isFileJobConfig: (config: unknown) =>
+        typeof config === 'object' && config !== null && 'source_id' in config,
     listJobs: vi.fn(),
     listSources: vi.fn(),
     runJob: vi.fn(),

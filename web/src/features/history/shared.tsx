@@ -1,6 +1,15 @@
 import { Box, Chip } from '@mui/material'
 import Typography from '@mui/material/Typography'
-import type { RunItemAction, RunItemStatus, RunState } from '../../api'
+import type {
+    JobKind,
+    OciRunItemDetail,
+    OciRunResultResponse,
+    RunItemAction,
+    RunItemStatus,
+    RunResultPayload,
+    RunState,
+} from '../../api'
+import { isOciRunResult } from '../../api'
 
 // formatBytes 把字节数转为人类可读摘要。
 export function formatBytes(bytes: number): string {
@@ -74,6 +83,42 @@ export function RunStatusChip({ state }: { state: RunState }) {
     return <Chip label={props.label} color={props.color} size="small" />
 }
 
+// ociRunChipProps 按 R36 从 result_json 推导 oci run 的历史状态徽标：
+// success>0 且 failure>0 → 部分成功；全 failure → 失败；全 skip → 跳过；
+// 其余（running、无结果或全成功）按 RunState 渲染。RunState 枚举不扩。
+export function ociRunChipProps(
+    state: RunState,
+    result: OciRunResultResponse | undefined,
+): { label: string; color: 'success' | 'error' | 'info' | 'warning' | 'default' } {
+    const success = result?.success_count ?? 0
+    const failure = result?.failure_count ?? 0
+    const skipped = result?.skipped_count ?? 0
+    if (success > 0 && failure > 0) {
+        return { label: '部分成功', color: 'warning' }
+    }
+    if (success === 0 && failure > 0) {
+        return { label: '失败', color: 'error' }
+    }
+    if (success === 0 && failure === 0 && skipped > 0) {
+        return { label: '跳过', color: 'warning' }
+    }
+    return runStateChipProps(state)
+}
+
+// RunRecordChip 是运行记录徽标：oci run 按 result_json 推导（部分成功
+// 等领域语义），其余按 RunState 渲染。
+export function RunRecordChip({
+    run,
+}: {
+    run: { job_kind: JobKind; status: RunState; result: RunResultPayload }
+}) {
+    const props =
+        run.job_kind === 'oci' && isOciRunResult(run.result)
+            ? ociRunChipProps(run.status, run.result)
+            : runStateChipProps(run.status)
+    return <Chip label={props.label} color={props.color} size="small" />
+}
+
 // itemStatusColor 把明细状态映射为时间线圆点颜色。canceled 用中性灰：
 // 被用户停止中断不是失败（红），也不同于跳过（浅灰淡显）的语义。
 export function itemStatusColor(status: RunItemStatus): string {
@@ -89,20 +134,25 @@ export function itemStatusColor(status: RunItemStatus): string {
     }
 }
 
-// RunItemLine 是时间线式明细行：状态圆点 + 路径 + 动作 + 字节 + 错误。
+// RunItemLine 是时间线式明细行：状态圆点 + 目标 + 动作 + 字节 + 错误。
+// detail 为 oci 明细的领域扩展（目标 Registry / 平台级结果），原样
+// 透传展示；file 领域明细无该字段。
 export function RunItemLine({
     path,
     action,
     status,
     bytes,
     error,
+    detail,
 }: {
     path: string
     action: RunItemAction
     status: RunItemStatus
     bytes: number
     error?: string
+    detail?: OciRunItemDetail
 }) {
+    const platforms = detail?.platform_results ?? []
     return (
         <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1 }}>
             <Box
@@ -126,7 +176,17 @@ export function RunItemLine({
             <Typography variant="caption" color="text.secondary">
                 {action} · {status}
                 {bytes > 0 ? ` · ${formatBytes(bytes)}` : ''}
+                {detail?.registry ? ` · ${detail.registry}` : ''}
             </Typography>
+            {platforms.length > 0 && (
+                <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    sx={{ wordBreak: 'break-word' }}
+                >
+                    {platforms.map(item => `${item.platform}:${item.status}`).join(' · ')}
+                </Typography>
+            )}
             {error !== undefined && error !== '' && (
                 <Typography
                     variant="caption"

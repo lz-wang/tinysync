@@ -650,18 +650,21 @@ func toRunDTO(run job.RunRecord, jobName string) runDTO {
 }
 
 // runItemDTO 是运行明细的 API 表示：target 为统一展示目标
-// （file 为相对本地根的路径，oci 为镜像引用）。
+// （file 为相对本地根的路径，oci 为镜像引用）。detail 为领域扩展字段
+// 的原始 JSON 透传（oci 的 platform / registry 等），公共层不做领域
+// 解释——与 RunCompletion 的中立性规则一致；无扩展字段时省略。
 type runItemDTO struct {
-	ID     int64  `json:"id"`
-	RunID  string `json:"run_id"`
-	Target string `json:"target"`
-	Action string `json:"action"`
-	Status string `json:"status"`
-	Bytes  int64  `json:"bytes"`
-	Error  string `json:"error,omitempty"`
+	ID     int64           `json:"id"`
+	RunID  string          `json:"run_id"`
+	Target string          `json:"target"`
+	Action string          `json:"action"`
+	Status string          `json:"status"`
+	Bytes  int64           `json:"bytes"`
+	Error  string          `json:"error,omitempty"`
+	Detail json.RawMessage `json:"detail,omitempty"`
 }
 
-// toRunItemDTO 转换明细记录。
+// toRunItemDTO 转换明细记录；Detail 原样透传。
 func toRunItemDTO(item job.RunItem) runItemDTO {
 	return runItemDTO{
 		ID:     item.ID,
@@ -671,6 +674,7 @@ func toRunItemDTO(item job.RunItem) runItemDTO {
 		Status: string(item.Status),
 		Bytes:  item.Bytes,
 		Error:  item.Error,
+		Detail: item.Detail,
 	}
 }
 

@@ -766,6 +766,59 @@ func TestRunItemsUnknownRunAPI(t *testing.T) {
 	}
 }
 
+// runItemDTO.detail 是领域扩展字段的原始 JSON 透传：oci 明细的
+// registry / platform_results 原样可见；无扩展字段的明细（file 领域）
+// 省略该键——公共层不做领域解释。
+func TestRunItemDTODetailPassthrough(t *testing.T) {
+	ociDetail := `{"src":"nginx:1.27","registry":"docker.cnb.cool","status":"success","platform_results":[{"platform":"linux/amd64","status":"success"}]}`
+	data, err := json.Marshal(toRunItemDTO(job.RunItem{
+		ID:     7,
+		RunID:  "run-1",
+		Target: "docker.cnb.cool/lzwang/nginx:1.27",
+		Action: "copy",
+		Status: job.ItemSucceeded,
+		Bytes:  1024,
+		Detail: json.RawMessage(ociDetail),
+	}))
+	if err != nil {
+		t.Fatalf("marshal dto: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal dto: %v", err)
+	}
+	detail, _ := got["detail"].(map[string]any)
+	if detail == nil {
+		t.Fatalf("oci item dto missing detail: %s", data)
+	}
+	if detail["registry"] != "docker.cnb.cool" || detail["src"] != "nginx:1.27" {
+		t.Errorf("detail registry/src = %v, want raw passthrough", detail)
+	}
+	platforms, _ := detail["platform_results"].([]any)
+	if len(platforms) != 1 {
+		t.Fatalf("detail platform_results = %v, want 1 entry", detail["platform_results"])
+	}
+	platform, _ := platforms[0].(map[string]any)
+	if platform["platform"] != "linux/amd64" {
+		t.Errorf("platform = %v, want linux/amd64", platform)
+	}
+
+	// 无扩展字段（file 领域明细）：detail 键省略。
+	data, err = json.Marshal(toRunItemDTO(job.RunItem{
+		ID:     8,
+		RunID:  "run-1",
+		Target: "a.jpg",
+		Action: job.ItemCreate,
+		Status: job.ItemSucceeded,
+	}))
+	if err != nil {
+		t.Fatalf("marshal dto: %v", err)
+	}
+	if strings.Contains(string(data), "detail") {
+		t.Errorf("file item dto should omit detail: %s", data)
+	}
+}
+
 // Runner 正在关闭时的运行触发映射为 503：优雅关闭期间拒绝新运行。
 func TestHandleRunErrorShuttingDown(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -849,6 +902,10 @@ func TestRunsAPI(t *testing.T) {
 	entry, _ := items["items"].([]any)[0].(map[string]any)
 	if entry["target"] != "a.jpg" || entry["action"] != "create" || entry["status"] != "succeeded" {
 		t.Errorf("run item = %v, want succeeded create a.jpg", entry)
+	}
+	// file 领域明细无扩展字段：detail 键不出现在 HTTP 响应。
+	if _, has := entry["detail"]; has {
+		t.Errorf("file run item should omit detail: %v", entry)
 	}
 
 	// 未知 run 与非法参数。

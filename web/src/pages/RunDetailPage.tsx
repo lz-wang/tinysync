@@ -15,6 +15,8 @@ import { Link as RouterLink, useParams } from 'react-router-dom'
 import {
     cancelRun,
     getRun,
+    isFileRunResult,
+    isOciRunResult,
     listRunItems,
     type RunItemResponse,
     type RunPhase,
@@ -29,7 +31,7 @@ import {
     formatDateTime,
     formatDuration,
     RunItemLine,
-    RunStatusChip,
+    RunRecordChip,
 } from '../features/history/shared'
 
 // pollIntervalMs 是运行中详情的轮询间隔：进度数字的粒度需求（HomeLab
@@ -142,7 +144,7 @@ export default function RunDetailPage() {
                 size="small"
                 sx={{ alignSelf: 'flex-start' }}
             >
-                ← 返回运行历史
+                ← 返回执行历史
             </Button>
             {run === null && error === null ? (
                 <CircularProgress size={24} aria-label="加载中" />
@@ -155,7 +157,7 @@ export default function RunDetailPage() {
                                     <Typography variant="h5" component="h1">
                                         {run.job_name}
                                     </Typography>
-                                    <RunStatusChip state={run.status} />
+                                    <RunRecordChip run={run} />
                                     {running && (
                                         <Button
                                             size="small"
@@ -168,23 +170,7 @@ export default function RunDetailPage() {
                                         </Button>
                                     )}
                                 </Box>
-                                <SummaryGrid
-                                    entries={[
-                                        [
-                                            '触发方式',
-                                            run.trigger === 'manual' ? '手动' : run.trigger,
-                                        ],
-                                        ['计划时间', formatDateTime(run.scheduled_for, '—')],
-                                        ['开始时间', formatDateTime(run.started_at, '—')],
-                                        ['结束时间', formatDateTime(run.finished_at, '—')],
-                                        ['耗时', formatDuration(run.started_at, run.finished_at)],
-                                        [
-                                            '文件',
-                                            `共 ${run.result.files_total} · 新增 ${run.result.files_created} · 更新 ${run.result.files_updated} · 删除 ${run.result.files_deleted} · 跳过 ${run.result.files_skipped}`,
-                                        ],
-                                        ['传输量', formatBytes(run.result.bytes_transferred)],
-                                    ]}
-                                />
+                                <SummaryGrid entries={summaryEntries(run)} />
                                 {run.error !== undefined && run.error !== '' && (
                                     <Alert
                                         severity={
@@ -206,14 +192,16 @@ export default function RunDetailPage() {
                         <CardContent>
                             <Stack spacing={1.5}>
                                 <Typography variant="caption" color="text.secondary">
-                                    共记录 {itemTotal} 个文件变更（未变化的文件不显示）
+                                    {run.job_kind === 'oci'
+                                        ? `共记录 ${itemTotal} 个镜像复制明细（按 源镜像 × 目标 Registry 逐对记录）`
+                                        : `共记录 ${itemTotal} 个文件变更（未变化的文件不显示）`}
                                 </Typography>
                                 <Divider />
                                 {items.length === 0 ? (
                                     <Typography variant="body2" color="text.secondary">
                                         {running
-                                            ? '运行进行中，已完成的文件变更会陆续出现在这里。'
-                                            : '本次运行没有文件变更。'}
+                                            ? '运行进行中，已完成的变更会陆续出现在这里。'
+                                            : '本次运行没有变更明细。'}
                                     </Typography>
                                 ) : (
                                     <Stack spacing={1}>
@@ -225,6 +213,7 @@ export default function RunDetailPage() {
                                                 status={item.status}
                                                 bytes={item.bytes}
                                                 error={item.error}
+                                                detail={item.detail}
                                             />
                                         ))}
                                     </Stack>
@@ -241,6 +230,36 @@ export default function RunDetailPage() {
             )}
         </Stack>
     )
+}
+
+// summaryEntries 组装运行摘要：公共时间 / 触发字段 + 按任务类型的领域
+// 统计段（file 为文件统计、oci 为镜像复制统计）。
+function summaryEntries(run: RunRecordResponse): [string, string][] {
+    const entries: [string, string][] = [
+        ['触发方式', run.trigger === 'manual' ? '手动' : run.trigger],
+        ['计划时间', formatDateTime(run.scheduled_for, '—')],
+        ['开始时间', formatDateTime(run.started_at, '—')],
+        ['结束时间', formatDateTime(run.finished_at, '—')],
+        ['耗时', formatDuration(run.started_at, run.finished_at)],
+    ]
+    if (isFileRunResult(run.result)) {
+        entries.push(
+            [
+                '文件',
+                `共 ${run.result.files_total} · 新增 ${run.result.files_created} · 更新 ${run.result.files_updated} · 删除 ${run.result.files_deleted} · 跳过 ${run.result.files_skipped}`,
+            ],
+            ['传输量', formatBytes(run.result.bytes_transferred)],
+        )
+    } else if (isOciRunResult(run.result)) {
+        entries.push(
+            [
+                '镜像',
+                `共 ${run.result.total_images} · 成功 ${run.result.success_count} · 跳过 ${run.result.skipped_count} · 失败 ${run.result.failure_count}`,
+            ],
+            ['传输量', formatBytes(run.result.transferred_bytes ?? 0)],
+        )
+    }
+    return entries
 }
 
 // RunProgressCard 渲染运行中 run 的实时进度：总进度（工作量计数）与

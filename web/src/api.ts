@@ -526,6 +526,30 @@ export interface FileJobConfig {
     exclude: string[]
 }
 
+// OciPlatform 是 oci 任务的平台过滤项（可选；未配置则同步全部平台）。
+export interface OciPlatform {
+    os?: string
+    architecture?: string
+    variant?: string
+}
+
+// OciJobConfig 是 kind='oci' 任务的领域配置（config_json 原样）：
+// src_images 为展开后的 repo:tag 列表，dst_servers 引用 primary Registry
+// 配置名，platforms 为平台过滤列表。
+export interface OciJobConfig {
+    src_images: string[]
+    dst_servers: string[]
+    platforms: OciPlatform[]
+}
+
+// JobConfig 是按 kind 判别的领域配置；git 为占位（创建被拒）。
+export type JobConfig = FileJobConfig | OciJobConfig
+
+// isFileJobConfig 以 source_id 判别 file 配置（调用方窄化用）。
+export function isFileJobConfig(config: JobConfig): config is FileJobConfig {
+    return 'source_id' in config
+}
+
 // JobResponse 是统一任务的 API 表示，与后端 jobDTO 一一对应：
 // kind + config（领域 JSON 原样透传）。
 export interface JobResponse {
@@ -533,7 +557,7 @@ export interface JobResponse {
     name: string
     kind: JobKind
     enabled: boolean
-    config: FileJobConfig
+    config: JobConfig
     schedule: ScheduleSpec
     created_at: string
     updated_at: string
@@ -587,16 +611,17 @@ export function createRemoteDirectory(
 export interface CreateJobInput {
     name: string
     kind: JobKind
-    config: FileJobConfig
+    config: JobConfig
     enabled: boolean
     schedule?: ScheduleSpec
 }
 
 // UpdateJobInput 对应 PATCH 请求体：undefined 字段保留现有值；
-// config 提供时整体替换（先经执行器校验）；schedule 提供时原子替换。
+// config 提供时整体替换（先经执行器校验）；schedule 提供时原子替换；
+// kind 不可变更。
 export interface UpdateJobInput {
     name?: string
-    config?: FileJobConfig
+    config?: JobConfig
     enabled?: boolean
     schedule?: ScheduleSpec
 }
@@ -636,16 +661,42 @@ export interface RunStatsResponse {
     bytes_transferred: number
 }
 
+// OciRunResultResponse 是 oci 任务的领域结果摘要（result_json 解码
+// 形态）。running / skipped 的 run 无结果（空对象），计数按缺省 0 处理。
+export interface OciRunResultResponse {
+    status: string
+    total_images: number
+    success_count: number
+    skipped_count: number
+    failure_count: number
+    transferred_bytes?: number
+    duration_ms?: number
+}
+
+// RunResultPayload 是按 job kind 判别的结果摘要；空对象表示尚无结果
+//（running / skipped 或从未运行）。
+export type RunResultPayload = RunStatsResponse | OciRunResultResponse | Record<string, never>
+
+// isFileRunResult 以 files_total 判别 file 结果摘要。
+export function isFileRunResult(result: RunResultPayload): result is RunStatsResponse {
+    return 'files_total' in result
+}
+
+// isOciRunResult 以 total_images 判别 oci 结果摘要。
+export function isOciRunResult(result: RunResultPayload): result is OciRunResultResponse {
+    return 'total_images' in result
+}
+
 // RunStatusResponse 对应 GET /api/v1/jobs/:id/status。
 // next_run_at 为下一次计划触发时间，manual 或 once 已消费时省略。
-// result 为领域结果摘要（file 为文件统计）。
+// result 为领域结果摘要（file 为文件统计、oci 为镜像复制摘要）。
 export interface RunStatusResponse {
     run_id?: string
     state: RunState
     started_at?: string
     finished_at?: string
     next_run_at?: string
-    result: RunStatsResponse
+    result: RunResultPayload
     error?: string
 }
 
@@ -679,8 +730,16 @@ export interface RunProgressResponse {
     active_files?: RunProgressFileResponse[]
 }
 
-export function runJob(id: string): Promise<RunJobResponse> {
-    return requestJSON<RunJobResponse>('POST', `/api/v1/jobs/${id}/run`)
+// RunJobOptions 是手动触发的可选请求体：src_images 提供时本次运行以
+// 子集覆盖 config 的 src_images（仅 kind=oci；只改本轮配置快照，不落库）。
+export interface RunJobOptions {
+    src_images: string[]
+}
+
+// runJob 异步启动一轮运行。body 缺省为空请求体（全量触发）；携带
+// src_images 子集时后端按 oci 任务校验并展开。
+export function runJob(id: string, body?: RunJobOptions): Promise<RunJobResponse> {
+    return requestJSON<RunJobResponse>('POST', `/api/v1/jobs/${id}/run`, body)
 }
 
 // CancelRunResponse 对应 POST /api/v1/runs/:id/cancel 的 202 响应。
@@ -703,7 +762,7 @@ export type RunTriggerType = 'manual' | 'once' | 'interval' | 'cron'
 
 // RunRecordResponse 对应 GET /api/v1/runs/:id 的运行摘要。运行中的
 // run 附实时 progress（瞬态内存快照）；终态省略。result 为领域结果
-// 摘要（file 为文件统计，当前唯一类型）。
+// 摘要（file 为文件统计、oci 为镜像复制摘要）。
 export interface RunRecordResponse {
     id: string
     job_id: string
@@ -714,7 +773,7 @@ export interface RunRecordResponse {
     status: RunState
     started_at: string
     finished_at?: string
-    result: RunStatsResponse
+    result: RunResultPayload
     error?: string
     progress?: RunProgressResponse
 }
@@ -725,14 +784,33 @@ export interface RunsListResponse {
     total: number
 }
 
-// RunItemAction 是文件级变更动作。
-export type RunItemAction = 'create' | 'update' | 'delete' | 'relinquish'
+// RunItemAction 是明细级动作：file 为文件变更（create/update/delete/
+// relinquish），oci 为镜像复制（copy/skip）。
+export type RunItemAction = 'create' | 'update' | 'delete' | 'relinquish' | 'copy' | 'skip'
 
-// RunItemStatus 是文件级变更结果。canceled 表示传输被用户手动停止中断。
+// RunItemStatus 是明细级结果。canceled 表示传输被用户手动停止中断。
 export type RunItemStatus = 'succeeded' | 'failed' | 'skipped' | 'canceled'
 
+// OciRunItemDetail 是 oci 明细的领域扩展字段（detail 原始 JSON 的解码
+// 形态：src / registry / 平台级结果等）。公共层原样透传，无扩展字段的
+// 明细（file 领域）省略该键。
+export interface OciRunItemDetail {
+    src?: string
+    registry?: string
+    status?: string
+    duration_ms?: number
+    transferred_bytes?: number
+    error?: string
+    platform_results?: Array<{
+        platform: string
+        status: string
+        duration_ms?: number
+        error?: string
+    }>
+}
+
 // RunItemResponse 是运行明细；target 为统一展示目标（file 为相对
-// 本地根的路径），unchanged 项不产生明细。
+// 本地根的路径，oci 为目标镜像完整引用），unchanged 项不产生明细。
 export interface RunItemResponse {
     id: number
     run_id: string
@@ -741,6 +819,7 @@ export interface RunItemResponse {
     status: RunItemStatus
     bytes: number
     error?: string
+    detail?: OciRunItemDetail
 }
 
 // RunItemsListResponse 对应 GET /api/v1/runs/:id/items 的包装对象。
@@ -752,6 +831,7 @@ export interface RunItemsListResponse {
 // RunRunsQuery 是 /runs 的过滤与分页参数。
 export interface RunRunsQuery {
     job_id?: string
+    kind?: JobKind
     status?: RunState
     limit?: number
     offset?: number
@@ -761,6 +841,9 @@ export async function listRuns(query?: RunRunsQuery): Promise<RunsListResponse> 
     const params = new URLSearchParams()
     if (query?.job_id !== undefined) {
         params.set('job_id', query.job_id)
+    }
+    if (query?.kind !== undefined) {
+        params.set('kind', query.kind)
     }
     if (query?.status !== undefined) {
         params.set('status', query.status)
@@ -1134,4 +1217,256 @@ export function updateNotificationSettings(
 // testNotification 用已保存的配置向指定渠道发送测试通知。
 export function testNotification(channel: 'pushover' | 'email'): Promise<NotificationTestResponse> {
     return requestJSON<NotificationTestResponse>('POST', `/api/v1/notifications/test/${channel}`)
+}
+
+// ===== Registry 配置与镜像管理（OCI 领域）=====
+
+// RegistryKind 是 registries 行的类型：primary 为真实 Registry 配置
+//（同步目标与凭据来源），mirror 是上游主机的加速器列表。
+export type RegistryKind = 'primary' | 'mirror'
+
+// RegistryPathTransform 是镜像路径转换配置；null 表示未配置。
+export interface RegistryPathTransform {
+    separator: string
+    mode: string
+}
+
+// RegistryResponse 是 Registry 配置的 API 表示：password 永不回显
+//（只回 password_set），namespace 为 host 的派生只读字段；mirror 行
+// 的 mirrors 是加速器地址列表。strip_registries / mirrors 为可空列表
+//（Go 仓储层把空列表归一为 nil，序列化为 null）——消费方按 ?? [] 兜底。
+export interface RegistryResponse {
+    id: string
+    name: string
+    kind: RegistryKind
+    host: string
+    namespace: string
+    username: string
+    password_set: boolean
+    insecure_skip_verify: boolean
+    plain_http: boolean
+    strip_registries: string[] | null
+    path_transform: RegistryPathTransform | null
+    mirrors: string[] | null
+    created_at: string
+    updated_at: string
+}
+
+// RegistriesListResponse 对应 GET /api/v1/registries 的包装对象。
+export interface RegistriesListResponse {
+    registries: RegistryResponse[]
+}
+
+// CreateRegistryInput 对应 POST /api/v1/registries：kind 缺省 primary；
+// mirror 行的 host 是上游主机且 mirrors 必填；path_transform 缺省 /
+// null 均视为未配置。
+export interface CreateRegistryInput {
+    name: string
+    kind: RegistryKind
+    host: string
+    username?: string
+    password?: string
+    insecure_skip_verify: boolean
+    plain_http: boolean
+    strip_registries?: string[]
+    path_transform?: RegistryPathTransform | null
+    mirrors?: string[]
+}
+
+// UpdateRegistryInput 对应 PATCH /api/v1/registries/:id：undefined 字段
+// 保留现有值；password 三态（缺省保留、空串清除、非空替换）；
+// path_transform 携带（含 null）即替换；kind 不可变更。
+export interface UpdateRegistryInput {
+    name?: string
+    host?: string
+    username?: string
+    password?: string
+    insecure_skip_verify?: boolean
+    plain_http?: boolean
+    strip_registries?: string[]
+    path_transform?: RegistryPathTransform | null
+    mirrors?: string[]
+}
+
+// listRegistries 返回全部 Registry 配置（primary + mirror）。
+export async function listRegistries(): Promise<RegistryResponse[]> {
+    const data = await getJSON<RegistriesListResponse>('/api/v1/registries')
+    return data.registries
+}
+
+// createRegistry 新建 Registry 配置（primary 或 mirror 行）。
+export function createRegistry(input: CreateRegistryInput): Promise<RegistryResponse> {
+    return requestJSON<RegistryResponse>('POST', '/api/v1/registries', input)
+}
+
+// updateRegistry 部分更新 Registry 配置。
+export function updateRegistry(id: string, input: UpdateRegistryInput): Promise<RegistryResponse> {
+    return requestJSON<RegistryResponse>('PATCH', `/api/v1/registries/${id}`, input)
+}
+
+// deleteRegistry 删除 Registry 配置（仍被 oci 任务 dst_servers 引用时
+// 后端以 409 拒绝）。
+export async function deleteRegistry(id: string): Promise<void> {
+    await requestJSON<void>('DELETE', `/api/v1/registries/${id}`)
+}
+
+// ImageListItemResponse 是一个源镜像在所属 oci 任务下的配置与最近
+// 执行状态（last_status: success | skipped | failed；未运行为空）。
+export interface ImageListItemResponse {
+    source: string
+    job_id: string
+    job_name: string
+    job_enabled: boolean
+    dst_registries: string[]
+    last_status?: string
+    last_sync_time?: string
+}
+
+// listImages 列出全部 oci 任务的源镜像与最近执行状态。
+export async function listImages(): Promise<ImageListItemResponse[]> {
+    const data = await getJSON<{ images: ImageListItemResponse[] }>('/api/v1/images')
+    return data.images
+}
+
+// ImageTagsResponse 对应 GET /api/v1/images/tags?repo=（按字典序倒序，
+// default_tag 优先 latest）。
+export interface ImageTagsResponse {
+    repo: string
+    tags: string[]
+    default_tag: string
+}
+
+// listImageTags 列出仓库 tag（无分页）。
+export function listImageTags(repo: string): Promise<ImageTagsResponse> {
+    return getJSON<ImageTagsResponse>(`/api/v1/images/tags?repo=${encodeURIComponent(repo)}`)
+}
+
+// InspectPlatform 是平台摘要（查询参数与响应共用形态）。
+export interface InspectPlatform {
+    os?: string
+    architecture?: string
+    variant?: string
+}
+
+// RemoteInspectResult 是远端镜像元数据（oci-sync 模型移植）。
+export interface RemoteInspectResult {
+    ref: string
+    tag: string
+    mirror: string
+    digest?: string
+    media_type?: string
+    size?: number
+    is_index: boolean
+    manifest?: unknown
+    config?: unknown
+    platforms?: InspectPlatform[]
+    platforms_status?: Record<string, boolean>
+}
+
+// ImageInspectResponse 对应 GET /api/v1/images/inspect?image=&registry=。
+export interface ImageInspectResponse {
+    image: string
+    result: RemoteInspectResult
+}
+
+// ImagePlatformInspectResponse 对应 GET /api/v1/images/inspect/platform
+// ?image=&os=&architecture=&variant=。
+export interface ImagePlatformInspectResponse {
+    image: string
+    platform: InspectPlatform
+    result: RemoteInspectResult
+}
+
+// inspectImage 查询远端镜像元数据；registry 为配置名（多配置同主机时
+// 消歧），缺省按镜像引用所属主机解析。
+export function inspectImage(image: string, registry?: string): Promise<ImageInspectResponse> {
+    const params = new URLSearchParams({ image })
+    if (registry !== undefined && registry !== '') {
+        params.set('registry', registry)
+    }
+    return getJSON<ImageInspectResponse>(`/api/v1/images/inspect?${params.toString()}`)
+}
+
+// inspectImagePlatform 查询具体平台的镜像元数据。
+export function inspectImagePlatform(
+    image: string,
+    platform: { os: string; architecture: string; variant?: string },
+    registry?: string,
+): Promise<ImagePlatformInspectResponse> {
+    const params = new URLSearchParams({
+        image,
+        os: platform.os,
+        architecture: platform.architecture,
+    })
+    if (platform.variant !== undefined && platform.variant !== '') {
+        params.set('variant', platform.variant)
+    }
+    if (registry !== undefined && registry !== '') {
+        params.set('registry', registry)
+    }
+    return getJSON<ImagePlatformInspectResponse>(
+        `/api/v1/images/inspect/platform?${params.toString()}`,
+    )
+}
+
+// RemoteSearchPage 是远端 discovery 的分页响应：scanned /
+// scan_limit_reached 表达有界 catalog 扫描进度，不伪造总数。
+export interface RemoteSearchPage {
+    items: string[]
+    has_more: boolean
+    next_cursor?: string
+    scanned: number
+    scan_limit_reached: boolean
+}
+
+// RemoteSearchQuery 是远端 discovery 的查询参数（limit 1..100 缺省 50、
+// scan_limit 1..5000 缺省 1000、q 过滤关键词、cursor 翻页）。
+export interface RemoteSearchQuery {
+    q?: string
+    limit?: number
+    scan_limit?: number
+    cursor?: string
+}
+
+// remoteQuery 组装 discovery 查询串。
+function remoteQuery(query?: RemoteSearchQuery): string {
+    const params = new URLSearchParams()
+    if (query?.q !== undefined && query.q !== '') {
+        params.set('q', query.q)
+    }
+    if (query?.limit !== undefined) {
+        params.set('limit', String(query.limit))
+    }
+    if (query?.scan_limit !== undefined) {
+        params.set('scan_limit', String(query.scan_limit))
+    }
+    if (query?.cursor !== undefined && query.cursor !== '') {
+        params.set('cursor', query.cursor)
+    }
+    const qs = params.toString()
+    return qs === '' ? '' : `?${qs}`
+}
+
+// searchRemoteRepositories 在指定 Registry 配置（名或主机）内做有界
+// catalog 扫描，返回仓库名分页。
+export function searchRemoteRepositories(
+    registry: string,
+    query?: RemoteSearchQuery,
+): Promise<RemoteSearchPage> {
+    return getJSON<RemoteSearchPage>(
+        `/api/v1/remote/repositories?registry=${encodeURIComponent(registry)}${remoteQuery(query)}`,
+    )
+}
+
+// listRemoteTags 分页列出远端仓库 tag；registry 为配置名（可选）。
+export function listRemoteTags(
+    repository: string,
+    query?: RemoteSearchQuery,
+    registry?: string,
+): Promise<RemoteSearchPage> {
+    const suffix =
+        registry !== undefined && registry !== '' ? `&registry=${encodeURIComponent(registry)}` : ''
+    return getJSON<RemoteSearchPage>(
+        `/api/v1/remote/tags?repository=${encodeURIComponent(repository)}${remoteQuery(query)}${suffix}`,
+    )
 }

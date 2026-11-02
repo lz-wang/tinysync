@@ -39,6 +39,7 @@ import {
     deleteJob,
     fetchJobStatus,
     getRun,
+    isFileJobConfig,
     type JobResponse,
     listJobs,
     listSources,
@@ -314,18 +315,30 @@ function JobTable({
         (sourceId: string) => sources.find(source => source.id === sourceId)?.name ?? sourceId,
         [sources],
     )
+    // targetSummary 把任务的「数据来源 / 目标」压缩为一行文本：file 为
+    // 同步源名，oci 为目标 Registry 列表。
+    const targetSummary = useCallback(
+        (job: JobResponse): string =>
+            isFileJobConfig(job.config)
+                ? sourceName(job.config.source_id)
+                : job.config.dst_servers.join('、'),
+        [sourceName],
+    )
     const visible = useMemo(
         () =>
             jobs
                 .filter(job => {
                     const state = runStates[job.id]?.state ?? 'idle'
                     const needle = query.trim().toLowerCase()
+                    const modeText = isFileJobConfig(job.config) ? job.config.mode : ''
                     return (
                         (needle === '' ||
-                            `${job.name} ${sourceName(job.config.source_id)} ${job.config.mode}`
+                            `${job.name} ${job.kind} ${targetSummary(job)} ${modeText}`
                                 .toLowerCase()
                                 .includes(needle)) &&
-                        (sourceFilter === 'all' || job.config.source_id === sourceFilter) &&
+                        (sourceFilter === 'all' ||
+                            (isFileJobConfig(job.config) &&
+                                job.config.source_id === sourceFilter)) &&
                         (statusFilter === 'all' || state === statusFilter)
                     )
                 })
@@ -334,7 +347,7 @@ function JobTable({
                         const state = runStates[job.id]
                         switch (sort.field) {
                             case 'source':
-                                return sourceName(job.config.source_id)
+                                return targetSummary(job)
                             case 'lastRun':
                                 return state?.finished_at ?? state?.started_at ?? ''
                             case 'nextRun':
@@ -348,7 +361,7 @@ function JobTable({
                         (sort.direction === 'asc' ? 1 : -1)
                     )
                 }),
-        [jobs, query, runStates, sort, sourceFilter, sourceName, statusFilter],
+        [jobs, query, runStates, sort, sourceFilter, statusFilter, targetSummary],
     )
     const paginated = useMemo(
         () => visible.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage),
@@ -482,7 +495,7 @@ function JobTable({
                 }}
             >
                 <TableContainer sx={{ flexGrow: 1, minHeight: 0, overflow: 'auto' }}>
-                    <Table size="small" sx={{ minWidth: 860 }}>
+                    <Table size="small" sx={{ minWidth: 920 }}>
                         <TableHead>
                             <TableRow>
                                 <TableCell padding="checkbox">
@@ -508,7 +521,8 @@ function JobTable({
                                     />
                                 </TableCell>
                                 <TableCell>{header('名称', 'name')}</TableCell>
-                                <TableCell>{header('同步源', 'source')}</TableCell>
+                                <TableCell>类型</TableCell>
+                                <TableCell>{header('数据源 / 目标', 'source')}</TableCell>
                                 <TableCell>模式</TableCell>
                                 <TableCell>{header('状态', 'enabled')}</TableCell>
                                 <TableCell>{header('最近运行', 'lastRun')}</TableCell>
@@ -554,19 +568,37 @@ function JobTable({
                                                 {job.name}
                                             </Typography>
                                         </TableCell>
-                                        <TableCell>{sourceName(job.config.source_id)}</TableCell>
                                         <TableCell>
                                             <Chip
-                                                label={
-                                                    job.config.mode === 'mirror' ? '镜像' : '复制'
-                                                }
-                                                color={
-                                                    job.config.mode === 'mirror'
-                                                        ? 'warning'
-                                                        : 'default'
-                                                }
+                                                label={job.kind === 'oci' ? 'OCI' : '文件'}
+                                                color={job.kind === 'oci' ? 'secondary' : 'default'}
                                                 size="small"
+                                                variant="outlined"
                                             />
+                                        </TableCell>
+                                        <TableCell>{targetSummary(job)}</TableCell>
+                                        <TableCell>
+                                            {isFileJobConfig(job.config) ? (
+                                                <Chip
+                                                    label={
+                                                        job.config.mode === 'mirror'
+                                                            ? '镜像'
+                                                            : '复制'
+                                                    }
+                                                    color={
+                                                        job.config.mode === 'mirror'
+                                                            ? 'warning'
+                                                            : 'default'
+                                                    }
+                                                    size="small"
+                                                />
+                                            ) : (
+                                                <Typography variant="body2" color="text.secondary">
+                                                    {job.config.platforms.length > 0
+                                                        ? `${job.config.platforms.length} 个平台`
+                                                        : '全平台'}
+                                                </Typography>
+                                            )}
                                         </TableCell>
                                         <TableCell>
                                             <Chip
@@ -654,7 +686,7 @@ function JobTable({
                             })}
                             {paginated.length === 0 && (
                                 <TableRow>
-                                    <TableCell colSpan={8}>
+                                    <TableCell colSpan={9}>
                                         <Box sx={{ py: 6, textAlign: 'center' }}>
                                             <Typography color="text.secondary">
                                                 暂无匹配的同步任务

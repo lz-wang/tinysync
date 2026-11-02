@@ -2,14 +2,13 @@ import DarkModeOutlinedIcon from '@mui/icons-material/DarkModeOutlined'
 import DashboardOutlinedIcon from '@mui/icons-material/DashboardOutlined'
 import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined'
 import HistoryOutlinedIcon from '@mui/icons-material/HistoryOutlined'
-import KeyOutlinedIcon from '@mui/icons-material/KeyOutlined'
+import Inventory2OutlinedIcon from '@mui/icons-material/Inventory2Outlined'
 import LightModeOutlinedIcon from '@mui/icons-material/LightModeOutlined'
 import LogoutOutlinedIcon from '@mui/icons-material/LogoutOutlined'
 import MenuIcon from '@mui/icons-material/Menu'
 import MenuOpenIcon from '@mui/icons-material/MenuOpen'
 import SettingsBrightnessOutlinedIcon from '@mui/icons-material/SettingsBrightnessOutlined'
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined'
-import ShareOutlinedIcon from '@mui/icons-material/ShareOutlined'
 import StorageOutlinedIcon from '@mui/icons-material/StorageOutlined'
 import SyncOutlinedIcon from '@mui/icons-material/SyncOutlined'
 import {
@@ -39,14 +38,24 @@ const expandedWidth = 240
 const collapsedWidth = 72
 const sidebarIconColumnWidth = 44
 const collapseKey = 'tinysync-sidebar-collapsed'
+// items 是一级导航（计划 §6 的七项目标，设置固定在侧栏底部）：凭据与
+// 共享管理降级为设置页 tabs（R37），不再占用一级导航。
 const items = [
     { to: '/', label: '概览', icon: <DashboardOutlinedIcon /> },
-    { to: '/sources', label: '同步源', icon: <StorageOutlinedIcon /> },
-    { to: '/credentials', label: '凭据', icon: <KeyOutlinedIcon /> },
     { to: '/jobs', label: '同步任务', icon: <SyncOutlinedIcon /> },
+    { to: '/sources', label: '同步源', icon: <StorageOutlinedIcon /> },
+    { to: '/images', label: '镜像管理', icon: <Inventory2OutlinedIcon /> },
     { to: '/files', label: '文件管理', icon: <FolderOutlinedIcon /> },
-    { to: '/shares', label: '共享管理', icon: <ShareOutlinedIcon /> },
-    { to: '/history', label: '运行历史', icon: <HistoryOutlinedIcon /> },
+    { to: '/history', label: '执行历史', icon: <HistoryOutlinedIcon /> },
+]
+// sectionTitles 把路由前缀映射为顶栏标题；顺序即匹配优先级。
+const sectionTitles: Array<{ prefix: string; title: string }> = [
+    { prefix: '/jobs', title: '同步任务' },
+    { prefix: '/sources', title: '同步源' },
+    { prefix: '/images', title: '镜像管理' },
+    { prefix: '/files', title: '文件管理' },
+    { prefix: '/history', title: '执行历史' },
+    { prefix: '/settings', title: '设置' },
 ]
 function ThemeIcon({ preference }: { preference: ThemePreference }) {
     if (preference === 'light') return <LightModeOutlinedIcon fontSize="small" />
@@ -182,21 +191,8 @@ export default function AppShell() {
             </Box>
         </Box>
     )
-    const title = location.pathname.startsWith('/sources')
-        ? '同步源'
-        : location.pathname.startsWith('/credentials')
-          ? '凭据'
-          : location.pathname.startsWith('/jobs')
-            ? '同步任务'
-            : location.pathname.startsWith('/files')
-              ? '文件管理'
-              : location.pathname.startsWith('/shares')
-                ? '共享管理'
-                : location.pathname.startsWith('/history')
-                  ? '运行历史'
-                  : location.pathname.startsWith('/settings')
-                    ? '设置'
-                    : '概览'
+    const title =
+        sectionTitles.find(section => location.pathname.startsWith(section.prefix))?.title ?? '概览'
     return (
         <Box sx={{ display: 'flex', minHeight: '100vh', bgcolor: 'background.default' }}>
             <AppBar

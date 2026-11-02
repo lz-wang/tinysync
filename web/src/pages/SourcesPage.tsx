@@ -50,11 +50,13 @@ import { useToast } from '../app/toast'
 import { usePageTitle } from '../app/usePageTitle'
 import { remoteFilesPath } from '../features/files/routes'
 import DeleteSourceDialog from '../features/sources/DeleteSourceDialog'
+import RegistrySection from '../features/sources/RegistrySection'
 import SourceDialog from '../features/sources/SourceDialog'
 
 type SortField = 'name' | 'type' | 'location' | 'enabled'
 
-// SourcesPage 使用原生 MUI Table 管理同步源；操作反馈统一走全局 toast。
+// SourcesPage 使用原生 MUI Table 管理同步源（文件协议 Source）；页尾的
+// Registry 分区承载 OCI 目标仓库与加速器配置；操作反馈统一走全局 toast。
 export default function SourcesPage() {
     usePageTitle('同步源')
     const toast = useToast()
@@ -109,93 +111,90 @@ export default function SourcesPage() {
         }
     }
     return (
-        <Stack
-            spacing={2}
-            sx={{
-                height: { xs: 'calc(100dvh - 96px)', md: 'calc(100dvh - 112px)' },
-                minHeight: 420,
-            }}
-        >
-            {sources === null && loadError === null ? (
-                <CircularProgress size={24} />
-            ) : sources !== null ? (
-                <SourceTable
-                    sources={sources}
-                    testing={testing}
-                    onAdd={() => {
+        <Stack spacing={3}>
+            <Stack spacing={2}>
+                {sources === null && loadError === null ? (
+                    <CircularProgress size={24} />
+                ) : sources !== null ? (
+                    <SourceTable
+                        sources={sources}
+                        testing={testing}
+                        onAdd={() => {
+                            setEditing(null)
+                            setDialogOpen(true)
+                        }}
+                        onTest={source => void handleTest(source)}
+                        onEdit={source => {
+                            setEditing(source)
+                            setDialogOpen(true)
+                        }}
+                        onDelete={setDeleting}
+                        onBatchDelete={setBatchDeleting}
+                        onEnabledChanged={async (source, enabled) => {
+                            try {
+                                const saved = await updateSource(source.id, { enabled })
+                                setSources(
+                                    prev =>
+                                        prev?.map(item => (item.id === saved.id ? saved : item)) ??
+                                        null,
+                                )
+                            } catch (e) {
+                                toast.error(e instanceof Error ? e.message : String(e))
+                            }
+                        }}
+                    />
+                ) : (
+                    // 初始加载失败：详情已在 toast 中展示，区域保留简短失败文案。
+                    <Typography variant="body2" color="text.secondary">
+                        同步源加载失败。
+                    </Typography>
+                )}
+                <SourceDialog
+                    open={dialogOpen}
+                    source={editing}
+                    onClose={() => {
+                        setDialogOpen(false)
                         setEditing(null)
-                        setDialogOpen(true)
                     }}
-                    onTest={source => void handleTest(source)}
-                    onEdit={source => {
-                        setEditing(source)
-                        setDialogOpen(true)
-                    }}
-                    onDelete={setDeleting}
-                    onBatchDelete={setBatchDeleting}
-                    onEnabledChanged={async (source, enabled) => {
-                        try {
-                            const saved = await updateSource(source.id, { enabled })
-                            setSources(
-                                prev =>
-                                    prev?.map(item => (item.id === saved.id ? saved : item)) ??
-                                    null,
-                            )
-                        } catch (e) {
-                            toast.error(e instanceof Error ? e.message : String(e))
-                        }
+                    onSaved={() => {
+                        setDialogOpen(false)
+                        setEditing(null)
+                        void reload()
                     }}
                 />
-            ) : (
-                // 初始加载失败：详情已在 toast 中展示，区域保留简短失败文案。
-                <Typography variant="body2" color="text.secondary">
-                    同步源加载失败。
-                </Typography>
-            )}
-            <SourceDialog
-                open={dialogOpen}
-                source={editing}
-                onClose={() => {
-                    setDialogOpen(false)
-                    setEditing(null)
-                }}
-                onSaved={() => {
-                    setDialogOpen(false)
-                    setEditing(null)
-                    void reload()
-                }}
-            />
-            <DeleteSourceDialog
-                source={deleting}
-                onClose={() => setDeleting(null)}
-                onDeleted={id => {
-                    setDeleting(null)
-                    setSources(prev => prev?.filter(source => source.id !== id) ?? null)
-                }}
-            />
-            <Dialog
-                open={batchDeleting !== null}
-                onClose={() => setBatchDeleting(null)}
-                maxWidth="xs"
-                fullWidth
-            >
-                <DialogTitle>删除已选同步源？</DialogTitle>
-                <DialogContent>
-                    <Typography>
-                        确认删除 {batchDeleting?.length ?? 0} 个同步源？不会删除源端文件。
-                    </Typography>
-                </DialogContent>
-                <DialogActions>
-                    <Button onClick={() => setBatchDeleting(null)}>取消</Button>
-                    <Button
-                        color="error"
-                        variant="contained"
-                        onClick={() => void handleBatchDelete()}
-                    >
-                        删除
-                    </Button>
-                </DialogActions>
-            </Dialog>
+                <DeleteSourceDialog
+                    source={deleting}
+                    onClose={() => setDeleting(null)}
+                    onDeleted={id => {
+                        setDeleting(null)
+                        setSources(prev => prev?.filter(source => source.id !== id) ?? null)
+                    }}
+                />
+                <Dialog
+                    open={batchDeleting !== null}
+                    onClose={() => setBatchDeleting(null)}
+                    maxWidth="xs"
+                    fullWidth
+                >
+                    <DialogTitle>删除已选同步源？</DialogTitle>
+                    <DialogContent>
+                        <Typography>
+                            确认删除 {batchDeleting?.length ?? 0} 个同步源？不会删除源端文件。
+                        </Typography>
+                    </DialogContent>
+                    <DialogActions>
+                        <Button onClick={() => setBatchDeleting(null)}>取消</Button>
+                        <Button
+                            color="error"
+                            variant="contained"
+                            onClick={() => void handleBatchDelete()}
+                        >
+                            删除
+                        </Button>
+                    </DialogActions>
+                </Dialog>
+            </Stack>
+            <RegistrySection />
         </Stack>
     )
 }
@@ -373,7 +372,9 @@ function SourceTable({
                     flexDirection: 'column',
                 }}
             >
-                <TableContainer sx={{ flexGrow: 1, minHeight: 0, overflow: 'auto' }}>
+                <TableContainer
+                    sx={{ flexGrow: 1, minHeight: 0, overflow: 'auto', maxHeight: '62dvh' }}
+                >
                     <Table size="small" sx={{ minWidth: 760 }}>
                         <TableHead>
                             <TableRow>
