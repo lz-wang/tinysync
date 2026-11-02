@@ -361,6 +361,25 @@ func TestJobCreateValidationAPI(t *testing.T) {
 	}
 }
 
+// kind=git 是预留占位：创建显式返回 400 与「不支持」文案，且不落库
+// （P1「Git 只显示规划中，不能创建任务」的 API 侧验收）。
+func TestJobCreateGitUnsupportedAPI(t *testing.T) {
+	router := newJobRouter(t, fakeJobRemote{})
+	rec := doJSON(t, router, "POST", "/api/v1/jobs", `{"name": "Repo", "kind": "git", "config": {}}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("create kind=git status = %d, want 400, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "not supported") || !strings.Contains(rec.Body.String(), "git") {
+		t.Errorf("create kind=git body lacks unsupported copy: %s", rec.Body.String())
+	}
+	// 被拒的创建不得留下任何任务。
+	if rec := doJSON(t, router, "GET", "/api/v1/jobs", ""); rec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, want 200", rec.Code)
+	} else if strings.Contains(rec.Body.String(), "Repo") {
+		t.Errorf("rejected git job persisted: %s", rec.Body.String())
+	}
+}
+
 // name 大小写不敏感冲突返回 409。
 func TestJobDuplicateNameAPI(t *testing.T) {
 	router := newJobRouter(t, fakeJobRemote{})
