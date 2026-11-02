@@ -287,6 +287,78 @@ func splitItemDetail(data string) (string, json.RawMessage) {
 	return detail.Target, nil
 }
 
+// splitItemDetailFull 把 detail_json 拆回 target 与领域扩展字段：扩展
+// 字段整体原样保留为 Detail（仅剔除公共的 target 键），供消费者按
+// 领域解码（FailedItems 的失败明细需要 src / platform_results 等）。
+func splitItemDetailFull(data string) (string, json.RawMessage) {
+	if data == "" || data == "{}" {
+		return "", nil
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(data), &fields); err != nil {
+		return "", nil
+	}
+	var target string
+	if raw, ok := fields["target"]; ok {
+		_ = json.Unmarshal(raw, &target)
+		delete(fields, "target")
+	}
+	if len(fields) == 0 {
+		return target, nil
+	}
+	extra, err := json.Marshal(fields)
+	if err != nil {
+		return target, nil
+	}
+	return target, json.RawMessage(extra)
+}
+
+// FailedItems 实现 job.RunRepository：按写入顺序返回 run 的失败明细
+// （status=failed，最多 limit 条；limit<=0 不限制），total 为失败明细
+// 总数（不受 limit 截断）——完成通知的失败明细数据源，明细保留领域
+// 扩展字段。
+func (r *RunRepository) FailedItems(ctx context.Context, runID string, limit int) ([]job.RunItem, int, error) {
+	var total int
+	if err := r.db.QueryRowContext(ctx,
+		"SELECT count(*) FROM job_run_items WHERE run_id = ? AND status = ?",
+		runID, string(job.ItemFailed),
+	).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count failed items of run %s: %w", runID, err)
+	}
+	if limit <= 0 {
+		limit = -1
+	}
+	rows, err := r.db.QueryContext(ctx,
+		"SELECT "+runItemColumns+" FROM job_run_items WHERE run_id = ? AND status = ? "+
+			"ORDER BY id ASC LIMIT ?", runID, string(job.ItemFailed), limit)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list failed items of run %s: %w", runID, err)
+	}
+	defer rows.Close()
+
+	var list []job.RunItem
+	for rows.Next() {
+		var (
+			item       job.RunItem
+			action     string
+			status     string
+			detailJSON string
+		)
+		if err := rows.Scan(&item.ID, &item.RunID, &action, &status,
+			&item.Bytes, &item.Error, &detailJSON); err != nil {
+			return nil, 0, fmt.Errorf("scan failed run item: %w", err)
+		}
+		item.Target, item.Detail = splitItemDetailFull(detailJSON)
+		item.Action = job.RunItemAction(action)
+		item.Status = job.RunItemStatus(status)
+		list = append(list, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterate failed run items: %w", err)
+	}
+	return list, total, nil
+}
+
 // HasRunFor 实现 job.RunRepository：occurrence 消费判定，
 // 命中 (job_id, trigger_type, scheduled_for) 索引。
 func (r *RunRepository) HasRunFor(ctx context.Context, jobID string, trigger job.RunTrigger, scheduledFor time.Time) (bool, error) {

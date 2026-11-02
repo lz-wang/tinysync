@@ -24,6 +24,27 @@ type RunCompletion struct {
 	Result json.RawMessage
 	// Error 是失败原因的人类可读描述；成功时为空。
 	Error string
+	// FailedItems 是本轮 status=failed 的运行明细快照（写入序，最多
+	// FailedItemLimit 条）。Target / Error 是公共层语义，领域扩展字段
+	// 保留在 Detail 原始 JSON 中——由消费者按 JobKind 自行解码，公共层
+	// 不解释领域字段。
+	FailedItems []FailedItem
+	// FailedItemsTotal 是本轮失败明细总数（可能超过 FailedItems 携带的
+	// 条数）；消费者据此渲染「另有 N 条失败未列出」之类的截断标注。
+	FailedItemsTotal int
+}
+
+// FailedItemLimit 是完成事件携带失败明细的查询上限：通知正文只渲染
+// 这么多行，更多失败由消费者按 FailedItemsTotal 渲染截断标注。
+const FailedItemLimit = 20
+
+// FailedItem 是完成事件携带的一条失败明细（run items 中 status=failed
+// 的行）。Target 是统一的展示目标（各领域自定义），Detail 是领域扩展
+// 字段的原始 JSON，Error 是失败原因。
+type FailedItem struct {
+	Target string
+	Detail json.RawMessage
+	Error  string
 }
 
 // RunCompletionHook 是运行完成的旁路消费者。实现必须立即返回：

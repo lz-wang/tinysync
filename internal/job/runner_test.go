@@ -338,6 +338,12 @@ func (m *memRunRepo) Items(ctx context.Context, runID string, limit, offset int)
 	return nil, 0, nil
 }
 
+// FailedItems 桩：内存仓库不产生失败明细（完成事件的失败明细负载由
+// 真 SQLite 路径的单测覆盖）。
+func (m *memRunRepo) FailedItems(ctx context.Context, runID string, limit int) ([]RunItem, int, error) {
+	return nil, 0, nil
+}
+
 func (m *memRunRepo) HasRunFor(ctx context.Context, jobID string, trigger RunTrigger, scheduledFor time.Time) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -423,11 +423,12 @@ func (r *Runner) finalize(ctx context.Context, run *activeRun, j Job, result []b
 	// 完成事件只在终态成功落库后发布：落库失败时数据库仍显示
 	// running，此刻发出完成通知会造成两边事实不一致——宁可漏发
 	//（ADR 0006）。事件自带 JobName 快照，消费者无需回读可能已变更
-	// 的任务配置。
+	// 的任务配置。失败明细（R31）是事件的旁路负载：查询失败只记日志，
+	// 不影响已落库的终态与事件本身的发布。
 	if finalizeErr != nil || r.CompletionHook == nil {
 		return
 	}
-	r.CompletionHook.OnRunCompleted(RunCompletion{
+	completion := RunCompletion{
 		RunID:      final.ID,
 		JobID:      final.JobID,
 		JobKind:    final.JobKind,
@@ -438,7 +439,21 @@ func (r *Runner) finalize(ctx context.Context, run *activeRun, j Job, result []b
 		FinishedAt: finishedAt,
 		Result:     final.Result,
 		Error:      final.Error,
-	})
+	}
+	if failed, total, err := r.history.FailedItems(persistCtx, final.ID, FailedItemLimit); err != nil {
+		logging.Errorf("load failed items of run %s: %v", final.ID, err)
+	} else if len(failed) > 0 {
+		completion.FailedItems = make([]FailedItem, 0, len(failed))
+		for _, item := range failed {
+			completion.FailedItems = append(completion.FailedItems, FailedItem{
+				Target: item.Target,
+				Detail: item.Detail,
+				Error:  item.Error,
+			})
+		}
+		completion.FailedItemsTotal = total
+	}
+	r.CompletionHook.OnRunCompleted(completion)
 }
 
 // resultString 把结果 JSON 转为日志友好的字符串；空结果为 {}。

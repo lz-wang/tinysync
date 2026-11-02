@@ -5,7 +5,9 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -283,6 +285,70 @@ func TestRunItems(t *testing.T) {
 	// 未知 run：Items 直接空，语义区分由调用方（Get 先行）负责。
 	if _, total, err := repo.Items(ctx, "run_missing", 10, 0); err != nil || total != 0 {
 		t.Fatalf("Items missing run = (total %d, %v), want 0", total, err)
+	}
+}
+
+// FailedItems：只返回 status=failed 的明细（写入序、limit 截断），
+// total 为失败明细总数（不受 limit 截断），领域扩展字段保留在 Detail。
+func TestRunFailedItems(t *testing.T) {
+	repo, jobs := seedRunRepo(t)
+	ctx := context.Background()
+	if err := repo.Insert(ctx, runningRun("run_a", jobs[0], job.TriggerManual, nil, 0)); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	items := []job.RunItem{
+		{RunID: "run_a", Target: "a.jpg", Action: job.ItemCreate, Status: job.ItemSucceeded, Bytes: 10},
+		{RunID: "run_a", Target: "b.jpg", Action: job.ItemUpdate, Status: job.ItemFailed, Error: "boom",
+			Detail: json.RawMessage(`{"src":"docker.io/a:1","platform_results":[{"platform":"linux/amd64","status":"failed","error":"boom"}]}`)},
+		{RunID: "run_a", Target: "c.jpg", Action: job.ItemCreate, Status: job.ItemSkipped},
+		{RunID: "run_a", Target: "d.jpg", Action: job.ItemUpdate, Status: job.ItemFailed, Error: "late"},
+	}
+	for _, item := range items {
+		if err := repo.AppendItem(ctx, item); err != nil {
+			t.Fatalf("AppendItem %s: %v", item.Target, err)
+		}
+	}
+	got, total, err := repo.FailedItems(ctx, "run_a", job.FailedItemLimit)
+	if err != nil || total != 2 || len(got) != 2 {
+		t.Fatalf("FailedItems = (%d rows, total %d, %v), want 2/2", len(got), total, err)
+	}
+	// 只含失败行，写入序；领域扩展字段原样保留。
+	if got[0].Target != "b.jpg" || got[0].Error != "boom" {
+		t.Errorf("failed item[0] = (%s, %q), want (b.jpg, boom)", got[0].Target, got[0].Error)
+	}
+	if got[1].Target != "d.jpg" {
+		t.Errorf("failed item[1] target = %s, want d.jpg (write order)", got[1].Target)
+	}
+	var detail struct {
+		Src             string `json:"src"`
+		PlatformResults []struct {
+			Platform string `json:"platform"`
+			Status   string `json:"status"`
+		} `json:"platform_results"`
+	}
+	if err := json.Unmarshal(got[0].Detail, &detail); err != nil {
+		t.Fatalf("unmarshal detail: %v", err)
+	}
+	if detail.Src != "docker.io/a:1" || len(detail.PlatformResults) != 1 ||
+		detail.PlatformResults[0].Platform != "linux/amd64" {
+		t.Errorf("detail = %+v, want src + one failed platform preserved", detail)
+	}
+	// 公共 target 键已拆出，不再混入 Detail。
+	if strings.Contains(string(got[0].Detail), `"target"`) {
+		t.Errorf("detail still contains target key: %s", got[0].Detail)
+	}
+
+	// limit 截断：取最早的 N 条，total 仍为失败明细总数。
+	page, total, err := repo.FailedItems(ctx, "run_a", 1)
+	if err != nil || total != 2 || len(page) != 1 || page[0].Target != "b.jpg" {
+		t.Fatalf("FailedItems page = (%d rows, total %d, %v), want earliest b.jpg", len(page), total, err)
+	}
+	// 无失败明细的 run：空列表 + total 0。
+	if err := repo.Insert(ctx, runningRun("run_b", jobs[1], job.TriggerManual, nil, 0)); err != nil {
+		t.Fatalf("Insert run_b: %v", err)
+	}
+	if got, total, err := repo.FailedItems(ctx, "run_b", job.FailedItemLimit); err != nil || total != 0 || len(got) != 0 {
+		t.Fatalf("FailedItems empty run = (%d rows, total %d, %v), want 0/0", len(got), total, err)
 	}
 }
 

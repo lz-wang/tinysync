@@ -178,6 +178,10 @@ type RunRepository interface {
 	AppendItem(ctx context.Context, item RunItem) error
 	// Items 分页返回 run 的明细（按写入顺序），total 为该 run 明细总数。
 	Items(ctx context.Context, runID string, limit, offset int) ([]RunItem, int, error)
+	// FailedItems 按 status=failed 返回 run 的失败明细（写入序，最多
+	// limit 条；limit<=0 不限制），total 为失败明细总数（不受 limit
+	// 截断）。完成通知的失败明细数据源：明细保留领域扩展字段。
+	FailedItems(ctx context.Context, runID string, limit int) ([]RunItem, int, error)
 	// HasRunFor 判定 Job 的某触发器在指定 occurrence 是否已有 run 记录
 	//（含 skipped）：存在即已消费，调度不再重复触发。
 	HasRunFor(ctx context.Context, jobID string, trigger RunTrigger, scheduledFor time.Time) (bool, error)
