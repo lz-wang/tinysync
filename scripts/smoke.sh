@@ -24,7 +24,8 @@
 #	     删除被引用凭据被 409 拒绝
 #	11. GET /api/v1/sources 列表可见四个 Source 且不含 secret，
 #	    tinysync.db 已创建
-#	12. POST /api/v1/jobs 创建引用 WebDAV Source 的 Copy Job
+#	12. POST /api/v1/jobs 按统一 kind+config 契约创建引用 WebDAV
+#	    Source 的 file Copy Job（schedule=manual）
 #	13. POST /api/v1/jobs/:id/run 异步启动（202），对不可达远端收敛为 failed
 #	14. 关闭进程并以同一 datadir 重启
 #	15. 原 session 跨重启仍有效（cookie.jar 直接复用）；三协议 Source
@@ -409,16 +410,28 @@ if [[ ! -f "${datadir}/tinysync.db" ]]; then
 fi
 echo "[smoke] sources list ok (3 protocols), database file ok"
 
-# 12. POST /api/v1/jobs：创建引用该 Source 的 Copy Job。
+# 12. POST /api/v1/jobs：按统一 kind+config 契约创建引用该 Source 的
+#     file Copy Job（schedule=manual，config 内嵌 source_id / remote_root /
+#     local_root / mode）。
 #     local_root 用相对路径（cwd 已是 smoke_root），由服务端归一为绝对路径，
 #     避免 Windows 下 JSON 内嵌 MSYS 路径的转歧义。
 mkdir -p local
 curl --fail --silent -b cookie.jar \
 	-H 'Content-Type: application/json' \
-	--data "{\"name\":\"Smoke Job\",\"source_id\":\"${source_id}\",\"remote_root\":\"/\",\"local_root\":\"local\",\"mode\":\"copy\",\"enabled\":true}" \
+	--data "{\"name\":\"Smoke Job\",\"kind\":\"file\",\"enabled\":true,\"schedule\":{\"type\":\"manual\"},\"config\":{\"source_id\":\"${source_id}\",\"remote_root\":\"/\",\"local_root\":\"local\",\"mode\":\"copy\"}}" \
 	"${base_url}/api/v1/jobs" >job.json
+grep -F '"kind":"file"' job.json >/dev/null || {
+	echo "Error: job creation failed (missing kind)" >&2
+	cat job.json >&2
+	exit 1
+}
+grep -F '"schedule":{"type":"manual"}' job.json >/dev/null || {
+	echo "Error: job creation failed (missing manual schedule)" >&2
+	cat job.json >&2
+	exit 1
+}
 grep -F '"mode":"copy"' job.json >/dev/null || {
-	echo "Error: job creation failed" >&2
+	echo "Error: job creation failed (missing config mode)" >&2
 	cat job.json >&2
 	exit 1
 }
