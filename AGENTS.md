@@ -1,6 +1,6 @@
 # 仓库协作指南
 
-TinySync 面向 HomeLab，目标是将异构远端文件单向同步到本地，以单一 Go 二进制提供 Web UI 与 API。
+TinySync 面向 HomeLab，以单一 Go 二进制提供 Web UI 与 API：文件同步把异构远端文件单向同步到本地，镜像同步把容器镜像从上游 Registry 复制到自建 Registry；Git 仓库同步规划中。
 
 ## 开始任务
 
@@ -41,7 +41,7 @@ single-context 布局：根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/
 ## 始终遵守
 
 - 全工程禁止 CGO；版本号唯一事实来源是 Git；保留无 Node 环境的 Go fallback 构建路径。领域语义见 [CONTEXT.md](CONTEXT.md)，架构决策见 `docs/adr/`。
-- v1 只做远端 → 本地；Mirror 只能删除当前 Job 明确管理的文件，不能凭远端列表缺失删除未知本地文件。
+- 文件同步只做远端 → 本地；Mirror 只能删除当前任务明确管理的文件，不能凭远端列表缺失删除未知本地文件。统一任务域（`internal/job`）只承载公共调度与历史，不含领域逻辑；文件引擎与镜像引擎分别在 `internal/syncjob` 与 `internal/oci`，统一域不 import 引擎包。
 - 不提交密钥、令牌、个人环境配置、构建产物或覆盖率文件；测试使用临时数据目录，不覆盖真实同步文件。
 - 遵循附近代码风格，不顺带全库格式化。代码、测试或脚本变更后执行全量 lint、typecheck 和 test；命令与失败处理见[开发与验证](docs/guides/development.md)。
 - 用户可见变化同步写入 `CHANGELOG.md` 的 `[Unreleased]`，仅使用 `新增` / `修复` / `移除`；纯内部重构、测试、构建及文档维护按该文件规则处理。

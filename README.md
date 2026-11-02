@@ -1,6 +1,6 @@
 # TinySync
 
-TinySync 是面向 HomeLab 的文件同步服务，将 WebDAV、S3、SFTP、SMB、GitHub Release、HTTP 文件服务或运行主机上的文件单向同步到本地。内置中文 Web 界面，支持定时同步、运行进度与历史、完成通知，以及通过公开链接分享本地文件。
+TinySync 是面向 HomeLab 的统一同步应用，以单一二进制提供两类同步能力：文件同步，将 WebDAV、S3、SFTP、SMB、GitHub Release、HTTP 文件服务或运行主机上的文件单向同步到本地；OCI 镜像同步，把容器镜像从上游 Registry 复制到自建 Registry。Git 仓库同步在规划中。内置中文 Web 界面，支持定时调度、运行进度与统一执行历史、完成通知，以及通过公开链接分享本地文件。
 
 ## 安装与开始使用
 
@@ -13,7 +13,7 @@ TinySync 是面向 HomeLab 的文件同步服务，将 WebDAV、S3、SFTP、SMB�
 打开 `http://127.0.0.1:9466`，使用首次启动时终端输出的管理员密码登录，并在「用户设置」中修改密码。
 
 1. 在「同步源」中添加文件来源，填写连接信息并测试访问。
-2. 在「同步任务」中选择同步源、源端路径和本地目标目录，设置同步模式与计划。
+2. 在「同步任务」中新建文件同步任务，选择同步源、源端路径和本地目标目录，设置同步模式与计划。
 3. 手动运行一次，查看进度与运行结果；之后按计划自动同步。
 
 本地目标目录位于运行 TinySync 的主机上，服务用户需要具有写入权限。通过其他设备访问时使用主机地址；对外部署请配置 HTTPS，反向代理需转发 `X-Forwarded-Proto: https`。
@@ -38,14 +38,37 @@ HTTP 文件源以只读目录镜像 URL 为源根（如 `https://mirror.example.
 
 ## 同步任务
 
+任务分两种类型，共用同一套调度、进度与执行历史：
+
+**文件同步**：把同步源中的文件单向同步到本地目标目录。
+
 - **Copy**：新增和更新文件，保留目标目录中多出的文件。
 - **Mirror**：在 Copy 的基础上，删除源端已消失且由当前任务管理的文件；目标目录中原有的其他文件不会因此被删除。
 
-任务支持手动运行、单次定时、固定间隔和 Cron 计划，可通过 include / exclude 规则筛选文件。计划时间默认使用运行主机的时区；同一任务仍在运行时，新的计划触发会跳过。
+文件任务可通过 include / exclude 规则筛选文件。
 
-运行中可查看阶段、文件进度和传输量，并手动停止。运行历史保留结果、耗时与文件变更明细，重启后仍可查询。
+**镜像同步**：把一组源镜像（`仓库:标签`）复制到自建 Registry，支持按平台（操作系统 / 架构 / 变体）筛选；目标已存在相同 Digest 的镜像时自动跳过。见[镜像同步](#镜像同步)。
 
-在「设置 → 通知」中配置 Pushover 或 SMTP 邮件，任务成功、失败或取消后会发送结果摘要。填写配置后先保存，再发送测试通知或测试邮件。
+**Git 仓库同步**：规划中，暂不可创建。
+
+任务支持手动运行、单次定时、固定间隔和 Cron 计划。计划时间默认使用运行主机的时区；同一任务仍在运行时，新的计划触发会跳过；全部任务共享进程级的并发上限（默认同时运行 2 个任务）。
+
+运行中可查看阶段与进度并手动停止：文件任务展示文件进度与传输量，镜像任务展示逐镜像的复制状态。执行历史保留结果、耗时与变更明细（文件变更或逐镜像结果），重启后仍可查询。
+
+在「设置 → 通知」中配置 Pushover 或 SMTP 邮件，任务成功、失败或取消后会发送结果摘要，通知标题按任务类型区分（`[tinysync][文件同步]` / `[tinysync][镜像同步]`）。填写配置后先保存，再发送测试通知或测试邮件。
+
+## 镜像同步
+
+镜像同步任务把源镜像复制到自建 Registry，不依赖文件同步源，使用独立的 Registry 配置：
+
+| 配置类型 | 用途 |
+| --- | --- |
+| primary | 真实 Registry：主机（可含命名空间）、用户名与密码、TLS 选项、strip 前缀与镜像路径转换，是同步目标与凭据来源 |
+| mirror | 上游主机（如 `docker.io`）的匿名加速器地址列表，仅用于拉取加速，不是同步目标 |
+
+primary Registry 可配置 `insecure_skip_verify` 与 `plain_http` 以适配内网自建服务；删除仍被镜像任务引用的 Registry 会被拒绝。Registry 凭据保存在数据库中，请按[备份与维护](#备份与维护)的要求保护数据目录与备份文件。
+
+「镜像管理」页汇总全部镜像同步任务的源镜像与最近执行状态：查询远端镜像元数据（标签、摘要、平台），批量立即同步，或把镜像加入任务。手动触发时还可临时指定源镜像子集，仅影响本轮运行、不改动任务配置。
 
 ## 文件浏览与共享
 
@@ -66,7 +89,7 @@ HTTP 文件源以只读目录镜像 URL 为源根（如 `https://mirror.example.
 | --- | --- | --- |
 | `--datadir` | `TINYSYNC_DATADIR` | `./data`，保存配置、运行历史、备份与日志 |
 | `--port` | `TINYSYNC_PORT` | `9466`，Web 界面与 API 端口 |
-| `--max-concurrent-jobs` | `TINYSYNC_MAX_CONCURRENT_JOBS` | `1`，同时运行的任务数 |
+| `--max-concurrent-jobs` | `TINYSYNC_MAX_CONCURRENT_JOBS` | `2`，同时运行的任务数 |
 | `--max-concurrent-transfers` | `TINYSYNC_MAX_CONCURRENT_TRANSFERS` | `4`，同时传输的文件数 |
 | `--transfer-timeout` | `TINYSYNC_TRANSFER_TIMEOUT` | `0`，不限制单文件单次传输耗时；可设为 `30m`、`1h` 等 |
 
@@ -85,7 +108,27 @@ curl -H "Authorization: Bearer $TINYSYNC_TOKEN" \
   http://127.0.0.1:9466/api/v1/sources
 ```
 
-MCP 集成暂未开放：设置页保留占位入口，待统一任务管理功能稳定后提供。
+任务统一为 `kind + config` 模型：`kind=file`（文件同步）、`kind=oci`（镜像同步）。`kind=oci` 的 `config` 示例：
+
+```bash
+curl -X POST -H "Authorization: Bearer $TINYSYNC_TOKEN" \
+  -H "Content-Type: application/json" \
+  http://127.0.0.1:9466/api/v1/jobs \
+  -d '{
+    "name": "基础镜像同步",
+    "kind": "oci",
+    "enabled": true,
+    "config": {
+      "src_images": ["docker.io/library/nginx:1.27", "docker.io/library/redis:7"],
+      "dst_servers": ["my-registry"],
+      "platforms": [{"os": "linux", "architecture": "arm64"}]
+    }
+  }'
+```
+
+其中 `dst_servers` 引用 primary Registry 配置名，`platforms` 省略时同步全部平台。`kind=git` 目前为规划中占位，创建请求会被拒绝。
+
+MCP 集成计划中：设置页保留占位入口。
 
 ## 备份与维护
 

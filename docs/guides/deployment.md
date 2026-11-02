@@ -14,7 +14,7 @@
 | 监听 | 默认 `9466/tcp`；监听地址固定为 `:<port>`（绑定全部网卡，没有 `--host` 参数） |
 | 数据目录 | 独立目录，进程全程独占 `<datadir>/tinysync.lock` |
 | 管理员密码 | 首次启动前初始化，至少 6 字符、不超过 1024 字节 |
-| 同步目标 | 每个 Job 的 `local_root` 目录（含 Mirror 需要的删除权限） |
+| 同步目标 | 文件任务的 `local_root` 目录（含 Mirror 需要的删除权限）；镜像同步不写本地目录 |
 
 版本号唯一事实来源是 Git：`tinysync --version` 输出 `X.Y.Z` 表示正式版本，
 输出 `dev-<commit日期>-<commit7>` 表示开发快照。生产部署使用正式版本。
@@ -67,8 +67,8 @@ sudo install -d -m 0755 /etc/tinysync
 sudo tee /etc/tinysync/tinysync.env >/dev/null <<'EOF'
 TINYSYNC_DATADIR=/var/lib/tinysync
 TINYSYNC_PORT=9466
-# 同时运行的同步 Job 数上限（默认 1）
-#TINYSYNC_MAX_CONCURRENT_JOBS=1
+# 同时运行的任务数上限（默认 2）
+#TINYSYNC_MAX_CONCURRENT_JOBS=2
 # 同时进行的远端文件下载上限（默认 4）
 #TINYSYNC_MAX_CONCURRENT_TRANSFERS=4
 # 单文件单次传输尝试的超时，如 1h / 30m；0（默认）表示不启用
@@ -83,8 +83,8 @@ REST API 与 Web UI 全面 default-deny，必须要有管理员密码才能登�
 两条路径任选其一：
 
 **A. 启动前预置（推荐）**：密码不进入 systemd journal，也不依赖首次启动的
-终端输出。`auth set-password` 会同时完成数据库 migration。必须以服务用户身份
-执行，否则生成的文件归 root，服务进程写不进去：
+终端输出。`auth set-password` 会同时完成数据库初始化（全新数据目录即建库）。
+必须以服务用户身份执行，否则生成的文件归 root，服务进程写不进去：
 
 ```sh
 read -rs TINYSYNC_ADMIN_PASSWORD
@@ -278,13 +278,19 @@ sudo systemctl stop tinysync && sudo systemctl start tinysync
 两个 unit 指向同一 `TINYSYNC_DATADIR`，或旧进程未被回收；`Restart=on-failure`
 会把这种冲突放大成反复重启，用 `StartLimitBurst` 兜底后检查配置。
 
-数据库损坏、crash 恢复与升级语义见 README 的 Operations 章节；进程异常中断
+数据库损坏、crash 恢复与备份维护见 README 的「备份与维护」；进程异常中断
 不依赖任何清理逻辑，重启即自动收敛。
 
 ## 10. 升级、降级与回滚
 
-升级即替换二进制后重启，migration 自动完成（先完整性检查 → 自动生成一致性
-备份到 `<datadir>/backups/tinysync-v<版本>-*.db` → 再迁移）：
+**本版本起数据库为全新 schema，升级是破坏性变更**：TinySync 不再迁移旧版
+数据库——数据目录中的库在首次使用时按内嵌 schema 一次性创建（当前
+SchemaVersion 15，存于 SQLite `PRAGMA user_version`）。用旧版本数据目录启动
+新版二进制会明确报错（`database schema incompatible with this build`）并拒绝
+启动，程序不会删除或改写旧库；正确做法是换用全新数据目录，按第 4 步重新
+初始化管理员密码并重建同步源、任务、Registry 与共享配置。
+
+升级（或首次部署）即替换二进制后启动：
 
 ```sh
 VERSION=0.12.0   # 新版本
@@ -295,11 +301,13 @@ sudo systemctl start tinysync
 /usr/local/bin/tinysync --version && journalctl -u tinysync -n 20 --no-pager
 ```
 
-- 启动关键路径上的 migration 不因启动即收到的取消信号中断，退出行为与数据库
-  状态是确定的。
-- **不支持降级**：schema 版本高于当前二进制时 `serve` 拒绝启动。回滚到旧版本
-  必须先 `db restore` 一份该版本可读的备份，升级后写入的数据会丢失。
-- 备份前不要手工替换数据库文件；只用 `tinysync db` 系列命令。
+- SchemaVersion 与二进制严格一致才可运行：库版本低于、高于本二进制或版本为 0
+  但已有业务表（外来 SQLite 文件）都报 schema 不兼容，`serve`、
+  `auth set-password` 与 `db` 系列命令一律拒绝。
+- **不支持降级**：schema 版本高于当前二进制时同样拒绝启动；回退到旧版本必须
+  先换回旧版本可读的数据目录，否则启动即报错。
+- 升级前请对旧数据目录做好整体备份（停服后直接归档目录即可），旧库不会被
+  新版本复用或转换。
 
 ## 11. 备份与数据库维护
 
@@ -324,9 +332,13 @@ sudo -u tinysync /usr/local/bin/tinysync db restore --datadir /var/lib/tinysync 
   --from /var/lib/tinysync/backups/tinysync-manual-<timestamp>-<hash>.db --force
 ```
 
-备份文件写入 `<datadir>/backups/`，权限为 0600，但**内容包含 Source 凭据与认证
-数据**，应与主数据库同等敏感级别保护（异地存储前加密，不要放进公开可读目录）。
-`<datadir>` 整体也应按此规则限制访问。
+备份文件写入 `<datadir>/backups/`，权限为 0600，但**内容包含同步源凭据、
+Registry 凭据与认证数据**，应与主数据库同等敏感级别保护（异地存储前加密，
+不要放进公开可读目录）。`<datadir>` 整体也应按此规则限制访问。
+
+注意：镜像同步的 Registry 用户名与密码在数据库 `registries` 表中以**明文列**
+存储（与文件同步源的 secret 处理不同），这是当前已知取舍——数据库文件、备份
+与宿主访问控制因此必须按同等敏感级别对待。
 
 需要定时备份时同样受这条约束：维护命令无法与服务并存，自动化只能在短暂停机
 窗口内执行（停服 → 备份 → 启服），不存在「服务不停机即完成一致性备份」的路径。
@@ -338,6 +350,7 @@ sudo -u tinysync /usr/local/bin/tinysync db restore --datadir /var/lib/tinysync 
 | --- | --- |
 | unit 反复重启，日志含 `owned by another tinysync process` | 两个实例或两个 unit 共用同一 `TINYSYNC_DATADIR`；只保留一个，并核对 `StateDirectory` 与 `TINYSYNC_DATADIR` 一致 |
 | 启动即失败，`address already in use` | 端口被占用；改 `TINYSYNC_PORT` 或释放端口 |
+| 启动失败，日志提示 `database schema incompatible` / `schema version ... want ...` | 数据目录是旧版本或其它版本 TinySync 的库——全新 schema 不迁移旧库；换用全新数据目录，旧库停服后整体归档 |
 | 同步运行失败，日志出现 `read-only file system` / 权限拒绝 | `ProtectSystem=strict` 下 Job 的 `local_root` 未列入 `ReadWritePaths`，或目录归属不是服务用户 |
 | 启动失败，日志提示无法创建数据目录 / 打开锁文件 | 数据目录归属或权限不对（常见于手工以 root 创建后用非 root 运行） |
 | 首次启动无终端密码输出 | 密码只打印一次且只在首次 bootstrap 打印；到 journal 里找，或直接停服重置密码 |
