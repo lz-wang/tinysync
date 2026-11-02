@@ -182,7 +182,7 @@ func (g *githubE2E) createGitHubJob(t *testing.T, name, sourceID, mode string) (
 }
 
 // runAndWait 触发一轮同步并等待终态。
-func (g *githubE2E) runAndWait(t *testing.T, jobID string) syncjob.RunStatus {
+func (g *githubE2E) runAndWait(t *testing.T, jobID string) job.RunStatus {
 	t.Helper()
 	runID, err := g.stack.Runner.Start(context.Background(), jobID)
 	if err != nil {
@@ -291,7 +291,7 @@ func TestGitHubReleasePullChecksumMismatch(t *testing.T) {
 	g.state.mu.Unlock()
 
 	st := g.runAndWait(t, checksumJob.ID)
-	if st.State != syncjob.RunFailed {
+	if st.State != job.RunFailed {
 		t.Fatalf("state = %s (%s), want failed on checksum mismatch", st.State, st.Error)
 	}
 	if got := readLocal(t, checksumRoot+"/v2.0__201/app.zip"); got != good {

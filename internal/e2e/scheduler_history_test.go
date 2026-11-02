@@ -30,7 +30,7 @@ func (e *env) setInterval(t *testing.T, jobID string, every time.Duration, fires
 	}
 	anchor := time.Now().UTC().Add(firesIn - every)
 	job.Schedule = syncjob.Schedule{
-		Type:     syncjob.ScheduleInterval,
+		Type:     job2.ScheduleInterval,
 		Value:    every.String(),
 		AnchorAt: &anchor,
 	}
@@ -48,7 +48,7 @@ func (e *env) setOnce(t *testing.T, jobID string, at time.Time) {
 		t.Fatalf("get job: %v", err)
 	}
 	job.Schedule = syncjob.Schedule{
-		Type:  syncjob.ScheduleOnce,
+		Type:  job2.ScheduleOnce,
 		Value: at.UTC().Format(time.RFC3339),
 	}
 	if err := e.jobRepo.Update(ctx, job); err != nil {
@@ -96,13 +96,13 @@ func TestSchedulerAutoSyncEndToEnd(t *testing.T) {
 	})
 	waitFor(t, 15*time.Second, "run finalize", func() bool {
 		rec, err := runRepo.Latest(ctx, job.ID)
-		return err == nil && rec.State != syncjob.RunRunning
+		return err == nil && rec.State != job2.RunRunning
 	})
 	rec, err := runRepo.Latest(ctx, job.ID)
 	if err != nil {
 		t.Fatalf("latest run: %v", err)
 	}
-	if rec.Trigger != syncjob.TriggerInterval || rec.State != syncjob.RunSucceeded ||
+	if rec.Trigger != job2.TriggerInterval || rec.State != job2.RunSucceeded ||
 		rec.ScheduledFor == nil {
 		t.Fatalf("scheduled run = %+v, want succeeded interval with occurrence", rec)
 	}
@@ -112,7 +112,7 @@ func TestSchedulerAutoSyncEndToEnd(t *testing.T) {
 
 	// 下一个边界在 30m 之后：短时间内不得新增 run（不排队不重放）。
 	time.Sleep(1500 * time.Millisecond)
-	if _, total, err := runRepo.List(ctx, syncjob.RunFilter{JobID: job.ID}); err != nil || total != 1 {
+	if _, total, err := runRepo.List(ctx, job2.RunFilter{JobID: job.ID}); err != nil || total != 1 {
 		t.Errorf("runs after idle window = %d (%v), want 1", total, err)
 	}
 }
@@ -138,10 +138,10 @@ func TestSchedulerOnceCatchUpEndToEnd(t *testing.T) {
 	})
 	waitFor(t, 15*time.Second, "once run finalize", func() bool {
 		rec, err := runRepo.Latest(ctx, job.ID)
-		return err == nil && rec.State == syncjob.RunSucceeded
+		return err == nil && rec.State == job2.RunSucceeded
 	})
 	rec, _ := runRepo.Latest(ctx, job.ID)
-	if rec.Trigger != syncjob.TriggerOnce || rec.ScheduledFor == nil {
+	if rec.Trigger != job2.TriggerOnce || rec.ScheduledFor == nil {
 		t.Fatalf("once run = %+v, want trigger once with occurrence", rec)
 	}
 	scheduler.Stop()
@@ -151,7 +151,7 @@ func TestSchedulerOnceCatchUpEndToEnd(t *testing.T) {
 	scheduler2.Start(ctx)
 	time.Sleep(2 * time.Second)
 	scheduler2.Stop()
-	if _, total, err := runRepo.List(ctx, syncjob.RunFilter{JobID: job.ID}); err != nil || total != 1 {
+	if _, total, err := runRepo.List(ctx, job2.RunFilter{JobID: job.ID}); err != nil || total != 1 {
 		t.Errorf("runs after scheduler restart = %d (%v), want 1 (consumed)", total, err)
 	}
 }
@@ -178,7 +178,7 @@ func TestOnceConsumedSurvivesRetentionEndToEnd(t *testing.T) {
 	})
 	waitFor(t, 15*time.Second, "once finalize", func() bool {
 		rec, err := runRepo.Latest(ctx, job.ID)
-		return err == nil && rec.State == syncjob.RunSucceeded
+		return err == nil && rec.State == job2.RunSucceeded
 	})
 	onceRun, err := runRepo.Latest(ctx, job.ID)
 	if err != nil {
@@ -196,19 +196,19 @@ func TestOnceConsumedSurvivesRetentionEndToEnd(t *testing.T) {
 	}
 
 	// 填充超过 retention 上限的运行并裁剪：once run 被裁剪出历史。
-	for i := 0; i < syncjob.RetentionRunsPerJob+1; i++ {
-		if err := runRepo.Insert(ctx, syncjob.RunRecord{
+	for i := 0; i < job2.RetentionRunsPerJob+1; i++ {
+		if err := runRepo.Insert(ctx, job2.RunRecord{
 			ID:        fmt.Sprintf("run_fill_%04d", i),
 			JobKind:   job2.KindFile,
 			JobID:     job.ID,
-			Trigger:   syncjob.TriggerManual,
-			State:     syncjob.RunSucceeded,
+			Trigger:   job2.TriggerManual,
+			State:     job2.RunSucceeded,
 			StartedAt: onceRun.StartedAt.Add(time.Duration(i+1) * time.Millisecond),
 		}); err != nil {
 			t.Fatalf("insert filler run: %v", err)
 		}
 	}
-	if err := runRepo.PruneRetention(ctx, syncjob.RetentionRunsPerJob); err != nil {
+	if err := runRepo.PruneRetention(ctx, job2.RetentionRunsPerJob); err != nil {
 		t.Fatalf("prune retention: %v", err)
 	}
 	if _, err := runRepo.Get(ctx, onceRun.ID); err == nil {
@@ -220,9 +220,9 @@ func TestOnceConsumedSurvivesRetentionEndToEnd(t *testing.T) {
 	scheduler2.Start(ctx)
 	time.Sleep(3 * time.Second)
 	scheduler2.Stop()
-	_, total, err := runRepo.List(ctx, syncjob.RunFilter{JobID: job.ID})
-	if err != nil || total != syncjob.RetentionRunsPerJob {
-		t.Errorf("runs after retention + idle window = %d (%v), want %d (no once replay)", total, err, syncjob.RetentionRunsPerJob)
+	_, total, err := runRepo.List(ctx, job2.RunFilter{JobID: job.ID})
+	if err != nil || total != job2.RetentionRunsPerJob {
+		t.Errorf("runs after retention + idle window = %d (%v), want %d (no once replay)", total, err, job2.RetentionRunsPerJob)
 	}
 }
 
@@ -253,14 +253,14 @@ func TestSchedulerCapacityThrottleRetriesEndToEnd(t *testing.T) {
 	})
 	waitFor(t, 15*time.Second, "job A finalize", func() bool {
 		rec, err := runRepo.Latest(ctx, jobA.ID)
-		return err == nil && rec.State == syncjob.RunSucceeded
+		return err == nil && rec.State == job2.RunSucceeded
 	})
 
 	// A 收敛释放容量后，B 的被拒 occurrence 在后续 tick 重试成功。
 	localB := filepath.Join(jobB.LocalRoot, "a.txt")
 	waitFor(t, 15*time.Second, "job B retry after capacity released", func() bool {
 		rec, err := runRepo.Latest(ctx, jobB.ID)
-		return err == nil && rec.State == syncjob.RunSucceeded
+		return err == nil && rec.State == job2.RunSucceeded
 	})
 	if _, err := os.Stat(localB); err != nil {
 		t.Errorf("job B download after retry: %v", err)
@@ -270,7 +270,7 @@ func TestSchedulerCapacityThrottleRetriesEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list job B runs: %v", err)
 	}
-	if total != 1 || runs[0].State != syncjob.RunSucceeded || runs[0].Trigger != syncjob.TriggerOnce {
+	if total != 1 || runs[0].State != job2.RunSucceeded || runs[0].Trigger != job2.TriggerOnce {
 		t.Errorf("job B runs = %+v (total %d), want exactly one succeeded once", runs, total)
 	}
 }
@@ -293,8 +293,8 @@ func TestRunHistoryAcrossRestartEndToEnd(t *testing.T) {
 		ID:        "run_stale_e2e",
 		JobKind:   job2.KindFile,
 		JobID:     job.ID,
-		Trigger:   syncjob.TriggerManual,
-		State:     syncjob.RunRunning,
+		Trigger:   job2.TriggerManual,
+		State:     job2.RunRunning,
 		StartedAt: staleAt,
 	}); err != nil {
 		t.Fatalf("insert stale run: %v", err)
@@ -321,14 +321,14 @@ func TestRunHistoryAcrossRestartEndToEnd(t *testing.T) {
 	}
 
 	// completed run 与明细仍可查询（List 为 started_at 倒序）。
-	runs, total, err := runner2.ListRuns(ctx, syncjob.RunFilter{JobID: job.ID})
+	runs, total, err := runner2.ListRuns(ctx, job2.RunFilter{JobID: job.ID})
 	if err != nil || total != 2 {
 		t.Fatalf("runs after restart = %d (%v), want 2", total, err)
 	}
-	if runs[0].ID != first.RunID || runs[0].State != syncjob.RunSucceeded {
+	if runs[0].ID != first.RunID || runs[0].State != job2.RunSucceeded {
 		t.Fatalf("latest run = %+v, want succeeded %s", runs[0], first.RunID)
 	}
-	if runs[1].ID != "run_stale_e2e" || runs[1].State != syncjob.RunFailed ||
+	if runs[1].ID != "run_stale_e2e" || runs[1].State != job2.RunFailed ||
 		runs[1].Error != "previous process interrupted" {
 		t.Fatalf("stale run = %+v, want converged to failed with reason", runs[1])
 	}
@@ -372,7 +372,7 @@ func TestRunRetentionEndToEnd(t *testing.T) {
 	}
 
 	runRepo := e.newRunRepo()
-	runs, total, err := runRepo.List(ctx, syncjob.RunFilter{JobID: job.ID})
+	runs, total, err := runRepo.List(ctx, job2.RunFilter{JobID: job.ID})
 	if err != nil || total != 3 {
 		t.Fatalf("runs before prune = %d (%v), want 3", total, err)
 	}
@@ -381,7 +381,7 @@ func TestRunRetentionEndToEnd(t *testing.T) {
 	if err := runRepo.PruneRetention(ctx, 2); err != nil {
 		t.Fatalf("prune retention: %v", err)
 	}
-	runs, total, err = runRepo.List(ctx, syncjob.RunFilter{JobID: job.ID})
+	runs, total, err = runRepo.List(ctx, job2.RunFilter{JobID: job.ID})
 	if err != nil || total != 2 {
 		t.Fatalf("runs after prune = %d (%v), want 2", total, err)
 	}

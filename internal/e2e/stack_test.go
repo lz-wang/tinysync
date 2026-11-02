@@ -23,8 +23,8 @@ type fileJobStack struct {
 	Managed   *managedsqlite.ManagedRepository
 	Exec      *syncjob.FileExecutor
 	Jobs      *job.Service
-	Runner    *syncjob.Runner
-	Scheduler *syncjob.Scheduler
+	Runner    *job.Runner
+	Scheduler *job.Scheduler
 
 	seq int // 同名任务的递增序号（name 唯一约束）
 }
@@ -69,7 +69,7 @@ func (s *fileJobStack) createFileJob(ctx context.Context, t *testing.T, name, so
 }
 
 // fileStatsOf 解析运行状态的领域结果摘要（file 统计）。
-func fileStatsOf(t *testing.T, st syncjob.RunStatus) syncjob.RunStats {
+func fileStatsOf(t *testing.T, st job.RunStatus) syncjob.RunStats {
 	t.Helper()
 	var stats syncjob.RunStats
 	if len(st.Result) > 0 {

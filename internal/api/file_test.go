@@ -42,10 +42,6 @@ func (m *memFileManagedRepo) Delete(ctx context.Context, jobID string, remotePat
 	return errors.New("not implemented")
 }
 
-func (m *memFileManagedRepo) DeleteAllForJob(ctx context.Context, jobID string) error {
-	return errors.New("not implemented")
-}
-
 // fileRemote 是文件浏览 API 测试的可控 Remote。
 type fileRemote struct {
 	entries   map[string][]source.FileInfo

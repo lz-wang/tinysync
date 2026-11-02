@@ -87,7 +87,7 @@ type env struct {
 	// 便捷字段（指向 stack 的同名组件）。
 	jobRepo     *jobsqlite.Repository
 	managedRepo *managedsqlite.ManagedRepository
-	runner      *syncjob.Runner
+	runner      *job2.Runner
 }
 
 // newEnv 装配端到端环境；db 生命周期由测试注册的 cleanup 管理。
@@ -163,7 +163,7 @@ func (e *env) createJob(t *testing.T, name, sourceID, mode string) jobView {
 }
 
 // runAndWait 触发一轮同步并等待终态。
-func (e *env) runAndWait(t *testing.T, jobID string) syncjob.RunStatus {
+func (e *env) runAndWait(t *testing.T, jobID string) job2.RunStatus {
 	t.Helper()
 	runID, err := e.stack.Runner.Start(context.Background(), jobID)
 	if err != nil {
@@ -179,9 +179,9 @@ func (e *env) runAndWait(t *testing.T, jobID string) syncjob.RunStatus {
 }
 
 // requireSucceeded 断言一轮同步成功。
-func requireSucceeded(t *testing.T, phase string, st syncjob.RunStatus) {
+func requireSucceeded(t *testing.T, phase string, st job2.RunStatus) {
 	t.Helper()
-	if st.State != syncjob.RunSucceeded {
+	if st.State != job2.RunSucceeded {
 		t.Fatalf("%s: state = %s (%s), want succeeded", phase, st.State, st.Error)
 	}
 }
@@ -256,7 +256,7 @@ func TestWebDAVPullEndToEnd(t *testing.T) {
 	//    managed metadata 完整保留，下一轮继续收敛。
 	e.dav.fail.Store(true)
 	st = e.runAndWait(t, copyJob.ID)
-	if st.State != syncjob.RunFailed {
+	if st.State != job2.RunFailed {
 		t.Fatalf("scan failure: state = %s, want failed", st.State)
 	}
 	if got := readLocal(t, copyLocal); got != "v2" {
@@ -360,7 +360,7 @@ func TestJobPersistsAcrossRestart(t *testing.T) {
 
 	// 运行状态持久化：重启后最近一次 completed run 仍可查询，不再回 idle。
 	st, err := stack2.Runner.GetStatus(ctx, job.ID)
-	if err != nil || st.State != syncjob.RunSucceeded {
+	if err != nil || st.State != job2.RunSucceeded {
 		t.Fatalf("status after restart = %s (%v), want persisted succeeded", st.State, err)
 	}
 
@@ -376,7 +376,7 @@ func TestJobPersistsAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("wait run after restart: %v", err)
 	}
-	if final.State != syncjob.RunSucceeded || fileStatsOf(t, final).FilesUpdated != 1 {
+	if final.State != job2.RunSucceeded || fileStatsOf(t, final).FilesUpdated != 1 {
 		t.Fatalf("run after restart = %s %+v, want succeeded updated=1", final.State, fileStatsOf(t, final))
 	}
 	data, err := os.ReadFile(filepath.Join(job.LocalRoot, "a.txt"))

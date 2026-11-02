@@ -222,7 +222,7 @@ func TestCreateLocalDirectoryAPI(t *testing.T) {
 }
 
 // waitForRunState 轮询 status 直到进入期望状态，返回最终响应。
-func waitForRunState(t *testing.T, router testRouter, jobID string, want ...syncjob.RunState) map[string]any {
+func waitForRunState(t *testing.T, router testRouter, jobID string, want ...job.RunState) map[string]any {
 	t.Helper()
 	wantStr := make([]string, 0, len(want))
 	for _, w := range want {
@@ -296,7 +296,7 @@ func TestJobLifecycleAPI(t *testing.T) {
 		t.Fatalf("status code = %d", rec.Code)
 	}
 	status := decodeJSON(t, rec)
-	if status["state"] != string(syncjob.RunIdle) {
+	if status["state"] != string(job.RunIdle) {
 		t.Errorf("initial status = %v, want idle", status["state"])
 	}
 
@@ -438,12 +438,12 @@ func TestJobRunSuccessAPI(t *testing.T) {
 	if runID == "" {
 		t.Fatalf("run response missing run_id: %s", rec.Body.String())
 	}
-	if runBody["state"] != string(syncjob.RunRunning) {
+	if runBody["state"] != string(job.RunRunning) {
 		t.Errorf("run state = %v, want running", runBody["state"])
 	}
 
-	final := waitForRunState(t, router, jobID, syncjob.RunSucceeded, syncjob.RunFailed)
-	if final["state"] != string(syncjob.RunSucceeded) {
+	final := waitForRunState(t, router, jobID, job.RunSucceeded, job.RunFailed)
+	if final["state"] != string(job.RunSucceeded) {
 		t.Fatalf("final state = %v (%v), want succeeded", final["state"], final["error"])
 	}
 	if final["run_id"] != runID {
@@ -491,8 +491,8 @@ func TestJobRunRejectedWhenDisabledAPI(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("run on disabled source = %d %s, want 202", rec.Code, rec.Body.String())
 	}
-	final := waitForRunState(t, router, jobOnDisabledSourceID, syncjob.RunSucceeded, syncjob.RunFailed)
-	if final["state"] != string(syncjob.RunFailed) {
+	final := waitForRunState(t, router, jobOnDisabledSourceID, job.RunSucceeded, job.RunFailed)
+	if final["state"] != string(job.RunFailed) {
 		t.Fatalf("final state = %v, want failed", final["state"])
 	}
 	if errMsg, _ := final["error"].(string); !strings.Contains(errMsg, "disabled") {
@@ -516,7 +516,7 @@ func TestJobRunConflictAndFailureAPI(t *testing.T) {
 		t.Fatalf("first run status = %d, want 202", rec.Code)
 	}
 	// 确认进入 running 后再触发第二轮。
-	waitForRunState(t, router, jobID, syncjob.RunRunning)
+	waitForRunState(t, router, jobID, job.RunRunning)
 
 	rec = doJSON(t, router, "POST", "/api/v1/jobs/"+jobID+"/run", "")
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "active") {
@@ -525,8 +525,8 @@ func TestJobRunConflictAndFailureAPI(t *testing.T) {
 
 	// 释放 gate：扫描失败 → 本轮 failed，错误可见。
 	close(gate)
-	final := waitForRunState(t, router, jobID, syncjob.RunSucceeded, syncjob.RunFailed)
-	if final["state"] != string(syncjob.RunFailed) {
+	final := waitForRunState(t, router, jobID, job.RunSucceeded, job.RunFailed)
+	if final["state"] != string(job.RunFailed) {
 		t.Fatalf("final state = %v, want failed", final["state"])
 	}
 	if errMsg, _ := final["error"].(string); !strings.Contains(errMsg, "remote exploded") {
@@ -547,7 +547,7 @@ func TestJobRunningRejectsUpdateAndDeleteAPI(t *testing.T) {
 	if rec := doJSON(t, router, "POST", "/api/v1/jobs/"+jobID+"/run", ""); rec.Code != http.StatusAccepted {
 		t.Fatalf("run status = %d, want 202", rec.Code)
 	}
-	waitForRunState(t, router, jobID, syncjob.RunRunning)
+	waitForRunState(t, router, jobID, job.RunRunning)
 
 	if rec := doJSON(t, router, "PATCH", "/api/v1/jobs/"+jobID, `{"name": "Renamed"}`); rec.Code != http.StatusConflict {
 		t.Errorf("PATCH running job = %d %s, want 409", rec.Code, rec.Body.String())
@@ -558,7 +558,7 @@ func TestJobRunningRejectsUpdateAndDeleteAPI(t *testing.T) {
 
 	// 运行结束（gate 释放 → 扫描失败）后恢复可改可删。
 	close(gate)
-	waitForRunState(t, router, jobID, syncjob.RunSucceeded, syncjob.RunFailed)
+	waitForRunState(t, router, jobID, job.RunSucceeded, job.RunFailed)
 	if rec := doJSON(t, router, "PATCH", "/api/v1/jobs/"+jobID, `{"name": "Renamed"}`); rec.Code != http.StatusOK {
 		t.Errorf("PATCH after run = %d %s, want 200", rec.Code, rec.Body.String())
 	}
@@ -771,7 +771,7 @@ func TestHandleRunErrorShuttingDown(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	handleRunError(c, syncjob.ErrShuttingDown)
+	handleRunError(c, job.ErrShuttingDown)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("shutting down run error = %d %s, want 503", rec.Code, rec.Body.String())
 	}
@@ -811,7 +811,7 @@ func TestRunsAPI(t *testing.T) {
 	if rec := doJSON(t, router, "POST", "/api/v1/jobs/"+jobID+"/run", ""); rec.Code != http.StatusAccepted {
 		t.Fatalf("run status = %d, want 202", rec.Code)
 	}
-	waitForRunState(t, router, jobID, syncjob.RunSucceeded)
+	waitForRunState(t, router, jobID, job.RunSucceeded)
 
 	// 列表（job_id 过滤）：trigger / status / job_name / 统计齐备。
 	rec := doJSON(t, router, "GET", "/api/v1/runs?job_id="+jobID, "")
@@ -883,11 +883,11 @@ func TestJobRunConcurrencyLimitAPI(t *testing.T) {
 	if rec := doJSON(t, router, "POST", "/api/v1/jobs/"+firstID+"/run", ""); rec.Code != http.StatusAccepted {
 		t.Fatalf("first run = %d, want 202", rec.Code)
 	}
-	waitForRunState(t, router, firstID, syncjob.RunRunning)
+	waitForRunState(t, router, firstID, job.RunRunning)
 	if rec := doJSON(t, router, "POST", "/api/v1/jobs/"+secondID+"/run", ""); rec.Code != http.StatusAccepted {
 		t.Fatalf("second run = %d, want 202 at default capacity 2", rec.Code)
 	}
-	waitForRunState(t, router, secondID, syncjob.RunRunning)
+	waitForRunState(t, router, secondID, job.RunRunning)
 
 	rec := doJSON(t, router, "POST", "/api/v1/jobs/"+thirdID+"/run", "")
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "concurrency") {
@@ -895,8 +895,8 @@ func TestJobRunConcurrencyLimitAPI(t *testing.T) {
 	}
 
 	close(gate)
-	waitForRunState(t, router, firstID, syncjob.RunSucceeded, syncjob.RunFailed)
-	waitForRunState(t, router, secondID, syncjob.RunSucceeded, syncjob.RunFailed)
+	waitForRunState(t, router, firstID, job.RunSucceeded, job.RunFailed)
+	waitForRunState(t, router, secondID, job.RunSucceeded, job.RunFailed)
 }
 
 // 被 Job 引用的 Source 删除返回 409；Job 删除后可正常删除 Source。
@@ -944,7 +944,7 @@ func TestCancelRunAPI(t *testing.T) {
 		t.Fatalf("run status = %d, want 202", rec.Code)
 	}
 	runID, _ := decodeJSON(t, rec)["run_id"].(string)
-	waitForRunState(t, router, jobID, syncjob.RunRunning)
+	waitForRunState(t, router, jobID, job.RunRunning)
 
 	// read scope token：403（取消与触发同级，要求 run scope）。
 	readRaw, _ := createTokenViaAPI(t, router, `{"name": "reader", "scopes": ["read"]}`)
@@ -973,15 +973,15 @@ func TestCancelRunAPI(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &conflict); err != nil {
 			t.Fatalf("decode 409 body %q: %v", rec.Body.String(), err)
 		}
-		if conflict.State != string(syncjob.RunCanceled) {
-			t.Errorf("late cancel 409 state = %q, want %q", conflict.State, syncjob.RunCanceled)
+		if conflict.State != string(job.RunCanceled) {
+			t.Errorf("late cancel 409 state = %q, want %q", conflict.State, job.RunCanceled)
 		}
 	default:
 		t.Fatalf("repeat cancel = %d %s, want 202 or 409", rec.Code, rec.Body.String())
 	}
 
 	close(gate)
-	status := waitForRunState(t, router, jobID, syncjob.RunCanceled)
+	status := waitForRunState(t, router, jobID, job.RunCanceled)
 	if status["run_id"] != runID {
 		t.Errorf("canceled status run_id = %v, want %s", status["run_id"], runID)
 	}
@@ -991,13 +991,13 @@ func TestCancelRunAPI(t *testing.T) {
 	if rec.Code != http.StatusConflict {
 		t.Errorf("cancel finished run = %d %s, want 409", rec.Code, rec.Body.String())
 	}
-	if body := decodeJSON(t, rec); body["state"] != string(syncjob.RunCanceled) {
+	if body := decodeJSON(t, rec); body["state"] != string(job.RunCanceled) {
 		t.Errorf("conflict body state = %v, want canceled", body["state"])
 	}
 
 	// 历史查询：run 记 canceled；status=canceled 过滤命中。
 	detail := decodeJSON(t, doJSON(t, router, "GET", "/api/v1/runs/"+runID, ""))
-	if detail["status"] != string(syncjob.RunCanceled) {
+	if detail["status"] != string(job.RunCanceled) {
 		t.Errorf("run detail status = %v, want canceled", detail["status"])
 	}
 	list := decodeJSON(t, doJSON(t, router, "GET", "/api/v1/runs?job_id="+jobID+"&status=canceled", ""))
@@ -1010,7 +1010,7 @@ func TestCancelRunAPI(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("rerun after cancel = %d, want 202", rec.Code)
 	}
-	waitForRunState(t, router, jobID, syncjob.RunSucceeded, syncjob.RunFailed)
+	waitForRunState(t, router, jobID, job.RunSucceeded, job.RunFailed)
 }
 
 // gatedOpenRemote List 正常返回，Open 阻塞在 gate 上：构造传输阶段的
@@ -1071,7 +1071,7 @@ func TestRunProgressAPI(t *testing.T) {
 	runID, _ := decodeJSON(t, rec)["run_id"].(string)
 
 	// 等 run 进入 running，再等到下载已 Open（传输阶段开始）。
-	waitForRunState(t, router, jobID, syncjob.RunRunning)
+	waitForRunState(t, router, jobID, job.RunRunning)
 	select {
 	case <-opened:
 	case <-time.After(5 * time.Second):
@@ -1107,12 +1107,12 @@ func TestRunProgressAPI(t *testing.T) {
 
 	// 放行完成传输：终态后 progress 省略。
 	close(gate)
-	waitForRunState(t, router, jobID, syncjob.RunSucceeded)
+	waitForRunState(t, router, jobID, job.RunSucceeded)
 	detail = decodeJSON(t, doJSON(t, router, "GET", "/api/v1/runs/"+runID, ""))
 	if _, has := detail["progress"]; has {
 		t.Errorf("finished run still exposes progress: %v", detail["progress"])
 	}
-	if detail["status"] != string(syncjob.RunSucceeded) {
+	if detail["status"] != string(job.RunSucceeded) {
 		t.Errorf("final status = %v, want succeeded", detail["status"])
 	}
 }

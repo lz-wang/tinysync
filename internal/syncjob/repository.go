@@ -41,6 +41,4 @@ type ManagedRepository interface {
 	Upsert(ctx context.Context, files []ManagedFile) error
 	// Delete 删除指定 remote_path 的记录。
 	Delete(ctx context.Context, jobID string, remotePaths []string) error
-	// DeleteAllForJob 删除 Job 的全部 managed 记录。
-	DeleteAllForJob(ctx context.Context, jobID string) error
 }

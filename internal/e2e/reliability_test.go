@@ -146,7 +146,7 @@ func parentOfLogical(logical string) string {
 }
 
 // statsOf 解析运行状态的 file 统计（X.Stats 旧断言的等价物）。
-func statsOf(t *testing.T, st syncjob.RunStatus) syncjob.RunStats {
+func statsOf(t *testing.T, st job.RunStatus) syncjob.RunStats {
 	t.Helper()
 	return fileStatsOf(t, st)
 }
@@ -162,7 +162,7 @@ type relEnv struct {
 	stack     *fileJobStack
 
 	// 便捷字段（指向 stack 的同名组件）。
-	runner  *syncjob.Runner
+	runner  *job.Runner
 	managed *managedsqlite.ManagedRepository
 	history *jobsqlite.RunRepository
 	jobID   string
@@ -223,7 +223,7 @@ func (e *relEnv) existingJobID(t *testing.T) string {
 }
 
 // runAndWait 触发一轮同步并等待终态。
-func (e *relEnv) runAndWait(t *testing.T, timeout time.Duration) syncjob.RunStatus {
+func (e *relEnv) runAndWait(t *testing.T, timeout time.Duration) job.RunStatus {
 	t.Helper()
 	runID, err := e.runner.Start(context.Background(), e.jobID)
 	if err != nil {
@@ -305,7 +305,7 @@ func TestPermanentFailureDoesNotRetry(t *testing.T) {
 	e := newReliabilityEnv(t, f.srv.URL, t.TempDir(), filepath.Join(t.TempDir(), "local"), string(syncjob.ModeCopy))
 
 	st := e.runAndWait(t, 30*time.Second)
-	if st.State != syncjob.RunFailed {
+	if st.State != job.RunFailed {
 		t.Fatalf("state = %s (%s), want failed", st.State, st.Error)
 	}
 	if got := f.getHits("/docs/secret.txt"); got != 1 {
@@ -417,8 +417,8 @@ func TestCrashRecoveryConvergesAfterRestart(t *testing.T) {
 		ID:        staleID,
 		JobKind:   job.KindFile,
 		JobID:     e.jobID,
-		Trigger:   syncjob.TriggerManual,
-		State:     syncjob.RunRunning,
+		Trigger:   job.TriggerManual,
+		State:     job.RunRunning,
 		StartedAt: time.Now().UTC(),
 	}); err != nil {
 		t.Fatalf("seed stale running: %v", err)
@@ -440,7 +440,7 @@ func TestCrashRecoveryConvergesAfterRestart(t *testing.T) {
 	waitHealthy(t, port)
 
 	// stale running 已收敛为 failed。
-	if state := runStateFromDB(t, dataDir, staleID); state != string(syncjob.RunFailed) {
+	if state := runStateFromDB(t, dataDir, staleID); state != string(job.RunFailed) {
 		t.Fatalf("stale run state = %s, want failed", state)
 	}
 	// crash 临时文件已清理。

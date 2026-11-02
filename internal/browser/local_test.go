@@ -42,10 +42,6 @@ func (m *memManagedRepo) Delete(ctx context.Context, jobID string, remotePaths [
 	return errors.New("not implemented")
 }
 
-func (m *memManagedRepo) DeleteAllForJob(ctx context.Context, jobID string) error {
-	return errors.New("not implemented")
-}
-
 // newLocalFixture 构造任务：LocalRoot 指向临时目录（canonical 形态，
 // 与领域规则一致）。LocalRootLookup 用内存桩实现。
 func newLocalFixture(t *testing.T) *localFixture {

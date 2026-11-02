@@ -3,6 +3,8 @@ package syncjob
 import (
 	"strings"
 	"testing"
+
+	"tinysync/internal/job"
 )
 
 // Mode 只接受 copy / mirror 枚举值。
@@ -21,7 +23,7 @@ func TestModeValid(t *testing.T) {
 func TestNewID(t *testing.T) {
 	seen := make(map[string]bool)
 	for range 100 {
-		id, err := NewID()
+		id, err := job.NewID()
 		if err != nil {
 			t.Fatalf("NewID: %v", err)
 		}

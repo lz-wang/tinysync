@@ -10,13 +10,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"tinysync/internal/job"
 )
-
-// KindFile 与统一任务类型的 file 取值一致。
-const KindFile = string(job.KindFile)
 
 // Mode 是同步模式。
 type Mode string
@@ -46,22 +42,19 @@ var (
 	ErrSourceDisabled = errors.New("source is disabled")
 )
 
-// 领域错误别名：引擎与 API 层沿用本包名判定统一任务 / 运行错误。
+// 领域错误别名：引擎与 API 层沿用本包名判定统一任务错误。
 var (
-	ErrNotFound   = job.ErrNotFound
-	ErrConflict   = job.ErrConflict
-	ErrInvalid    = job.ErrInvalid
-	ErrRunUnknown = job.ErrRunUnknown
+	ErrNotFound = job.ErrNotFound
+	ErrConflict = job.ErrConflict
+	ErrInvalid  = job.ErrInvalid
 	// ErrRunCanceled 是用户手动停止运行的取消原因（引擎与 Runner 共用）。
-	ErrRunCanceled  = job.ErrRunCanceled
-	ErrRunNotActive = job.ErrRunNotActive
+	ErrRunCanceled = job.ErrRunCanceled
 )
 
 // Job 是文件同步引擎的执行规格：把 Source 的 RemoteRoot 子树单向同步
 // 到 LocalRoot。Include / Exclude 是相对 RemoteRoot 的 doublestar
 // pattern，统一以 / 分隔。统一任务模型（internal/job）经 FileConfig
-// 推导出本规格后交给引擎；Enabled / Schedule 等公共字段不属于引擎
-// 语义，仅为兼容既有测试构造保留。
+// 推导出本规格后交给引擎。
 type Job struct {
 	ID         string
 	Name       string
@@ -71,29 +64,10 @@ type Job struct {
 	Mode       Mode
 	Include    []string
 	Exclude    []string
-	Enabled    bool
-	Schedule   Schedule
-	// OnceConsumedFor 是 once 调度的消费状态快照（引擎不消费）。
-	OnceConsumedFor *time.Time
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
 }
 
 // Schedule 是 job.Schedule 的别名（引擎规格沿用本包名）。
 type Schedule = job.Schedule
-
-// ScheduleType 与调度类型枚举别名。
-type ScheduleType = job.ScheduleType
-
-const (
-	ScheduleManual   = job.ScheduleManual
-	ScheduleOnce     = job.ScheduleOnce
-	ScheduleInterval = job.ScheduleInterval
-	ScheduleCron     = job.ScheduleCron
-)
-
-// NewID 生成统一任务 ID（job.NewID 别名）。
-var NewID = job.NewID
 
 // FileConfig 是 kind='file' 任务在 jobs.config_json 中的领域配置形态。
 type FileConfig struct {
@@ -173,64 +147,26 @@ func (c FileConfig) Spec(jobID string) Job {
 
 // 统一运行类型的别名：引擎与测试沿用本包名。
 type (
-	RunTrigger    = job.RunTrigger
-	RunState      = job.RunState
 	RunItemAction = job.RunItemAction
-	RunItemStatus = job.RunItemStatus
 	RunItem       = job.RunItem
-	RunRecord     = job.RunRecord
-	RunFilter     = job.RunFilter
 
-	// 运行协调类型别名（Runner / Scheduler 已迁移至 internal/job）。
-	Runner              = job.Runner
-	Scheduler           = job.Scheduler
-	RunStatus           = job.RunStatus
-	RunPhase            = job.RunPhase
-	RunProgressSnapshot = job.RunProgressSnapshot
-	ProgressReporter    = job.ProgressReporter
-	TransferLimiter     = job.TransferLimiter
+	ProgressReporter = job.ProgressReporter
+	TransferLimiter  = job.TransferLimiter
 )
 
-// NewRunProgress / NewTransferLimiter / NullProgress 是统一 Runner 侧
-// 构造函数的转发。
-var (
-	NewRunProgress     = job.NewRunProgress
-	NewTransferLimiter = job.NewTransferLimiter
-	NullProgress       = job.NullProgress
-)
-
-// 运行协调哨兵错误的别名（API 层与测试沿用本包名判定）。
-var (
-	ErrRunActive        = job.ErrRunActive
-	ErrConcurrencyLimit = job.ErrConcurrencyLimit
-	ErrJobDisabled      = job.ErrJobDisabled
-	ErrShuttingDown     = job.ErrShuttingDown
-	ErrJobMutating      = job.ErrJobMutating
-)
+// NewTransferLimiter 是统一 Runner 侧构造函数的转发。
+var NewTransferLimiter = job.NewTransferLimiter
 
 // 运行阶段常量别名。
 const (
-	RunPhaseConnecting   = job.RunPhaseConnecting
 	RunPhaseScanning     = job.RunPhaseScanning
 	RunPhasePlanning     = job.RunPhasePlanning
 	RunPhaseTransferring = job.RunPhaseTransferring
 	RunPhaseFinalizing   = job.RunPhaseFinalizing
 )
 
-// 触发方式与状态枚举别名。
+// 运行条目动作与状态枚举别名。
 const (
-	TriggerManual   = job.TriggerManual
-	TriggerOnce     = job.TriggerOnce
-	TriggerInterval = job.TriggerInterval
-	TriggerCron     = job.TriggerCron
-
-	RunIdle      = job.RunIdle
-	RunRunning   = job.RunRunning
-	RunSucceeded = job.RunSucceeded
-	RunFailed    = job.RunFailed
-	RunSkipped   = job.RunSkipped
-	RunCanceled  = job.RunCanceled
-
 	ItemCreate     = job.ItemCreate
 	ItemUpdate     = job.ItemUpdate
 	ItemDelete     = job.ItemDelete
@@ -240,6 +176,4 @@ const (
 	ItemFailed    = job.ItemFailed
 	ItemSkipped   = job.ItemSkipped
 	ItemCanceled  = job.ItemCanceled
-
-	RetentionRunsPerJob = job.RetentionRunsPerJob
 )

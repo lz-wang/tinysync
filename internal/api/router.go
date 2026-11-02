@@ -18,7 +18,6 @@ import (
 	"tinysync/internal/notification"
 	"tinysync/internal/share"
 	"tinysync/internal/source"
-	"tinysync/internal/syncjob"
 )
 
 // NewRouter 构建全部路由：
@@ -87,7 +86,7 @@ type Dependencies struct {
 	// 也不启用 Source 的 Job 引用删除保护。
 	Jobs *job.Service
 	// Runner 是手动运行的运行时状态；为 nil 时 run / status 端点不注册。
-	Runner *syncjob.Runner
+	Runner *job.Runner
 	// Notifications 是通知配置应用服务；为 nil 时不注册通知端点。
 	Notifications *notification.Service
 	// NotificationDispatch 是通知发送器（完成事件队列 + 测试发送）；

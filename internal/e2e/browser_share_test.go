@@ -140,7 +140,7 @@ func (e *browserEnv) sync() {
 	if err != nil {
 		e.t.Fatalf("Wait: %v", err)
 	}
-	if status.State != syncjob.RunSucceeded {
+	if status.State != job.RunSucceeded {
 		e.t.Fatalf("run state = %s (%s), want succeeded", status.State, status.Error)
 	}
 }

@@ -18,9 +18,9 @@ import (
 
 	smb2 "github.com/cloudsoda/go-smb2"
 
+	job2 "tinysync/internal/job"
 	"tinysync/internal/source"
 	smbadapter "tinysync/internal/source/smb"
-	"tinysync/internal/syncjob"
 )
 
 // SMB integration：真实 Samba 容器（CI 由 integration job 注入；本地
@@ -430,7 +430,7 @@ func TestIntegrationSMBReparse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Wait: %v", err)
 	}
-	if status.State != syncjob.RunFailed {
+	if status.State != job2.RunFailed {
 		t.Fatalf("run state = %s, want failed (scan fail-closed)", status.State)
 	}
 	assertLocalFile(t, localRoot, "keep.txt", "keep-me")

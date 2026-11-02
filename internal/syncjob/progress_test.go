@@ -9,8 +9,8 @@ import (
 
 // RunProgress 单元：阶段推进、工作量计数、在途单元登记与快照排序。
 func TestRunProgressSnapshot(t *testing.T) {
-	p := NewRunProgress()
-	if snap := p.Snapshot(); snap.Phase != RunPhaseConnecting || snap.WorkTotal != 0 || len(snap.ActiveUnits) != 0 {
+	p := job.NewRunProgress()
+	if snap := p.Snapshot(); snap.Phase != job.RunPhaseConnecting || snap.WorkTotal != 0 || len(snap.ActiveUnits) != 0 {
 		t.Fatalf("initial snapshot = %+v, want connecting/0/0 units", snap)
 	}
 
@@ -57,7 +57,7 @@ func TestRunProgressSnapshot(t *testing.T) {
 
 // 并发压力下计数不丢失、不越界（-race 守护）。
 func TestRunProgressConcurrent(t *testing.T) {
-	p := NewRunProgress()
+	p := job.NewRunProgress()
 	p.SetWorkTotal(1000)
 	var wg sync.WaitGroup
 	for i := range 50 {
@@ -84,14 +84,14 @@ func TestRunProgressConcurrent(t *testing.T) {
 // recordingProgress 捕获引擎的全部进度事件，供断言阶段序列与计数。
 type recordingProgress struct {
 	mu         sync.Mutex
-	phases     []RunPhase
+	phases     []job.RunPhase
 	workTotal  int64
 	workDone   int64
 	beginUnits []string
 	endUnits   []string
 }
 
-func (r *recordingProgress) SetPhase(phase RunPhase) {
+func (r *recordingProgress) SetPhase(phase job.RunPhase) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.phases = append(r.phases, phase)
@@ -142,7 +142,7 @@ func TestRunProgressEvents(t *testing.T) {
 
 	// 阶段序列：scanning → planning → transferring → finalizing
 	//（Mirror 删除为空也推进 finalizing，阶段由引擎声明）。
-	wantPhases := []RunPhase{RunPhaseScanning, RunPhasePlanning, RunPhaseTransferring, RunPhaseFinalizing}
+	wantPhases := []job.RunPhase{RunPhaseScanning, RunPhasePlanning, RunPhaseTransferring, RunPhaseFinalizing}
 	if len(rec.phases) != len(wantPhases) {
 		t.Fatalf("phases = %v, want %v", rec.phases, wantPhases)
 	}

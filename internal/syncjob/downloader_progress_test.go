@@ -188,7 +188,7 @@ func TestDownloadProgressResetsOnRetry(t *testing.T) {
 func TestConcurrentTransfersKeepSeparateProgress(t *testing.T) {
 	f := newEngineFixture(t, ModeCopy)
 	remote := buildRemote(map[string]string{"/a.txt": "aaaa", "/b.txt": "bb", "/c.txt": "cccccc"}, nil)
-	progress := NewRunProgress()
+	progress := job.NewRunProgress()
 	if _, err := f.runWith(remote, func(o *RunOptions) {
 		o.Progress = progress
 		o.Transfers = NewTransferLimiter(3)

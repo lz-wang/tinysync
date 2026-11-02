@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	job2 "tinysync/internal/job"
 	"tinysync/internal/source"
 	"tinysync/internal/syncjob"
 )
@@ -58,7 +59,7 @@ func TestLocalSubtreeSyncAndPartialScanProtection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.State != syncjob.RunFailed {
+	if status.State != job2.RunFailed {
 		t.Fatalf("status=%+v", status)
 	}
 	assertLocalFile(t, target, "a.txt", "keep")
@@ -144,7 +145,7 @@ func TestCancelLocalLargeFileRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.State != syncjob.RunCanceled {
+	if status.State != job2.RunCanceled {
 		t.Fatalf("status=%+v", status)
 	}
 	assertNoLocalFile(t, target, "large.bin")

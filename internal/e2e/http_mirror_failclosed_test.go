@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	job2 "tinysync/internal/job"
 	"tinysync/internal/source"
 	httpadapter "tinysync/internal/source/http"
-	"tinysync/internal/syncjob"
 )
 
 // Mirror 的 fail-closed 同步级反例：先同步 managed files，再注入
@@ -81,7 +81,7 @@ func testHTTPMirrorUnprovableSnapshot(t *testing.T, body string) {
 	if err != nil {
 		t.Fatalf("Wait: %v", err)
 	}
-	if status.State != syncjob.RunFailed {
+	if status.State != job2.RunFailed {
 		t.Fatalf("run state = %s (%s), want failed", status.State, status.Error)
 	}
 	if fileStatsOf(t, status).FilesDeleted != 0 {

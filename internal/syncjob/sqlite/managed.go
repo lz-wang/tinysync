@@ -108,14 +108,6 @@ func (r *ManagedRepository) Delete(ctx context.Context, jobID string, remotePath
 	})
 }
 
-// DeleteAllForJob 实现 syncjob.ManagedRepository。
-func (r *ManagedRepository) DeleteAllForJob(ctx context.Context, jobID string) error {
-	if _, err := r.db.ExecContext(ctx, "DELETE FROM managed_files WHERE job_id = ?", jobID); err != nil {
-		return fmt.Errorf("delete managed files of job %s: %w", jobID, err)
-	}
-	return nil
-}
-
 // rowScanner 兼容 *sql.Row 与 *sql.Rows 的 Scan。
 type rowScanner interface {
 	Scan(dest ...any) error

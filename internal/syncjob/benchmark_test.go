@@ -84,7 +84,7 @@ func BenchmarkSmallFileSync(b *testing.B) {
 
 		if _, err := Run(context.Background(), RunOptions{
 			Remote:  remote,
-			Job:     Job{ID: "job_bench", RemoteRoot: "/", LocalRoot: localRoot, Mode: ModeCopy, Enabled: true},
+			Job:     Job{ID: "job_bench", RemoteRoot: "/", LocalRoot: localRoot, Mode: ModeCopy},
 			Managed: managed,
 		}); err != nil {
 			b.Fatalf("run: %v", err)

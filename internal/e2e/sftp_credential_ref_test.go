@@ -21,6 +21,7 @@ import (
 
 	"tinysync/internal/credential"
 	credentialsqlite "tinysync/internal/credential/sqlite"
+	"tinysync/internal/job"
 	"tinysync/internal/source"
 	sftpadapter "tinysync/internal/source/sftp"
 	sourcesqlite "tinysync/internal/source/sqlite"
@@ -214,7 +215,7 @@ func (e *refEnv) runJob(t *testing.T, localRoot string) {
 	if err != nil {
 		t.Fatalf("Wait: %v", err)
 	}
-	if status.State != syncjob.RunSucceeded {
+	if status.State != job.RunSucceeded {
 		t.Fatalf("run state = %s (%s), want succeeded", status.State, status.Error)
 	}
 }

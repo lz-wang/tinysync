@@ -26,7 +26,7 @@ import (
 	xnetdav "golang.org/x/net/webdav"
 
 	"tinysync/internal/filesafe"
-	"tinysync/internal/job"
+	job2 "tinysync/internal/job"
 	jobsqlite "tinysync/internal/job/sqlite"
 	"tinysync/internal/source"
 	httpadapter "tinysync/internal/source/http"
@@ -524,7 +524,7 @@ type matrixEnv struct {
 	// 便捷字段（指向 stack 的同名组件，Runner 为矩阵 gateway 定制版）。
 	jobRepo *jobsqlite.Repository
 	managed *managedsqlite.ManagedRepository
-	runner  *syncjob.Runner
+	runner  *job2.Runner
 	runs    *jobsqlite.RunRepository
 }
 
@@ -545,8 +545,8 @@ func newMatrixEnv(t *testing.T, fixture matrixRemote) *matrixEnv {
 	stack := newFileJobStack(db, source.NewService(srcRepo, bridgedFactory{fixture: fixture}), dataDir)
 	// 矩阵的远端直连 gateway：Runner 经同一执行器注册表分发，仅换绑
 	// File 执行器的 SourceGateway。
-	stack.Runner = job.NewRunner(stack.Repo, stack.Runs, map[job.JobKind]job.Executor{
-		job.KindFile: syncjob.NewFileExecutor(gw, stack.Repo, stack.Managed, dataDir),
+	stack.Runner = job2.NewRunner(stack.Repo, stack.Runs, map[job2.JobKind]job2.Executor{
+		job2.KindFile: syncjob.NewFileExecutor(gw, stack.Repo, stack.Managed, dataDir),
 	})
 	return &matrixEnv{
 		dataDir: dataDir,
@@ -585,7 +585,7 @@ func runAndWait(t *testing.T, e *matrixEnv, jobID string) syncjob.RunStats {
 	if err != nil {
 		t.Fatalf("Wait: %v", err)
 	}
-	if status.State != syncjob.RunSucceeded {
+	if status.State != job2.RunSucceeded {
 		t.Fatalf("run state = %s (%s), want succeeded", status.State, status.Error)
 	}
 	return fileStatsOf(t, status)
@@ -665,7 +665,7 @@ func runCommonSyncScenario(t *testing.T, remote matrixRemote) {
 	assertNoLocalFile(t, localRoot, filepath.Join("docs", "b.txt"))
 
 	// 7. history：run / run items 记录该轮运行。
-	runs, total, err := e.runs.List(ctx, syncjob.RunFilter{JobID: job.ID, Limit: 10})
+	runs, total, err := e.runs.List(ctx, job2.RunFilter{JobID: job.ID, Limit: 10})
 	if err != nil {
 		t.Fatalf("list runs: %v", err)
 	}
@@ -673,7 +673,7 @@ func runCommonSyncScenario(t *testing.T, remote matrixRemote) {
 		t.Fatalf("run history total = %d, want >= 4 (initial/unchanged/update/remove)", total)
 	}
 	last := runs[0]
-	if last.State != syncjob.RunSucceeded {
+	if last.State != job2.RunSucceeded {
 		t.Fatalf("latest run = %s, want succeeded", last.State)
 	}
 	items, _, err := e.runs.Items(ctx, last.ID, 10, 0)

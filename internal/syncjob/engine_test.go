@@ -113,13 +113,6 @@ func (m *inMemoryManaged) Delete(ctx context.Context, jobID string, remotePaths 
 	return nil
 }
 
-func (m *inMemoryManaged) DeleteAllForJob(ctx context.Context, jobID string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.files = map[string]ManagedFile{}
-	return nil
-}
-
 // engineFixture 聚合引擎测试环境。
 type engineFixture struct {
 	t       *testing.T
@@ -141,7 +134,6 @@ func newEngineFixture(t *testing.T, mode Mode) *engineFixture {
 			RemoteRoot: "/",
 			LocalRoot:  root,
 			Mode:       mode,
-			Enabled:    true,
 		},
 	}
 }

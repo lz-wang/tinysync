@@ -23,7 +23,7 @@ import (
 // registerJobRoutes 注册统一任务管理、手动运行与运行历史端点。svc 为
 // nil 时跳过注册（依赖缺失时由未知路径 404 兜底）；runner 为 nil 时只
 // 注册 CRUD。
-func registerJobRoutes(group *gin.RouterGroup, svc *job.Service, runner *syncjob.Runner) {
+func registerJobRoutes(group *gin.RouterGroup, svc *job.Service, runner *job.Runner) {
 	if svc == nil {
 		return
 	}
@@ -50,7 +50,7 @@ func registerJobRoutes(group *gin.RouterGroup, svc *job.Service, runner *syncjob
 // jobHandlers 是统一任务端点的 handler 集合。
 type jobHandlers struct {
 	svc    *job.Service
-	runner *syncjob.Runner
+	runner *job.Runner
 }
 
 type localDirectoryDTO struct {
@@ -298,7 +298,7 @@ type runStatusDTO struct {
 }
 
 // toRunStatusDTO 转换运行状态，时间输出 RFC3339。
-func toRunStatusDTO(s syncjob.RunStatus) runStatusDTO {
+func toRunStatusDTO(s job.RunStatus) runStatusDTO {
 	dto := runStatusDTO{
 		RunID:  s.RunID,
 		State:  string(s.State),
@@ -519,7 +519,7 @@ type runProgressDTO struct {
 	ActiveFiles []runProgressFileDTO `json:"active_files"`
 }
 
-func toRunProgressDTO(snap syncjob.RunProgressSnapshot) *runProgressDTO {
+func toRunProgressDTO(snap job.RunProgressSnapshot) *runProgressDTO {
 	dto := &runProgressDTO{
 		Phase:     string(snap.Phase),
 		WorkDone:  snap.WorkDone,
@@ -804,17 +804,17 @@ func handleRunError(c *gin.Context, err error) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "job not found"})
 	case errors.Is(err, job.ErrRunUnknown):
 		c.JSON(http.StatusNotFound, gin.H{"error": "run not found"})
-	case errors.Is(err, syncjob.ErrJobDisabled):
+	case errors.Is(err, job.ErrJobDisabled):
 		c.JSON(http.StatusConflict, gin.H{"error": "sync job is disabled"})
 	case errors.Is(err, syncjob.ErrSourceDisabled):
 		c.JSON(http.StatusConflict, gin.H{"error": "source is disabled"})
-	case errors.Is(err, syncjob.ErrRunActive):
+	case errors.Is(err, job.ErrRunActive):
 		c.JSON(http.StatusConflict, gin.H{"error": "another sync run is active"})
-	case errors.Is(err, syncjob.ErrJobMutating):
+	case errors.Is(err, job.ErrJobMutating):
 		c.JSON(http.StatusConflict, gin.H{"error": "sync job is being modified"})
-	case errors.Is(err, syncjob.ErrConcurrencyLimit):
+	case errors.Is(err, job.ErrConcurrencyLimit):
 		c.JSON(http.StatusConflict, gin.H{"error": "concurrency limit reached"})
-	case errors.Is(err, syncjob.ErrShuttingDown):
+	case errors.Is(err, job.ErrShuttingDown):
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "sync runner is shutting down"})
 	case errors.Is(err, job.ErrKindUnsupported):
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})

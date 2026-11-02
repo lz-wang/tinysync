@@ -39,8 +39,8 @@ func seedJobRow(t *testing.T, db *sql.DB, id string) {
 	}
 }
 
-// managed 记录 Upsert（同 key 更新）、ListByJob 排序、批量 Delete、
-// 全量 DeleteAllForJob，以及 local_rel_path 唯一冲突。
+// managed 记录 Upsert（同 key 更新）、ListByJob 排序、批量 Delete，
+// 以及 local_rel_path 唯一冲突。
 func TestManagedFileCRUD(t *testing.T) {
 	db, managed := openManaged(t)
 	seedJobRow(t, db, "job_a")
@@ -98,7 +98,7 @@ func TestManagedFileCRUD(t *testing.T) {
 		t.Errorf("Upsert duplicate local_rel_path = %v, want ErrConflict", err)
 	}
 
-	// 批量删除指定 remote_path，再全量清理。
+	// 批量删除指定 remote_path。
 	if err := managed.Delete(context.Background(), "job_a", []string{"/photos/a.jpg"}); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
@@ -108,12 +108,6 @@ func TestManagedFileCRUD(t *testing.T) {
 	}
 	if len(list) != 1 || list[0].RemotePath != "/photos/b.jpg" {
 		t.Fatalf("rows after delete = %+v, want only b.jpg", list)
-	}
-	if err := managed.DeleteAllForJob(context.Background(), "job_a"); err != nil {
-		t.Fatalf("DeleteAllForJob: %v", err)
-	}
-	if list, err = managed.ListByJob(context.Background(), "job_a"); err != nil || len(list) != 0 {
-		t.Fatalf("rows after DeleteAllForJob = %+v (%v), want empty", list, err)
 	}
 }
 

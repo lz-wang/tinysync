@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"tinysync/internal/syncjob"
+	job2 "tinysync/internal/job"
 )
 
 func TestLocalMirrorRejectsIncompleteSnapshots(t *testing.T) {
@@ -67,7 +67,7 @@ func TestLocalMirrorRejectsIncompleteSnapshots(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if status.State != syncjob.RunFailed {
+			if status.State != job2.RunFailed {
 				t.Fatalf("status=%+v", status)
 			}
 			assertLocalFile(t, target, "keep.txt", "keep")
