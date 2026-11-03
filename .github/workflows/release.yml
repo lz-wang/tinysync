@@ -428,6 +428,11 @@ jobs:
           set -euo pipefail
 
           brew tap lz-wang/tap "file://${GITHUB_WORKSPACE}/homebrew-tap"
+          # Homebrew 7 refuses to load formulae from non-official taps until
+          # they are explicitly trusted. Older brew without the trust gate
+          # lacks the subcommand entirely, so a missing command is fine: the
+          # audit/install steps below still fail loudly if loading is blocked.
+          brew trust --tap lz-wang/tap 2>/dev/null || true
           brew audit --strict --formula lz-wang/tap/tinysync
           brew install --formula lz-wang/tap/tinysync
           brew test lz-wang/tap/tinysync
